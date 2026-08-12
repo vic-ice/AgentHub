@@ -60,6 +60,11 @@ def assistant_event_metadata(message: ChatMessage) -> dict[str, Any]:
             for key in _SAFE_RUNTIME_TRACE_FIELDS
             if key in runtime_trace
         }
+    for key in ("research_run_id", "research_objective"):
+        value = custom.get(key)
+        if isinstance(value, str) and value.strip():
+            safe_custom[key] = value.strip()[:300]
+    tool_info = custom.get("tool_info")
     tool_info = custom.get("tool_info")
     if isinstance(tool_info, list):
         safe_custom["tool_info"] = [

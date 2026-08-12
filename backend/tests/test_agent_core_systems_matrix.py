@@ -36,7 +36,7 @@ class AgentCoreSystemsMatrixTests(unittest.TestCase):
         ]
         report = build_report(
             results,
-            production_flags={"AGENT_CAPABILITY_TASK_V1": False},
+            production_flags={},
         )
         self.assertEqual(report["status"], "passed")
         self.assertTrue(report["fixture_or_local_core_loop_passed"])
@@ -46,18 +46,6 @@ class AgentCoreSystemsMatrixTests(unittest.TestCase):
     def test_missing_marker_fails_closed(self) -> None:
         with self.assertRaisesRegex(AssertionError, "markers missing"):
             validate_verifier_output(SYSTEM_SPECS[0], "unrelated output")
-
-    def test_enabled_production_flag_fails_report(self) -> None:
-        results = [
-            {"domain_id": spec.domain_id, "status": "passed"}
-            for spec in SYSTEM_SPECS
-        ]
-        report = build_report(
-            results,
-            production_flags={"AGENT_CAPABILITY_TASK_V1": True},
-        )
-        self.assertEqual(report["status"], "failed")
-        self.assertFalse(report["fixture_or_local_core_loop_passed"])
 
 
 if __name__ == "__main__":

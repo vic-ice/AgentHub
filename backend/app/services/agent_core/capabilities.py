@@ -22,6 +22,7 @@ from app.services.memory.version_contracts import (
     RememberMemoryRequest,
     SearchMemoryRequest,
 )
+from app.services.research.contracts import ResearchReadInput
 
 
 class CapabilityInput(BaseModel):
@@ -120,6 +121,21 @@ class CapabilityRegistry:
                 side_effect=True,
                 enabled=core.capability_enabled("forget_memory"),
                 compiler_key="forget_memory",
+            ),
+            "research_read": CapabilitySpec(
+                name="research_read",
+                description=(
+                    "Read a bounded slice of one completed or running "
+                    "research run from this session. scope=report returns "
+                    "the objective, conclusion, known facts and gaps; "
+                    "findings/sources/evidence/steps return the matching "
+                    "records up to limit. Use it when the user asks about "
+                    "the details of a previous deep research run."
+                ),
+                input_model=ResearchReadInput,
+                side_effect=False,
+                enabled=True,
+                compiler_key="research_read",
             ),
             "cancel_active_task": CapabilitySpec(
                 name="cancel_active_task",

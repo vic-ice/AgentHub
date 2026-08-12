@@ -789,6 +789,7 @@ function App() {
       quotedMessageId?: string,
       userContent?: string,
       followUpContext?: FollowUpSendContext,
+      researchMode?: boolean,
     ) => {
       const trimmed = rawInput.trim()
       if (
@@ -902,6 +903,7 @@ function App() {
             request_id: crypto.randomUUID(),
             model_uuid: currentModel,
             thinking_mode: currentThinkingMode,
+            research_mode: researchMode ? "deep_research" : "chat",
             custom_data: quotedMessageId ? {
               quoted_message_id: quotedMessageId,
               user_content: userContent,

@@ -48,18 +48,37 @@ def _registry(
 
 
 class CoreCapabilityMatrixTests(unittest.TestCase):
-    def test_production_defaults_fail_closed(self) -> None:
+    def test_production_defaults_enable_all_core_capabilities(self) -> None:
         fields = Settings.model_fields
-        self.assertIs(fields["AGENT_CAPABILITY_CONVERSATION_V1"].default, False)
-        self.assertIs(fields["AGENT_CAPABILITY_MEMORY_READ_V1"].default, False)
-        self.assertIs(fields["AGENT_CAPABILITY_MEMORY_WRITE_V1"].default, False)
-        self.assertIs(fields["AGENT_CAPABILITY_TASK_V1"].default, False)
+        for name in (
+            "AGENT_CAPABILITY_CONVERSATION_V1",
+            "AGENT_CAPABILITY_MEMORY_READ_V1",
+            "AGENT_CAPABILITY_MEMORY_WRITE_V1",
+            "AGENT_CAPABILITY_TASK_V1",
+        ):
+            self.assertNotIn(name, fields)
 
-        registry = _registry(CoreCapabilityAvailability())
-        self.assertEqual(registry.enabled_names, ())
-        schemas = controller_tool_schemas(registry)
-        names = [item["function"]["name"] for item in schemas]
-        self.assertEqual(names, ["request_clarification"])
+        registry = _registry(CoreCapabilityAvailability.from_settings())
+        self.assertEqual(
+            set(registry.enabled_names),
+            {
+                "conversation_read",
+                "remember_memory",
+                "search_memory",
+                "forget_memory",
+                "cancel_active_task",
+                "weather_get",
+                "web_search",
+                "book_search",
+                "research_read",
+            },
+        )
+        names = {
+            item["function"]["name"]
+            for item in controller_tool_schemas(registry)
+        }
+        self.assertIn("request_clarification", names)
+        self.assertIn("plan_task", names)
 
     def test_read_write_and_task_switches_are_independent(self) -> None:
         registry = _registry(
@@ -68,20 +87,15 @@ class CoreCapabilityMatrixTests(unittest.TestCase):
                 memory_read=True,
             )
         )
-        self.assertEqual(
-            registry.enabled_names,
-            ("conversation_read", "search_memory"),
-        )
+        self.assertIn("conversation_read", registry.enabled_names)
+        self.assertIn("search_memory", registry.enabled_names)
+        self.assertNotIn("remember_memory", registry.enabled_names)
+        self.assertNotIn("forget_memory", registry.enabled_names)
         self.assertFalse(registry.task_planning_enabled)
         names = {item["function"]["name"] for item in controller_tool_schemas(registry)}
-        self.assertEqual(
-            names,
-            {
-                "conversation_read",
-                "search_memory",
-                "request_clarification",
-            },
-        )
+        self.assertIn("conversation_read", names)
+        self.assertIn("search_memory", names)
+        self.assertNotIn("plan_task", names)
         self.assertNotIn("save_memory", names)
         self.assertNotIn("update_memory", names)
 

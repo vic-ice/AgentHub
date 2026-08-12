@@ -23,6 +23,7 @@ from app.infra.embedding_spaces.calibration_contracts import (
 from app.infra.embedding_spaces.calibration_dataset import (
     load_default_calibration_dataset,
 )
+from app.infra.embedding_spaces.memory_source import memory_row_to_source_document
 from app.services.routing.vector_recall import VectorPrototypeRecall
 from scripts.init_database import _get_sorted_sql_files
 
@@ -127,6 +128,29 @@ class CalibrationContractTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertIn("dimensions_failed", result.failure_codes)
 
+    def test_memory_generation_requires_and_accepts_isolation_evidence(self):
+        evidence = GenerationValidationEvidence(
+            purpose="memory",
+            expected_dimensions=8,
+            observed_dimensions=8,
+            source_count=2,
+            embedded_count=2,
+            stored_count=2,
+            active_fact_filter="passed",
+            tenant_isolation="passed",
+            single_generation_query="passed",
+        )
+        artifact = load_default_calibration_dataset()
+        result = calibrate_embedding_generation(
+            artifact=artifact,
+            scores=_separated_scores(),
+            evidence=evidence,
+        )
+
+        self.assertEqual(result.status, "passed")
+        self.assertEqual(result.validation_checks.active_fact_filter, "passed")
+        self.assertEqual(result.validation_checks.tenant_isolation, "passed")
+
     def test_score_coverage_mismatch_is_not_silently_calibrated(self):
         artifact = load_default_calibration_dataset()
         result = calibrate_embedding_generation(
@@ -164,6 +188,41 @@ class CalibrationContractTests(unittest.TestCase):
         self.assertLess(
             names.index("change_025_agent_certification_v4_release_identity.sql"),
             names.index("change_026_embedding_generation_gates.sql"),
+        )
+
+    def test_memory_vector_document_uses_user_scoped_collection(self):
+        user_id = uuid4()
+        memory_id = uuid4()
+        document = memory_row_to_source_document(
+            {
+                "id": str(memory_id),
+                "user_id": str(user_id),
+                "thread_id": None,
+                "schema_key": "possession.entity",
+                "memory_key": "possession.entity:xiaobai",
+                "version_no": 2,
+                "operation": "correct",
+                "value": '{"entity":"小白"}',
+                "metadata": {
+                    "memory_v2": {
+                        "predicate": "possession.entity",
+                        "value": {"entity": "小白"},
+                        "qualifiers": {"entity_type": "pet", "species": "cat"},
+                        "evidence_quote": "我养了一只猫叫小白",
+                    }
+                },
+                "valid_from": None,
+                "updated_at": None,
+            }
+        )
+
+        self.assertEqual(document.id, f"memory:{memory_id}")
+        self.assertEqual(document.collection_name, f"memory:{user_id}")
+        self.assertIn("小白", document.content)
+        self.assertEqual(document.metadata["user_id"], str(user_id))
+        self.assertEqual(
+            document.metadata["memory_key"],
+            "possession.entity:xiaobai",
         )
 
 

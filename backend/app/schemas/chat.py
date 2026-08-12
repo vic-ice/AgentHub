@@ -61,6 +61,16 @@ class UserInput(BaseModel):
         default=False,
         examples=[True, False],
     )
+    research_mode: Literal["chat", "deep_research"] = Field(
+        description=(
+            "Turn execution mode. chat runs the normal Controller turn; "
+            "deep_research switches this single turn to the app-owned "
+            "multi-round Deep Research runtime and publishes a compact "
+            "research receipt."
+        ),
+        default="chat",
+        examples=["chat", "deep_research"],
+    )
     timezone: str = Field(
         description="IANA timezone for time-context substitution in prompts (e.g. Asia/Shanghai, America/New_York).",
         default="Asia/Shanghai",

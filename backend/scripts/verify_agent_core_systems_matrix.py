@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -114,23 +113,8 @@ SYSTEM_SPECS = (
     ),
 )
 
-PRODUCTION_CAPABILITY_FLAGS = (
-    "AGENT_CAPABILITY_CONVERSATION_V1",
-    "AGENT_CAPABILITY_MEMORY_READ_V1",
-    "AGENT_CAPABILITY_MEMORY_WRITE_V1",
-    "AGENT_CAPABILITY_TASK_V1",
-)
-
-
 def run_core_systems_matrix() -> dict[str, Any]:
     _require_exact_specs()
-    flags = _effective_capability_flags()
-    enabled = sorted(name for name, value in flags.items() if value)
-    if enabled:
-        raise AssertionError(
-            "production capability flags must remain disabled: "
-            + ",".join(enabled)
-        )
     env_path = BACKEND_ROOT / ".env"
     config_before = _optional_sha256(env_path)
     results = [_run_verifier(spec) for spec in SYSTEM_SPECS]
@@ -139,7 +123,7 @@ def run_core_systems_matrix() -> dict[str, Any]:
         raise AssertionError("a core systems verifier changed backend/.env")
     return build_report(
         results,
-        production_flags=flags,
+        production_flags={},
         production_config_unchanged=True,
     )
 
@@ -236,18 +220,6 @@ def _run_verifier(spec: CoreSystemSpec) -> dict[str, Any]:
         "status": "passed",
         "duration_ms": duration_ms,
     }
-
-
-def _effective_capability_flags() -> dict[str, bool]:
-    values = dotenv_values(BACKEND_ROOT / ".env")
-    return {
-        name: _truthy(os.environ.get(name, values.get(name)))
-        for name in PRODUCTION_CAPABILITY_FLAGS
-    }
-
-
-def _truthy(value: object) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _optional_sha256(path: Path) -> str | None:

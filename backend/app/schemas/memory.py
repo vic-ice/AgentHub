@@ -1,192 +1,68 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
-
-from app.services.memory.contracts import (
-    INFORMATION_SCOPES,
-    MEMORY_CANDIDATE_SOURCE_KINDS,
-    MEMORY_CONFLICT_DECISIONS,
-    MEMORY_CONFLICT_SEVERITIES,
-    MEMORY_CONFLICT_TYPES,
-    MEMORY_POLARITIES,
-    MEMORY_SOURCES,
-    MEMORY_SUBJECTS,
-    MEMORY_TYPES,
-    USER_STATE_CATEGORIES,
-    USER_STATE_STATUSES,
-    normalize_memory_value,
-    validate_memory_token,
-    validate_optional_memory_token,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class MemoryContractResponse(BaseModel):
-    memory_types: list[str]
-    subjects: list[str]
-    polarities: list[str]
-    sources: list[str]
-    information_scopes: list[str]
-    candidate_source_kinds: list[str]
-    admission_decisions: list[str]
-    conflict_types: list[str]
-    conflict_severities: list[str]
-    conflict_decisions: list[str]
-    user_state_categories: list[str]
-    user_state_statuses: list[str]
+class MemoryAdminFact(BaseModel):
+    """One canonical version-chain fact exposed to the memory panel."""
+
+    schema_key: str
+    memory_key: str
+    subject: str
+    predicate: str
+    value: dict[str, Any] = Field(default_factory=dict)
+    qualifiers: dict[str, Any] = Field(default_factory=dict)
+    evidence_quote: str = ""
+    version_no: int = Field(ge=1)
+    valid_from: datetime
+    valid_to: datetime | None = None
+    is_tombstone: bool = False
 
 
-class UserStateConfirmRequest(BaseModel):
+class MemoryAdminCurrentResponse(BaseModel):
+    facts: list[MemoryAdminFact] = Field(default_factory=list)
+
+
+class MemoryAdminHistoryResponse(BaseModel):
+    memory_key: str
+    versions: list[MemoryAdminFact] = Field(default_factory=list)
+
+
+class MemoryEditRequest(BaseModel):
+    """Panel edit/create: a user statement expressed as one canonical fact."""
+
+    model_config = ConfigDict(extra="forbid")
+
     user_id: UUID
-    accept: bool = True
-    category: str | None = None
-    state_key: str | None = None
-    summary: str | None = None
-    state_value: dict[str, Any] | None = None
-    relation: dict[str, Any] | None = None
-    use_when: list[str] | None = None
-
-    @field_validator("category", mode="before")
-    @classmethod
-    def validate_category(cls, value: Any) -> str | None:
-        if value is None or not str(value).strip():
-            return None
-        return validate_memory_token("category", value, USER_STATE_CATEGORIES)
-
-
-class MemoryRememberRequest(BaseModel):
-    user_id: UUID
-    type: str = Field(description="preference, feedback, reading_state, or correction.")
-    subject: str = Field(description="user, book, author, tag, theme, style, or genre.")
-    value: str = Field(description="Concise memory value.")
-    polarity: str = Field(default="neutral")
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    predicate: str = Field(min_length=1, max_length=256)
+    value: dict[str, Any] = Field(default_factory=dict)
+    qualifiers: dict[str, Any] = Field(default_factory=dict)
+    evidence_quote: str = Field(default="", max_length=4000)
     thread_id: UUID | None = None
-    source: Literal["manual"] = "manual"
-    scope: Literal["long_term_memory"] = "long_term_memory"
-    source_kind: Literal["manual"] = "manual"
-    source_text: str = ""
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("type", mode="before")
+    @field_validator("predicate", "evidence_quote", mode="before")
     @classmethod
-    def validate_type(cls, value: Any) -> str:
-        return validate_memory_token("type", value, MEMORY_TYPES)
-
-    @field_validator("subject", mode="before")
-    @classmethod
-    def validate_subject(cls, value: Any) -> str:
-        return validate_memory_token("subject", value, MEMORY_SUBJECTS)
-
-    @field_validator("polarity", mode="before")
-    @classmethod
-    def validate_polarity(cls, value: Any) -> str:
-        return validate_memory_token("polarity", value, MEMORY_POLARITIES)
-
-    @field_validator("source", mode="before")
-    @classmethod
-    def validate_source(cls, value: Any) -> str:
-        return validate_memory_token("source", value, MEMORY_SOURCES)
-
-    @field_validator("scope", mode="before")
-    @classmethod
-    def validate_scope(cls, value: Any) -> str:
-        return validate_memory_token("scope", value, INFORMATION_SCOPES)
-
-    @field_validator("source_kind", mode="before")
-    @classmethod
-    def validate_source_kind(cls, value: Any) -> str:
-        return validate_memory_token(
-            "source_kind",
-            value,
-            MEMORY_CANDIDATE_SOURCE_KINDS,
-        )
-
-    @field_validator("source_text", mode="before")
-    @classmethod
-    def clean_source_text(cls, value: Any) -> str:
-        return normalize_memory_value(value)
-
-    @field_validator("value", mode="before")
-    @classmethod
-    def validate_value(cls, value: Any) -> str:
-        text = normalize_memory_value(value)
-        if not text:
-            raise ValueError("value cannot be empty")
-        return text
+    def clean_text(cls, value: Any) -> str:
+        return " ".join(str(value or "").split()).strip()
 
 
-class MemoryReviseRequest(BaseModel):
+class MemoryForgetAdminRequest(BaseModel):
+    """Panel forget: locate one existing fact semantically and tombstone it."""
+
+    model_config = ConfigDict(extra="forbid")
+
     user_id: UUID
-    memory_id: UUID | None = None
-    old_value: str = ""
-    old_subject: str = ""
-    old_type: str = ""
-    new_type: str = "correction"
-    new_subject: str
-    new_value: str
-    new_polarity: str = "neutral"
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    predicate: str = Field(min_length=1, max_length=256)
+    identity: dict[str, Any] = Field(default_factory=dict)
+    qualifiers: dict[str, Any] = Field(default_factory=dict)
+    evidence_quote: str = Field(default="", max_length=4000)
     thread_id: UUID | None = None
-    source: Literal["manual"] = "manual"
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("old_subject", mode="before")
+    @field_validator("predicate", "evidence_quote", mode="before")
     @classmethod
-    def validate_old_subject(cls, value: Any) -> str:
-        return validate_optional_memory_token("old_subject", value, MEMORY_SUBJECTS)
-
-    @field_validator("old_type", mode="before")
-    @classmethod
-    def validate_old_type(cls, value: Any) -> str:
-        return validate_optional_memory_token("old_type", value, MEMORY_TYPES)
-
-    @field_validator("new_type", mode="before")
-    @classmethod
-    def validate_new_type(cls, value: Any) -> str:
-        return validate_memory_token("new_type", value, MEMORY_TYPES)
-
-    @field_validator("new_subject", mode="before")
-    @classmethod
-    def validate_new_subject(cls, value: Any) -> str:
-        return validate_memory_token("new_subject", value, MEMORY_SUBJECTS)
-
-    @field_validator("new_polarity", mode="before")
-    @classmethod
-    def validate_new_polarity(cls, value: Any) -> str:
-        return validate_memory_token("new_polarity", value, MEMORY_POLARITIES)
-
-    @field_validator("source", mode="before")
-    @classmethod
-    def validate_source(cls, value: Any) -> str:
-        return validate_memory_token("source", value, MEMORY_SOURCES)
-
-    @field_validator("new_value", mode="before")
-    @classmethod
-    def validate_new_value(cls, value: Any) -> str:
-        text = normalize_memory_value(value)
-        if not text:
-            raise ValueError("new_value cannot be empty")
-        return text
-
-
-class MemoryForgetRequest(BaseModel):
-    user_id: UUID
-    memory_id: UUID | None = None
-    subject: str = ""
-    value: str = ""
-    memory_type: str = ""
-    thread_id: UUID | None = None
-    reason: str = ""
-
-    @field_validator("subject", mode="before")
-    @classmethod
-    def validate_subject(cls, value: Any) -> str:
-        return validate_optional_memory_token("subject", value, MEMORY_SUBJECTS)
-
-    @field_validator("memory_type", mode="before")
-    @classmethod
-    def validate_memory_type(cls, value: Any) -> str:
-        return validate_optional_memory_token("memory_type", value, MEMORY_TYPES)
+    def clean_text(cls, value: Any) -> str:
+        return " ".join(str(value or "").split()).strip()

@@ -10,9 +10,11 @@ from langchain_core.embeddings import Embeddings
 from app.infra.database.database import PostgresDatabase
 from app.infra.database.vectorstore import PGVectorVectorstore
 from app.infra.embedding_spaces.contracts import (
+    EmbeddingPurpose,
     EmbeddingSpaceBuildResult,
     EmbeddingSpaceRecord,
 )
+from app.infra.embedding_spaces.memory_source import MemoryVectorSourceReader
 from app.infra.embedding_spaces.schema import VectorSchemaManager
 from app.infra.embedding_spaces.source import VectorSourceReader
 
@@ -29,6 +31,7 @@ class VectorRebuildJob:
         self._database = database
         self._batch_size = max(1, batch_size)
         self._source = VectorSourceReader(database)
+        self._memory_source = MemoryVectorSourceReader(database)
         self._schema = VectorSchemaManager(database)
 
     async def run(
@@ -46,15 +49,17 @@ class VectorRebuildJob:
             dimensions=target.spec.dimensions,
             index_kind=target.spec.index_kind,
             space_fingerprint=target.spec.fingerprint,
+            purpose=target.spec.purpose,
         )
         vectorstore.set_embed_fn(embeddings=embeddings)
         await vectorstore.initialize()
 
-        source_count = await self._source.count(target.source_table_name)
+        source = self._source_for(target.spec.purpose)
+        source_count = await source.count(target.source_table_name)
         embedded_count = 0
         offset = 0
         while offset < source_count:
-            documents = await self._source.read_batch(
+            documents = await source.read_batch(
                 target.source_table_name,
                 offset=offset,
                 limit=self._batch_size,
@@ -110,8 +115,13 @@ class VectorRebuildJob:
     async def source_watermark(self) -> datetime:
         return await self._source.watermark()
 
-    async def source_count(self, table_name: str | None) -> int:
-        return await self._source.count(table_name)
+    async def source_count(
+        self,
+        table_name: str | None,
+        *,
+        purpose: EmbeddingPurpose = "documents",
+    ) -> int:
+        return await self._source_for(purpose).count(table_name)
 
     async def catch_up(
         self,
@@ -123,10 +133,11 @@ class VectorRebuildJob:
     ) -> int:
         """Upsert writes that occurred after the initial rebuild began."""
 
+        source = self._source_for(target.spec.purpose)
         offset = 0
         caught_up = 0
         while True:
-            documents = await self._source.read_updated_batch(
+            documents = await source.read_updated_batch(
                 target.source_table_name,
                 updated_since=updated_since,
                 offset=offset,
@@ -161,6 +172,11 @@ class VectorRebuildJob:
             caught_up += len(documents)
             offset += len(documents)
         return caught_up
+
+    def _source_for(self, purpose: EmbeddingPurpose):
+        if purpose == "memory":
+            return self._memory_source
+        return self._source
 
 
 __all__ = ["VectorRebuildJob"]

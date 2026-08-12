@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,9 @@ from app.services.agent_core.prompt_contracts import (
 )
 from app.services.conversation.summary_contracts import SummaryProvider
 from app.services.conversation.summary_service import ConversationSummaryService
+
+
+logger = logging.getLogger(__name__)
 
 
 class ContextPreparationError(RuntimeError):
@@ -74,18 +78,66 @@ class ControllerContextCoordinator:
                 )
             except ContextCompressionRequired as required:
                 if _round >= self._max_summary_rounds:
-                    raise ContextPreparationError(
-                        "context compression exceeded bounded summary rounds"
-                    ) from required
-                await self._summaries.summarize_next(
-                    db,
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    provider=summary_provider,
-                    through_sequence=required.through_sequence,
-                    source_upper_bound=through_sequence,
-                )
+                    return self._degraded(
+                        material,
+                        reason="compression_rounds_exhausted",
+                        current_user_message=current_user_message,
+                        memories=memories,
+                        receipts=receipts,
+                        working_state=working_state,
+                        task=task,
+                    )
+                try:
+                    await self._summaries.summarize_next(
+                        db,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        provider=summary_provider,
+                        through_sequence=required.through_sequence,
+                        source_upper_bound=through_sequence,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "conversation summary failed for user=%s thread=%s "
+                        "through=%s; degrading to recent exact window",
+                        user_id,
+                        thread_id,
+                        required.through_sequence,
+                    )
+                    return self._degraded(
+                        material,
+                        reason=f"summary_failed:{exc.__class__.__name__}",
+                        current_user_message=current_user_message,
+                        memories=memories,
+                        receipts=receipts,
+                        working_state=working_state,
+                        task=task,
+                    )
         raise ContextPreparationError("context preparation did not converge")
+
+    def _degraded(
+        self,
+        material,
+        *,
+        reason: str,
+        current_user_message: str,
+        memories: list[TrustedMemoryContext] | None = None,
+        receipts: list[TrustedReceiptContext] | None = None,
+        working_state: TrustedWorkingStateContext | None = None,
+        task: TrustedTaskContext | None = None,
+    ) -> ContextAssemblyResult:
+        """Assemble the most recent exact window without a summary."""
+
+        return self._assembler.assemble(
+            material,
+            current_user_message=current_user_message,
+            memories=memories,
+            receipts=receipts,
+            working_state=working_state,
+            task=task,
+            allow_truncation=True,
+            degradation_reason=reason,
+        )
 
 
 __all__ = ["ContextPreparationError", "ControllerContextCoordinator"]

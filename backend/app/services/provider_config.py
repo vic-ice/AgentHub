@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -326,6 +327,26 @@ def _default_provider_configs() -> list[AppProviderConfig]:
             metadata={"provider_source": "builtin"},
         ),
         AppProviderConfig(
+            provider_key="ddgs",
+            provider_type="web_search",
+            enabled=True,
+            display_name="DuckDuckGo Search",
+            capabilities=["web_search"],
+            settings={
+                "region": "cn-zh",
+                "safesearch": "moderate",
+                "allow_anonymous": True,
+                "max_results": 5,
+                "timeout_seconds": 20,
+                "health_check_query": "OpenAI",
+                "health_check_timeout_seconds": 8,
+            },
+            credentials_ref="",
+            credential_status="none",
+            health=AppProviderHealth(status="unknown"),
+            metadata={"provider_source": "builtin"},
+        ),
+        AppProviderConfig(
             provider_key="anysearch",
             provider_type="web_search",
             enabled=True,
@@ -643,6 +664,60 @@ async def _run_anysearch_health_probe(config: AppProviderConfig) -> dict[str, An
     }
 
 
+async def _run_ddgs_health_probe(config: AppProviderConfig) -> dict[str, Any]:
+    start = time.perf_counter()
+    settings = config.settings or {}
+    timeout_seconds = _coerce_int_setting(
+        settings.get("health_check_timeout_seconds")
+        or settings.get("timeout_seconds"),
+        8,
+        minimum=3,
+        maximum=30,
+    )
+    region = _clean_text(settings.get("region") or "cn-zh")
+    query = _clean_text(settings.get("health_check_query") or "OpenAI")
+    try:
+        from app.services.external_search.providers.ddgs import _run_ddgs_text
+
+        results = await asyncio.wait_for(
+            asyncio.to_thread(
+                _run_ddgs_text,
+                query=query,
+                region=region,
+                safesearch="moderate",
+                timelimit=None,
+                max_results=1,
+            ),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        return {
+            "health_status": "timeout",
+            "health_error_type": "timeout",
+            "health_error": (
+                f"DuckDuckGo health check timed out after {timeout_seconds}s"
+            ),
+            "health_duration_ms": int((time.perf_counter() - start) * 1000),
+        }
+    except Exception as exc:
+        return {
+            "health_status": "failed",
+            "health_error_type": _tavily_error_type(str(exc)),
+            "health_error": str(exc) or exc.__class__.__name__,
+            "health_duration_ms": int((time.perf_counter() - start) * 1000),
+        }
+
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    return {
+        "health_status": "ok" if results else "failed",
+        "health_error_type": "" if results else "no_results",
+        "health_error": (
+            "" if results else "DuckDuckGo health check returned no results"
+        ),
+        "health_duration_ms": duration_ms,
+    }
+
+
 def _with_resolved_status(config: AppProviderConfig) -> AppProviderConfig:
     credential_status = _credential_status_for_ref(config.credentials_ref)
     if credential_status == "missing" and _allows_anonymous(config):
@@ -907,6 +982,12 @@ async def check_provider_health_in_db(
         error_type = str(anysearch_health["health_error_type"])
         error = str(anysearch_health["health_error"])
         duration_ms = int(anysearch_health["health_duration_ms"])
+    elif status == "ok" and key == "ddgs":
+        ddgs_health = await _run_ddgs_health_probe(config)
+        status = str(ddgs_health["health_status"])
+        error_type = str(ddgs_health["health_error_type"])
+        error = str(ddgs_health["health_error"])
+        duration_ms = int(ddgs_health["health_duration_ms"])
 
     updated = await app_provider_config_crud.update_app_provider_config(
         db,

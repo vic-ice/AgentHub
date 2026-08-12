@@ -48,6 +48,22 @@ class ChatService:
         )
         await db.commit()
 
+        if user_input.research_mode == "deep_research":
+            from app.services.research.deep_research_runner import (
+                run_deep_research_turn,
+            )
+
+            answer = await run_deep_research_turn(user_input)
+            committed = await self._committer.commit(
+                db,
+                user_input=user_input,
+                answer=answer,
+                turn=None,
+                model_name="",
+                agent_mode="deep_research",
+            )
+            return committed.message
+
         requested_model = user_input.model_uuid or user_input.model_name
         model_name = resolve_model_name(requested_model)
         if not model_name:

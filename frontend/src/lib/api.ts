@@ -19,11 +19,11 @@ import type {
   ProviderConnectionsResponse,
   ProviderConnectionCreate,
   ProviderConnectionUpdate,
-  CurrentMemoryListResult,
-  MemoryForgetRequest,
-  MemoryForgetResult,
-  MemoryEvent,
-  UserStateConfirmRequest,
+  MemoryAdminCurrentResponse,
+  MemoryAdminHistoryResponse,
+  MemoryEditRequest,
+  MemoryForgetAdminRequest,
+  MemoryMutationReceipt,
   RecommendationEventType,
   RecommendationSignal,
   RecommendationSignalCreate,
@@ -198,34 +198,40 @@ export async function getHistory(
   )
 }
 
-export async function getCurrentMemories(
+export async function getMemoryCurrent(
   userId: string,
-): Promise<CurrentMemoryListResult> {
-  return requestJson<CurrentMemoryListResult>(
+): Promise<MemoryAdminCurrentResponse> {
+  return requestJson<MemoryAdminCurrentResponse>(
     `/memory/${encodeURIComponent(userId)}/current`,
   )
 }
 
-export async function forgetMemory(
-  input: MemoryForgetRequest,
-): Promise<MemoryForgetResult> {
-  return requestJson<MemoryForgetResult>("/memory/forget", {
+export async function getMemoryHistory(
+  userId: string,
+  memoryKey: string,
+): Promise<MemoryAdminHistoryResponse> {
+  const query = new URLSearchParams({ memory_key: memoryKey })
+  return requestJson<MemoryAdminHistoryResponse>(
+    `/memory/${encodeURIComponent(userId)}/history?${query.toString()}`,
+  )
+}
+
+export async function editMemory(
+  input: MemoryEditRequest,
+): Promise<MemoryMutationReceipt> {
+  return requestJson<MemoryMutationReceipt>("/memory/edit", {
     method: "POST",
     body: JSON.stringify(input),
   })
 }
 
-export async function confirmUserState(
-  memoryId: string,
-  input: UserStateConfirmRequest,
-): Promise<MemoryEvent> {
-  return requestJson<MemoryEvent>(
-    `/memory/${encodeURIComponent(memoryId)}/confirm`,
-    {
-      method: "POST",
-      body: JSON.stringify(input),
-    },
-  )
+export async function forgetMemory(
+  input: MemoryForgetAdminRequest,
+): Promise<MemoryMutationReceipt> {
+  return requestJson<MemoryMutationReceipt>("/memory/forget", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
 }
 
 // ── Invoke / Stream ───────────────────────────────────────────────────────────

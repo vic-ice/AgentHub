@@ -135,9 +135,13 @@ async def init_database_components() -> None:
         get_embeddings,
     )
 
+    from app.infra.config import get_settings
     from app.infra.embedding_spaces.runtime import EmbeddingSpaceRuntime
 
-    _embedding_space_runtime = EmbeddingSpaceRuntime(_db_instance)
+    purposes = ("documents",)
+    if get_settings().EMBEDDING_MEMORY_GENERATIONS_ENABLED:
+        purposes = ("documents", "memory")
+    _embedding_space_runtime = EmbeddingSpaceRuntime(_db_instance, purposes=purposes)
     _embedding_space_runtime.start(
         config=get_active_embedding_config(),
         embeddings=get_embeddings(),

@@ -234,6 +234,8 @@ def is_llm_unknown_provider_error(exception: Exception) -> bool:
 
 def is_llm_related_error(exception: Exception) -> bool:
     """Detect if an exception is likely related to LLM API calls."""
+    if _is_non_llm_infrastructure_error(exception):
+        return False
     return (
         is_llm_authentication_error(exception)
         or is_llm_connection_error(exception)
@@ -245,6 +247,8 @@ def is_llm_related_error(exception: Exception) -> bool:
 
 def classify_llm_error(exception: Exception) -> str:
     """Classify an LLM-related error into a stable error category string."""
+    if _is_non_llm_infrastructure_error(exception):
+        return "unknown"
     if is_llm_authentication_error(exception):
         return "llm_authentication"
     if is_llm_unknown_provider_error(exception):
@@ -256,6 +260,24 @@ def classify_llm_error(exception: Exception) -> str:
     if is_llm_invalid_request_error(exception):
         return "llm_invalid_request"
     return "unknown"
+
+
+def _is_non_llm_infrastructure_error(exception: Exception) -> bool:
+    module = type(exception).__module__.lower()
+    class_name = type(exception).__name__.lower()
+    text = f"{module}.{class_name} {exception}".lower()
+    return any(
+        token in text
+        for token in (
+            "sqlalchemy.",
+            "asyncpg.",
+            "psycopg",
+            "integrityerror",
+            "foreignkeyviolation",
+            "foreign key constraint",
+            "unique constraint",
+        )
+    )
 
 
 def get_user_friendly_error_message(exception: Exception) -> str:

@@ -11,6 +11,7 @@ from app.services.agent_runtime.execution_graph import (
     ExecutionGraphEdge,
     ExecutionGraphNode,
 )
+from app.services.agent_runtime.trace_redaction import redact_tool_args
 
 
 def project_public_execution_graph(
@@ -129,6 +130,7 @@ def build_turn_execution_graph(
                             and action_receipt.system_executed
                         ),
                         "round_no": round_receipt.round_no,
+                        "tool_args": redact_tool_args(action.arguments),
                     },
                 )
             )

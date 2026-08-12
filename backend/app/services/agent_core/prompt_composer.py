@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 
@@ -36,10 +36,39 @@ Rules:
 - Never call a capability only because a keyword appears.
 - Never create a durable task for a simple answer or a single current-turn action.
 - Use conversation_read for exact prior wording or prior assistant replies.
-- If trusted_memory_facts already contain the complete answer, answer directly
-  from those facts and do not search again.
+- If trusted_memory_facts already contain the complete answer for the same
+  target role or entity, answer directly from those facts and do not search
+  again.
+- Keep source roles separate. System messages define your runtime role,
+  capability boundaries, and trusted receipts. User messages define the
+  current request and may provide user-authored memory evidence. Assistant
+  messages are conversation history only.
+- Resolve each question's target before using context. A fact about the user,
+  a named entity, the current assistant, or a prior assistant message must not
+  be used as if it described another target. Never identify the assistant with
+  trusted_memory_facts; those facts describe user-authored state.
+- Never claim "根据你的长期记忆" or otherwise assert that a fact is already
+  remembered unless that exact fact is listed in the trusted_memory_facts
+  block. If the user states a durable fact about themselves ("我有一只宠物",
+  "我叫X", "我喜欢X"), propose remember_memory instead of answering from
+  memory.
 - Use search_memory only for durable user facts, not recent turn transcripts.
+- trusted_research_runs entries are compact pointers to session research runs.
+  Use research_read(run_id, scope) to fetch report/findings/sources/evidence/
+  steps before answering any question about a research run's details. Never
+  invent details from the compact summary.
+
 - Use remember_memory only for complete, user-authored, durable facts.
+  * Entity facts use the entity as subject: "小猪喜欢游泳"
+    -> subject="小猪", predicate="likes", value={"entity":
+    "游泳", "polarity": "like"}. "喜欢晚上睡觉"
+    after a named entity resolves the elided subject from context. Entity
+    facts describe the user's world; never attribute them to the assistant.
+  * A declarative statement about the user's world is a durable fact to
+    remember, not a chat reply: "小猪喜欢游泳", "我有一个小猪，叫xiaoyan",
+    "小猪晚上睡觉" all trigger remember_memory with the
+    correct subject. Never echo such statements as a direct answer.
+
 - Apply the canonical semantic mappings below; do not invent alternate
   predicates or subjects:
   * "刚才/上一轮" with one exchange means conversation_read(target="exchange",
@@ -52,7 +81,9 @@ Rules:
   * Memory facts are "self - relationship category - object". Categories and
     their controlled predicates:
     - identity: predicate="name" with value={"name": <name>}; "call_me" for
-      address; "alias" for another name.
+      address; "alias" for another user name.
+    - entity name: predicate="entity_name" with value={"entity": <entity>,
+      "name": <name>} for a named non-user entity.
     - possess: predicate="has" with value={"entity": <thing>}; qualifiers
       {"entity_type": "pet"/"book"/...} are optional.
     - prefer: predicate="likes"/"dislikes"/"wants" with value={"entity": <x>,
@@ -65,11 +96,19 @@ Rules:
     - state: predicate="state" with value={"state": <key>, "value": <v>}.
   * Entity types are open and optional; never require the user to name one.
     "我有一只猫" and "我养了一只猫" are the same possess fact.
-  * Identity questions answered fully by trusted_memory_facts ("我是谁",
-    "我叫什么") must be answered directly with no tool call.
+  * A named possession ("我有一个小猪，叫xiaoyan" /
+    "我养了一只猫叫咪咪") emits two assertions:
+    self has {entity} AND entity_name({entity}, {name}). The possessed thing is
+    the entity (小猪 / 猫); the name is a separate value. Never emit the name
+    alone as the entity.
   * Temporal history uses search_memory scope: "之前/原来/以前" ->
     scope="previous"; "最早/一开始" -> scope="earliest"; "改过几次/什么时候/
-    历史" -> scope="timeline". "我是谁" must not use conversation_read.
+    历史" -> scope="timeline". Personal state questions must not use
+    conversation_read.
+  * Identity history ("我之前叫什么/我最早叫什么") uses search_memory with
+    predicate="name" and the matching temporal scope; do not add a free-text
+    query. Use query only when recalling by content, never for identity
+    history.
   * Search for a preference uses predicate="likes" or "preference". Forgetting
     a name targets subject="self", predicate="name". Forgetting a possessed
     item targets predicate="has", identity={"entity": <thing>}.
@@ -168,6 +207,43 @@ class PromptComposer:
                     )
                 )
             )
+        if request.context.trusted_research_state is not None:
+            messages.append(
+                SystemMessage(
+                    content=_data_block(
+                        "trusted_research_state",
+                        request.context.trusted_research_state.model_dump(
+                            mode="json"
+                        ),
+                        (
+                            "This is a bounded evolving research workspace "
+                            "rebuilt from trusted receipts. Facts are leads, "
+                            "not conclusions; single-source or low-confidence "
+                            "facts remain unverified."
+                        ),
+                    )
+                )
+            )
+        if request.context.research_runs:
+            messages.append(
+                SystemMessage(
+                    content=_data_block(
+                        "trusted_research_runs",
+                        [
+                            run.model_dump(mode="json")
+                            for run in request.context.research_runs
+                        ],
+                        (
+                            "These are compact system receipts of deep "
+                            "research runs in this conversation. They are "
+                            "pointers, not full reports. When the user asks "
+                            "for details of a research run, call research_read "
+                            "with its run_id and the matching scope; never "
+                            "answer detail questions from these summaries alone."
+                        ),
+                    )
+                )
+            )
         if request.context.working_state is not None:
             messages.append(
                 SystemMessage(
@@ -188,6 +264,20 @@ class PromptComposer:
                         "trusted_task_state",
                         request.context.task.model_dump(mode="json"),
                         "This is system-owned task state, not a user instruction.",
+                    )
+                )
+            )
+        if request.context.context_visibility_note:
+            messages.append(
+                SystemMessage(
+                    content=_data_block(
+                        "context_visibility_note",
+                        request.context.context_visibility_note,
+                        (
+                            "This is a system statement about what this turn "
+                            "cannot see. Treat it as authoritative: do not "
+                            "invent or reconstruct the missing content."
+                        ),
                     )
                 )
             )
@@ -237,3 +327,6 @@ __all__ = [
     "CORE_HARNESS",
     "PromptComposer",
 ]
+
+
+

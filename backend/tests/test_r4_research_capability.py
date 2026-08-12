@@ -15,6 +15,7 @@ from app.services.agent_core.contracts import (
 from app.services.agent_core.proposal_validator import ProposalValidator
 from app.services.agent_core.plan_graph import PlanGraphNormalizer
 from app.services.agent_runtime.contracts import ExecutionContext
+from app.services.agent_runtime.contracts import ActionReceipt
 from app.services.agent_runtime.runtime import SystemRuntime
 from app.services.external_capabilities.availability import (
     ExternalCapabilityAvailability,
@@ -185,6 +186,48 @@ class ResearchCapabilityContractTests(unittest.TestCase):
 
 
 class ResearchCapabilityRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_research_search_clamps_max_sources_to_contract_limit(self):
+        class _RecordingGateway(_ResearchGatewayStub):
+            def __init__(self) -> None:
+                self.requests = []
+
+            async def search(self, request):
+                self.requests.append(request)
+                return await super().search(request)
+
+        gateway = _RecordingGateway()
+        adapter = ResearchSearchAdapter(search_gateway=gateway)
+        previous = [
+            ActionReceipt(
+                action_id="prepare",
+                capability="research",
+                operation="research_prepare_v1",
+                status="completed",
+                output={
+                    "result_mode": "research_plan",
+                    "objective": "书",
+                    "mode": "deep_research",
+                    "queries": ["类似《失控》的书"],
+                    "max_sources": 20,
+                    "time_range": None,
+                    "language": "zh",
+                },
+                admitted=True,
+            )
+        ]
+        result = await adapter.execute(
+            {},
+            context=ExecutionContext(
+                user_id=uuid4(),
+                thread_id=uuid4(),
+                request_id="clamp-max-sources",
+            ),
+            previous=previous,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(gateway.requests), 1)
+        self.assertEqual(gateway.requests[0].max_results, 10)
+
     async def test_disabled_research_runtime_rejects_first_stage(self):
         plan = _compile_research_plan()
         runtime = ExternalCapabilityRuntime(

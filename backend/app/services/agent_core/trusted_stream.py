@@ -80,6 +80,16 @@ class TrustedControllerStream:
             yield "data: [DONE]\n\n"
             return
 
+        if user_input.research_mode == "deep_research":
+            async for event in self._run_deep_research_turn(
+                sequencer=sequencer,
+                database=database,
+                user_input=user_input,
+                committer=committer,
+            ):
+                yield event
+            return
+
         requested_model = (
             user_input.model_uuid or user_input.model_name
         )
@@ -195,7 +205,81 @@ class TrustedControllerStream:
         else:
             terminal = sequencer.turn_failed(
                 committed=committed,
-                message="本轮未能安全完成，请稍后重试。",
+                message=_failure_message(entry.answer),
+            )
+        yield sse(terminal.model_dump(mode="json"))
+        yield "data: [DONE]\n\n"
+
+    async def _run_deep_research_turn(
+        self,
+        *,
+        sequencer: TrustedStreamSequencer,
+        database,
+        user_input: UserInput,
+        committer,
+    ) -> AsyncGenerator[str, None]:
+        try:
+            from app.services.research.deep_research_runner import (
+                run_deep_research_turn,
+            )
+
+            answer = await run_deep_research_turn(user_input)
+        except Exception:
+            logger.exception(
+                "Deep Research runtime failed for request %s",
+                user_input.request_id,
+            )
+            async for event in self._publish_failure(
+                sequencer=sequencer,
+                user_input=user_input,
+                message=(
+                    "\u6df1\u5ea6\u7814\u7a76\u672a\u80fd\u5b8c\u6210\uff0c"
+                    "\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"
+                ),
+                model_name="",
+                database=database,
+                committer=committer,
+            ):
+                yield event
+            return
+        try:
+            async with database.session() as session:
+                committed = await committer.commit(
+                    session,
+                    user_input=user_input,
+                    answer=answer,
+                    turn=None,
+                    model_name="",
+                    agent_mode="deep_research",
+                )
+        except Exception:
+            logger.exception(
+                "Deep Research publication failed for request %s",
+                user_input.request_id,
+            )
+            yield sse_error(
+                "\u56de\u7b54\u672a\u80fd\u5b89\u5168\u63d0\u4ea4\uff0c"
+                "\u56e0\u6b64\u672c\u8f6e\u4e0d\u4f1a\u663e\u793a\u672a\u63d0\u4ea4\u7ed3\u679c\u3002",
+                error_type="publication_commit_failed",
+            )
+            yield "data: [DONE]\n\n"
+            return
+        yield sse(
+            sequencer.graph_snapshot(
+                project_public_execution_graph(
+                    committed.execution_graph
+                )
+            ).model_dump(mode="json")
+        )
+        if answer.status == "completed":
+            terminal = sequencer.answer_completed(
+                answer=answer,
+                committed=committed,
+            )
+        else:
+            terminal = sequencer.turn_failed(
+                committed=committed,
+                message=answer.content,
             )
         yield sse(terminal.model_dump(mode="json"))
         yield "data: [DONE]\n\n"
@@ -284,6 +368,17 @@ class TrustedControllerStream:
             turn,
             request_id=request_id,
         )
+
+
+def _failure_message(
+    answer,
+    *,
+    fallback: str = "本轮未能安全完成，请稍后重试。",
+) -> str:
+    """Pass through the trusted failure content instead of hiding the cause."""
+
+    content = str(getattr(answer, "content", "") or "").strip()
+    return content if content else fallback
 
 
 __all__ = ["TrustedControllerStream"]

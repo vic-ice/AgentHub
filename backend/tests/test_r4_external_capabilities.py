@@ -5,7 +5,6 @@ import unittest
 from uuid import uuid4
 
 from app.services.agent_core.capabilities import CapabilityRegistry
-from app.services.agent_core.certification_contracts import AgentModeAdmission
 from app.services.agent_core.compiler import WorkflowCompiler
 from app.services.agent_core.contracts import (
     ControllerOutput,
@@ -225,13 +224,6 @@ class WeatherCapabilityRuntimeTests(unittest.IsolatedAsyncioTestCase):
             request=ControllerModelRequest(
                 model_name="fixture-model",
                 current_user_message="杭州明天天气怎么样？",
-                admission=AgentModeAdmission(
-                    admitted=True,
-                    certification_id="candidate-canary",
-                    configuration_fingerprint="0" * 64,
-                    controller_fingerprint="1" * 64,
-                    source_commit_sha="2" * 40,
-                ),
             ),
             runtime=runtime,
             context=context,

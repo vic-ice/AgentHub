@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     # R7 candidate gate. When false, existing embedding activation and the
     # routing compatibility threshold remain unchanged.
     EMBEDDING_GENERATION_GATES_V1: bool = False
+    # Memory vectors are an opt-in semantic projection over canonical
+    # memory_events; the durable source of truth remains relational.
+    EMBEDDING_MEMORY_GENERATIONS_ENABLED: bool = False
 
     # =========================================================================
     # CORS Configuration
@@ -126,17 +129,6 @@ class Settings(BaseSettings):
         default=None,
         pattern="^[0-9a-f]{40}$",
     )
-    # R4 read-only capabilities are independently projected and admitted.
-    AGENT_CAPABILITY_WEATHER_V1: bool = False
-    AGENT_CAPABILITY_WEB_V1: bool = False
-    AGENT_CAPABILITY_BOOK_V1: bool = False
-    AGENT_CAPABILITY_RESEARCH_V1: bool = False
-    # R6 core capabilities use the same switch for model visibility and
-    # SystemRuntime admission. Enable and certify one domain at a time.
-    AGENT_CAPABILITY_CONVERSATION_V1: bool = False
-    AGENT_CAPABILITY_MEMORY_READ_V1: bool = False
-    AGENT_CAPABILITY_MEMORY_WRITE_V1: bool = False
-    AGENT_CAPABILITY_TASK_V1: bool = False
     # Retired compatibility flags remain parseable for deployment validation,
     # but every default is fail-closed and enabling the old runtime is rejected.
     AGENT_LEGACY_HISTORY_READ_FALLBACK: bool = False
@@ -310,14 +302,6 @@ class Settings(BaseSettings):
         if self.AGENT_LEGACY_RUNTIME_FALLBACK:
             raise ValueError(
                 "AGENT_LEGACY_RUNTIME_FALLBACK has been retired"
-            )
-        if (
-            self.AGENT_CAPABILITY_MEMORY_WRITE_V1
-            and self.AGENT_LEGACY_MEMORY_WRITE_COMPAT
-        ):
-            raise ValueError(
-                "Versioned memory write requires "
-                "AGENT_LEGACY_MEMORY_WRITE_COMPAT=false"
             )
         return self
 

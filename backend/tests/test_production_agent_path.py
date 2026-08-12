@@ -49,3 +49,13 @@ def test_controller_request_has_no_runtime_admission_contract() -> None:
     )
     request_source = source.split("class ControllerModelRequest", 1)[1]
     assert "admission" not in request_source
+
+
+def test_memory_api_and_research_use_version_chain_only() -> None:
+    for relative in (
+        "app/api/v1/memory.py",
+        "app/services/research/report.py",
+    ):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "get_memory_orchestrator" not in source
+        assert "MemoryOrchestrator" not in source

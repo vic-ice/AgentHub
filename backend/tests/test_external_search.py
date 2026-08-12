@@ -121,38 +121,47 @@ class SearchPolicyTests(unittest.TestCase):
         self.assertIn("result_limit", request.requirements)
         self.assertEqual(request.max_results, 5)
 
-    def test_chinese_general_query_prefers_anysearch(self) -> None:
+    def test_chinese_general_query_prefers_tavily(self) -> None:
         request = SearchRequest(query="今天有什么新闻")
-        self.assertEqual(provider_order(request), ("anysearch", "tavily"))
+        self.assertEqual(
+            provider_order(request),
+            ("tavily", "ddgs", "anysearch"),
+        )
 
-    def test_explicit_domain_prefers_tavily_for_non_chinese_query(self) -> None:
+    def test_explicit_domain_order_is_quality_first(self) -> None:
         request = SearchRequest(
             query="well reviewed books",
             include_domains=["example.test"],
         )
-        self.assertEqual(provider_order(request), ("tavily", "anysearch"))
+        self.assertEqual(
+            provider_order(request),
+            ("tavily", "ddgs", "anysearch"),
+        )
 
-    def test_chinese_domain_query_still_prefers_anysearch(self) -> None:
+    def test_chinese_domain_query_prefers_tavily(self) -> None:
         request = SearchRequest(
             query="豆瓣好评图书",
             include_domains=["book.douban.com"],
         )
-        self.assertEqual(provider_order(request), ("anysearch", "tavily"))
+        self.assertEqual(
+            provider_order(request),
+            ("tavily", "ddgs", "anysearch"),
+        )
 
     def test_next_round_moves_used_provider_to_end(self) -> None:
         request = SearchRequest(query="中文图书")
         self.assertEqual(
-            provider_order(request, previously_used=("anysearch",)),
-            ("tavily", "anysearch"),
+            provider_order(request, previously_used=("tavily",)),
+            ("ddgs", "anysearch", "tavily"),
         )
 
 
 class SearchGatewayTests(unittest.IsolatedAsyncioTestCase):
-    async def test_tavily_failure_falls_back_to_anysearch(self) -> None:
+    async def test_tavily_failure_falls_back_to_ddgs(self) -> None:
         tavily = _FakeProvider("tavily", "unavailable")
-        anysearch = _FakeProvider("anysearch", "found")
+        ddgs = _FakeProvider("ddgs", "found")
         gateway = SearchGateway(
-            {"tavily": tavily, "anysearch": anysearch}
+            {"tavily": tavily, "ddgs": ddgs}
         )
         result = await gateway.search(
             SearchRequest(
@@ -161,27 +170,27 @@ class SearchGatewayTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(result.outcome, "found")
-        self.assertEqual(result.provider, "anysearch")
+        self.assertEqual(result.provider, "ddgs")
         self.assertEqual(
             [attempt.provider for attempt in result.attempts],
-            ["tavily", "anysearch"],
+            ["tavily", "ddgs"],
         )
         self.assertEqual(tavily.calls, 1)
-        self.assertEqual(anysearch.calls, 1)
+        self.assertEqual(ddgs.calls, 1)
 
-    async def test_anysearch_failure_falls_back_to_tavily(self) -> None:
-        tavily = _FakeProvider("tavily", "found")
-        anysearch = _FakeProvider("anysearch", "unavailable")
+    async def test_tavily_and_ddgs_failure_fall_back_to_anysearch(self) -> None:
+        tavily = _FakeProvider("tavily", "unavailable")
+        ddgs = _FakeProvider("ddgs", "unavailable")
+        anysearch = _FakeProvider("anysearch", "found")
         gateway = SearchGateway(
-            {"tavily": tavily, "anysearch": anysearch}
+            {"tavily": tavily, "ddgs": ddgs, "anysearch": anysearch}
         )
         result = await gateway.search(SearchRequest(query="中文图书推荐"))
         self.assertEqual(result.outcome, "found")
-        self.assertEqual(result.provider, "tavily")
-        self.assertEqual(
-            [attempt.provider for attempt in result.attempts],
-            ["anysearch", "tavily"],
-        )
+        self.assertEqual(result.provider, "anysearch")
+        self.assertEqual(tavily.calls, 1)
+        self.assertEqual(ddgs.calls, 1)
+        self.assertEqual(anysearch.calls, 1)
 
     async def test_adapter_exception_does_not_break_failover(self) -> None:
         gateway = SearchGateway(
@@ -241,7 +250,11 @@ class SearchGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.execution_status, "completed")
         self.assertEqual(result.outcome, "unavailable")
-        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(len(result.attempts), 3)
+        self.assertEqual(
+            [attempt.provider for attempt in result.attempts],
+            ["tavily", "ddgs", "anysearch"],
+        )
 
         projected = project_research_search_output(
             task=ResearchSearchTask(

@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import re
-
 from app.services.external_search.contracts import SearchRequest
 
 
-_CJK_RE = re.compile(r"[\u3400-\u9fff]")
-_PROVIDERS = ("tavily", "anysearch")
+_PROVIDERS = ("tavily", "ddgs", "anysearch")
 
 
 def provider_order(
@@ -16,12 +13,11 @@ def provider_order(
 ) -> tuple[str, ...]:
     """Return a deterministic provider order; it performs no I/O."""
 
-    if request.zone == "cn" or _CJK_RE.search(request.query):
-        ordered = ["anysearch", "tavily"]
-    elif request.include_domains or request.time_range or request.category == "news":
-        ordered = list(_PROVIDERS)
-    else:
-        ordered = list(_PROVIDERS)
+    # Quality-first order: Tavily (keyed, deep detail) leads, DuckDuckGo is a
+    # keyless fallback, AnySearch (anonymous) is the last-resort for Chinese
+    # coverage. Previously used providers move to the back so a fresh cycle
+    # gets a different source before repeating.
+    ordered = list(_PROVIDERS)
 
     used = {item.strip().lower() for item in previously_used}
     return tuple(

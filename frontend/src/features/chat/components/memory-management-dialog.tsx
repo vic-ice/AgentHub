@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Brain, Check, RefreshCw, Trash2, X } from "lucide-react"
+import { Brain, Check, ChevronDown, ChevronRight, Pencil, RefreshCw, Trash2, X } from "lucide-react"
 
 import {
   Dialog,
@@ -10,9 +10,8 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
-import { confirmUserState, getCurrentMemories, forgetMemory } from "@/lib/api"
-import type { MemoryEvent } from "@/types"
+import { editMemory, forgetMemory, getMemoryCurrent, getMemoryHistory } from "@/lib/api"
+import type { MemoryAdminFact } from "@/types"
 import { useI18n } from "@/i18n"
 
 type MemoryManagementDialogProps = {
@@ -21,19 +20,161 @@ type MemoryManagementDialogProps = {
   userId: string | null
 }
 
-function formatDate(value: string | null): string {
-  if (!value) {
-    return ""
-  }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return ""
-  }
-  return date.toLocaleString()
+type EditField = {
+  key: string
+  label: string
+  value: string
 }
 
-function tokenLabel(value: string): string {
-  return value.replace(/_/g, " ")
+const POLARITIES: { value: string; label: string }[] = [
+  { value: "like", label: "喜欢" },
+  { value: "dislike", label: "不喜欢" },
+  { value: "want", label: "想要" },
+  { value: "avoid", label: "避免" },
+  { value: "neutral", label: "中性" },
+]
+
+function formatDate(value: string | null): string {
+  if (!value) return ""
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString()
+}
+
+function categoryLabel(schemaKey: string): string {
+  if (schemaKey === "identity.self_reported_name") return "名字"
+  if (schemaKey === "identity.preferred_address") return "称呼"
+  if (schemaKey === "identity.alias") return "别名"
+  if (schemaKey === "possession.entity") return "物品"
+  if (schemaKey === "preference.entity") return "喜好"
+  if (schemaKey === "relationship.entity") return "关系"
+  if (schemaKey === "instruction.behavior") return "约定"
+  if (schemaKey === "feedback.outcome") return "反馈"
+  if (schemaKey === "temporary.state") return "状态"
+  return schemaKey
+}
+
+function editPredicate(fact: MemoryAdminFact): string {
+  if (fact.schema_key === "identity.self_reported_name") return "name"
+  if (fact.schema_key === "identity.preferred_address") return "call_me"
+  if (fact.schema_key === "identity.alias") return "alias"
+  if (fact.schema_key === "possession.entity") return "has"
+  if (fact.schema_key === "preference.entity") return "prefers"
+  if (fact.schema_key === "relationship.entity") return "relationship"
+  if (fact.schema_key === "instruction.behavior") return "instruction"
+  if (fact.schema_key === "feedback.outcome") return "feedback"
+  if (fact.schema_key === "temporary.state") return "state"
+  return fact.predicate || fact.schema_key
+}
+
+function factValueLabel(fact: MemoryAdminFact): string {
+  const value = fact.value
+  if (fact.schema_key === "identity.self_reported_name") return String(value.name ?? "")
+  if (fact.schema_key === "identity.preferred_address") return String(value.address ?? "")
+  if (fact.schema_key === "identity.alias") return String(value.alias ?? "")
+  const entity = String(value.entity ?? "")
+  if (fact.schema_key === "possession.entity") return entity
+  if (fact.schema_key === "preference.entity") {
+    const polarity = String(value.polarity ?? "")
+    const verb =
+      polarity === "like" ? "喜欢" :
+      polarity === "dislike" ? "不喜欢" :
+      polarity === "want" ? "想要" :
+      polarity === "avoid" ? "想避免" : "偏好"
+    return entity ? `${verb} ${entity}` : ""
+  }
+  if (fact.schema_key === "relationship.entity") {
+    return entity && value.relation ? `${entity}（${String(value.relation)}）` : entity
+  }
+  if (fact.schema_key === "instruction.behavior") return String(value.instruction ?? "")
+  if (fact.schema_key === "feedback.outcome") {
+    return value.target && value.outcome
+      ? `${String(value.target)}：${String(value.outcome)}`
+      : String(value.target ?? value.outcome ?? "")
+  }
+  if (fact.schema_key === "temporary.state") {
+    return value.state && value.value
+      ? `${String(value.state)} = ${String(value.value)}`
+      : String(value.state ?? value.value ?? "")
+  }
+  return fact.evidence_quote || ""
+}
+
+function editFieldsFor(fact: MemoryAdminFact): EditField[] {
+  const value = fact.value
+  if (fact.schema_key === "identity.self_reported_name") {
+    return [{ key: "name", label: "名字", value: String(value.name ?? "") }]
+  }
+  if (fact.schema_key === "identity.preferred_address") {
+    return [{ key: "address", label: "称呼", value: String(value.address ?? "") }]
+  }
+  if (fact.schema_key === "identity.alias") {
+    return [{ key: "alias", label: "别名", value: String(value.alias ?? "") }]
+  }
+  if (fact.schema_key === "possession.entity") {
+    return [{ key: "entity", label: "物品/宠物", value: String(value.entity ?? "") }]
+  }
+  if (fact.schema_key === "preference.entity") {
+    return [
+      { key: "entity", label: "对象", value: String(value.entity ?? "") },
+      { key: "polarity", label: "态度", value: String(value.polarity ?? "like") },
+    ]
+  }
+  if (fact.schema_key === "relationship.entity") {
+    return [
+      { key: "entity", label: "对象", value: String(value.entity ?? "") },
+      { key: "relation", label: "关系", value: String(value.relation ?? "") },
+    ]
+  }
+  if (fact.schema_key === "instruction.behavior") {
+    return [{ key: "instruction", label: "约定", value: String(value.instruction ?? "") }]
+  }
+  if (fact.schema_key === "feedback.outcome") {
+    return [
+      { key: "target", label: "目标", value: String(value.target ?? "") },
+      { key: "outcome", label: "结果", value: String(value.outcome ?? "") },
+    ]
+  }
+  if (fact.schema_key === "temporary.state") {
+    return [
+      { key: "state", label: "状态键", value: String(value.state ?? "") },
+      { key: "value", label: "状态值", value: String(value.value ?? "") },
+    ]
+  }
+  return []
+}
+
+function buildEditValue(fact: MemoryAdminFact, fields: EditField[]): Record<string, unknown> {
+  const byKey = Object.fromEntries(fields.map((field) => [field.key, field.value]))
+  if (fact.schema_key === "identity.self_reported_name") return { name: byKey.name }
+  if (fact.schema_key === "identity.preferred_address") return { address: byKey.address }
+  if (fact.schema_key === "identity.alias") return { alias: byKey.alias }
+  if (fact.schema_key === "possession.entity") return { entity: byKey.entity }
+  if (fact.schema_key === "preference.entity") {
+    return { entity: byKey.entity, polarity: byKey.polarity }
+  }
+  if (fact.schema_key === "relationship.entity") {
+    return { entity: byKey.entity, relation: byKey.relation }
+  }
+  if (fact.schema_key === "instruction.behavior") return { instruction: byKey.instruction }
+  if (fact.schema_key === "feedback.outcome") {
+    return { target: byKey.target, outcome: byKey.outcome }
+  }
+  if (fact.schema_key === "temporary.state") {
+    return { state: byKey.state, value: byKey.value }
+  }
+  return {}
+}
+
+function forgetIdentity(fact: MemoryAdminFact): Record<string, unknown> {
+  const value = fact.value
+  if (fact.schema_key === "possession.entity" || fact.schema_key === "preference.entity" || fact.schema_key === "relationship.entity") {
+    return { entity: String(value.entity ?? "") }
+  }
+  if (fact.schema_key === "instruction.behavior") return { instruction: String(value.instruction ?? "") }
+  if (fact.schema_key === "feedback.outcome") return { target: String(value.target ?? "") }
+  if (fact.schema_key === "temporary.state") return { state: String(value.state ?? "") }
+  if (fact.schema_key === "identity.alias") return { alias: String(value.alias ?? "") }
+  return {}
 }
 
 export function MemoryManagementDialog({
@@ -42,35 +183,34 @@ export function MemoryManagementDialog({
   userId,
 }: MemoryManagementDialogProps) {
   const { t } = useI18n()
-  const [memories, setMemories] = useState<MemoryEvent[]>([])
+  const [facts, setFacts] = useState<MemoryAdminFact[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [forgettingId, setForgettingId] = useState<string | null>(null)
-  const [confirmingId, setConfirmingId] = useState<string | null>(null)
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [notice, setNotice] = useState<string | null>(null)
+  const [editingKey, setEditingKey] = useState<string | null>(null)
+  const [editValues, setEditValues] = useState<Record<string, string>>({})
+  const [openHistory, setOpenHistory] = useState<Set<string>>(new Set())
+  const [historyData, setHistoryData] = useState<Record<string, MemoryAdminFact[]>>({})
+  const [busyKey, setBusyKey] = useState<string | null>(null)
 
-  const sortedMemories = useMemo(
+  const sortedFacts = useMemo(
     () =>
-      memories
-        .filter((memory) => !memory.forgotten && !memory.superseded_by)
-        .sort((left, right) => {
-          const leftTime = new Date(left.updated_at || left.created_at || 0).getTime()
-          const rightTime = new Date(right.updated_at || right.created_at || 0).getTime()
-          return rightTime - leftTime
-        }),
-    [memories],
+      [...facts].sort((left, right) =>
+        new Date(right.valid_from).getTime() - new Date(left.valid_from).getTime(),
+      ),
+    [facts],
   )
 
-  const loadMemories = useCallback(async () => {
+  const loadFacts = useCallback(async () => {
     if (!userId) {
-      setMemories([])
+      setFacts([])
       return
     }
     setIsLoading(true)
     setError(null)
     try {
-      const result = await getCurrentMemories(userId)
-      setMemories(result.memories)
+      const result = await getMemoryCurrent(userId)
+      setFacts(result.facts)
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("error.unexpected"))
     } finally {
@@ -80,67 +220,84 @@ export function MemoryManagementDialog({
 
   useEffect(() => {
     if (open) {
-      void loadMemories()
+      void loadFacts()
     }
-  }, [loadMemories, open])
+  }, [loadFacts, open])
 
-  const handleForget = useCallback(
-    async (memory: MemoryEvent) => {
-      if (!userId || !memory.id) {
-        return
-      }
-      setForgettingId(memory.id)
-      setError(null)
-      try {
-        await forgetMemory({
-          user_id: userId,
-          memory_id: memory.id,
-          reason: "user forgot memory from current memory view",
-        })
-        setMemories((current) => current.filter((item) => item.id !== memory.id))
-      } catch (forgetError) {
-        setError(
-          forgetError instanceof Error
-            ? forgetError.message
-            : t("memory.forgetFailed"),
-        )
-      } finally {
-        setForgettingId(null)
-      }
-    },
-    [t, userId],
-  )
+  const startEdit = (fact: MemoryAdminFact) => {
+    setEditingKey(fact.memory_key)
+    setEditValues(Object.fromEntries(editFieldsFor(fact).map((field) => [field.key, field.value])))
+    setNotice(null)
+  }
 
-  const handleConfirmation = useCallback(
-    async (memory: MemoryEvent, accept: boolean) => {
-      if (!userId || !memory.id) {
-        return
-      }
-      setConfirmingId(memory.id)
-      setError(null)
+  const saveEdit = async (fact: MemoryAdminFact) => {
+    if (!userId) return
+    const fields = editFieldsFor(fact).map((field) => ({
+      ...field,
+      value: editValues[field.key] ?? "",
+    }))
+    setBusyKey(fact.memory_key)
+    setError(null)
+    setNotice(null)
+    try {
+      const receipt = await editMemory({
+        user_id: userId,
+        predicate: editPredicate(fact),
+        value: buildEditValue(fact, fields),
+        qualifiers: fact.qualifiers,
+      })
+      const status = receipt.mutations?.[0]?.status
+      setNotice(status === "revised" ? "已更新记忆（旧值保留在历史中）" : status === "noop_duplicate" ? "值与当前记忆相同，未产生新版本" : "已记录")
+      setEditingKey(null)
+      await loadFacts()
+    } catch (editError) {
+      const message = editError instanceof Error ? editError.message : String(editError)
+      setError(message)
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  const toggleHistory = async (fact: MemoryAdminFact) => {
+    if (!userId) return
+    if (openHistory.has(fact.memory_key)) {
+      setOpenHistory((current) => {
+        const next = new Set(current)
+        next.delete(fact.memory_key)
+        return next
+      })
+      return
+    }
+    setOpenHistory((current) => new Set(current).add(fact.memory_key))
+    if (!historyData[fact.memory_key]) {
       try {
-        const updated = await confirmUserState(memory.id, {
-          user_id: userId,
-          accept,
-          summary: accept ? drafts[memory.id] || memory.value : undefined,
-        })
-        setMemories((current) =>
-          accept
-            ? current.map((item) => (item.id === memory.id ? updated : item))
-            : current.filter((item) => item.id !== memory.id),
-        )
-      } catch (confirmationError) {
-        setError(
-          confirmationError instanceof Error
-            ? confirmationError.message
-            : t("error.unexpected"),
-        )
-      } finally {
-        setConfirmingId(null)
+        const result = await getMemoryHistory(userId, fact.memory_key)
+        setHistoryData((current) => ({ ...current, [fact.memory_key]: result.versions }))
+      } catch (historyError) {
+        setError(historyError instanceof Error ? historyError.message : t("error.unexpected"))
       }
-    },
-    [drafts, t, userId],
-  )
+    }
+  }
+
+  const handleForget = async (fact: MemoryAdminFact) => {
+    if (!userId) return
+    setBusyKey(fact.memory_key)
+    setError(null)
+    try {
+      await forgetMemory({
+        user_id: userId,
+        predicate: editPredicate(fact),
+        identity: forgetIdentity(fact),
+        qualifiers: fact.qualifiers,
+      })
+      setNotice("已按你的要求将该条记忆标记为遗忘")
+      await loadFacts()
+    } catch (forgetError) {
+      setError(forgetError instanceof Error ? forgetError.message : t("memory.forgetFailed"))
+    } finally {
+      setBusyKey(null)
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -155,13 +312,13 @@ export function MemoryManagementDialog({
 
         <div className="flex items-center justify-between gap-3">
           <div className="text-sm text-muted-foreground">
-            {t("memory.total", { count: sortedMemories.length })}
+            {t("memory.total", { count: sortedFacts.length })}
           </div>
           <Button
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => void loadMemories()}
+            onClick={() => void loadFacts()}
             disabled={isLoading || !userId}
           >
             <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
@@ -174,125 +331,173 @@ export function MemoryManagementDialog({
             {error}
           </div>
         )}
+        {notice && (
+          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+            {notice}
+          </div>
+        )}
 
         <div className="max-h-[55vh] overflow-y-auto pr-1">
-          {isLoading && sortedMemories.length === 0 ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">
-              {t("common.loading")}
-            </div>
-          ) : sortedMemories.length === 0 ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">
-              {t("memory.currentEmpty")}
-            </div>
+          {isLoading && sortedFacts.length === 0 ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">{t("common.loading")}</div>
+          ) : sortedFacts.length === 0 ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">{t("memory.currentEmpty")}</div>
           ) : (
             <div className="space-y-2">
-              {sortedMemories.map((memory) => (
-                <div
-                  key={memory.id || `${memory.type}-${memory.subject}-${memory.value}`}
-                  className="rounded-lg border border-border bg-background px-3 py-3"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1 space-y-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="outline">
-                          {tokenLabel(memory.state_category || memory.type)}
-                        </Badge>
-                        <Badge
-                          variant={
-                            memory.state_status === "needs_confirmation"
-                              ? "destructive"
-                              : memory.state_status === "active"
-                                ? "success"
-                                : "secondary"
-                          }
-                        >
-                          {tokenLabel(memory.state_status)}
-                        </Badge>
-                        <Badge variant="secondary">{tokenLabel(memory.subject)}</Badge>
-                        <Badge
-                          variant={
-                            memory.polarity === "dislike" || memory.polarity === "avoid"
-                              ? "destructive"
-                              : memory.polarity === "like" || memory.polarity === "want"
-                                ? "success"
-                                : "outline"
-                          }
-                        >
-                          {tokenLabel(memory.polarity)}
-                        </Badge>
-                      </div>
-                      <p className="break-words text-sm font-medium leading-6">
-                        {memory.value}
-                      </p>
-                      {memory.raw_text && memory.raw_text !== memory.value && (
-                        <p className="break-words text-xs leading-5 text-muted-foreground">
-                          原文：{memory.raw_text}
-                        </p>
-                      )}
-                      {memory.use_when.length > 0 && (
-                        <p className="break-words text-xs leading-5 text-muted-foreground">
-                          使用场景：{memory.use_when.join("、")}
-                        </p>
-                      )}
-                      {memory.state_status === "needs_confirmation" && memory.id && (
-                        <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2">
-                          <p className="text-xs text-amber-800 dark:text-amber-200">
-                            {memory.confirmation_question || "请确认系统对这条记忆的理解。"}
-                          </p>
-                          <Textarea
-                            className="min-h-16 rounded-md px-2 py-2 text-sm"
-                            value={drafts[memory.id] ?? memory.value}
-                            onChange={(event) =>
-                              setDrafts((current) => ({
-                                ...current,
-                                [memory.id as string]: event.target.value,
-                              }))
-                            }
-                          />
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={confirmingId === memory.id}
-                              onClick={() => void handleConfirmation(memory, false)}
-                            >
-                              <X className="size-4" />
-                              不正确
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              disabled={confirmingId === memory.id}
-                              onClick={() => void handleConfirmation(memory, true)}
-                            >
-                              <Check className="size-4" />
-                              确认
-                            </Button>
-                          </div>
+              {sortedFacts.map((fact) => {
+                const editing = editingKey === fact.memory_key
+                const historyOpen = openHistory.has(fact.memory_key)
+                const versions = historyData[fact.memory_key] ?? []
+                return (
+                  <div
+                    key={fact.memory_key}
+                    className="rounded-lg border border-border bg-background px-3 py-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="outline">{categoryLabel(fact.schema_key)}</Badge>
+                          <Badge variant="secondary">{fact.schema_key}</Badge>
                         </div>
-                      )}
-                      <div className="text-xs text-muted-foreground">
-                        {t("memory.updatedAt", {
-                          time: formatDate(memory.updated_at || memory.created_at) || "-",
-                        })}
+                        {editing ? (
+                          <div className="space-y-2">
+                            {editFieldsFor(fact).map((field) => (
+                              <div key={field.key} className="flex items-center gap-2">
+                                <label className="w-16 shrink-0 text-xs text-muted-foreground">
+                                  {field.label}
+                                </label>
+                                {field.key === "polarity" ? (
+                                  <select
+                                    className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
+                                    value={editValues[field.key] ?? field.value}
+                                    onChange={(event) =>
+                                      setEditValues((current) => ({
+                                        ...current,
+                                        [field.key]: event.target.value,
+                                      }))
+                                    }
+                                  >
+                                    {POLARITIES.map((option) => (
+                                      <option key={option.value} value={option.value}>
+                                        {option.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
+                                    value={editValues[field.key] ?? field.value}
+                                    onChange={(event) =>
+                                      setEditValues((current) => ({
+                                        ...current,
+                                        [field.key]: event.target.value,
+                                      }))
+                                    }
+                                  />
+                                )}
+                              </div>
+                            ))}
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={busyKey === fact.memory_key}
+                                onClick={() => setEditingKey(null)}
+                              >
+                                <X className="size-4" />
+                                取消
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={busyKey === fact.memory_key}
+                                onClick={() => void saveEdit(fact)}
+                              >
+                                <Check className="size-4" />
+                                保存
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="break-words text-sm font-medium leading-6">
+                            {factValueLabel(fact) || fact.evidence_quote}
+                          </p>
+                        )}
+                        {fact.evidence_quote && !editing && (
+                          <p className="break-words text-xs leading-5 text-muted-foreground">
+                            来源：{fact.evidence_quote}
+                          </p>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          {t("memory.updatedAt", {
+                            time: formatDate(fact.valid_from) || "-",
+                          })}
+                        </div>
+                        {historyOpen && versions.length > 0 && (
+                          <div className="space-y-1 rounded-md border border-border bg-muted/30 p-2">
+                            <p className="text-xs font-medium text-muted-foreground">版本历史</p>
+                            {versions.map((version) => (
+                              <div
+                                key={`${version.memory_key}-${version.version_no}`}
+                                className="flex items-center justify-between gap-2 text-xs"
+                              >
+                                <span>
+                                  v{version.version_no}：{factValueLabel(version) || version.evidence_quote}
+                                  {version.valid_to === null && !version.is_tombstone ? "（当前）" : ""}
+                                  {version.is_tombstone ? "（已遗忘）" : ""}
+                                </span>
+                                <span className="shrink-0 text-muted-foreground">
+                                  {formatDate(version.valid_from)}
+                                  {version.valid_to ? ` → ${formatDate(version.valid_to)}` : ""}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="size-8"
+                          onClick={() => void toggleHistory(fact)}
+                          title="历史"
+                          aria-label="历史"
+                        >
+                          {historyOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                        </Button>
+                        {!editing && (
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="size-8"
+                            onClick={() => startEdit(fact)}
+                            title="编辑"
+                            aria-label="编辑"
+                          >
+                            <Pencil className="size-4" />
+                          </Button>
+                        )}
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="size-8 text-red-600 hover:bg-red-500/10 hover:text-red-700 dark:text-red-300"
+                          disabled={busyKey === fact.memory_key}
+                          onClick={() => void handleForget(fact)}
+                          title={t("memory.forget")}
+                          aria-label={t("memory.forget")}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
                       </div>
                     </div>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="outline"
-                      className="size-8 shrink-0 text-red-600 hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-700 dark:text-red-300 dark:hover:text-red-200"
-                      disabled={!memory.id || forgettingId === memory.id}
-                      onClick={() => void handleForget(memory)}
-                      aria-label={t("memory.forget")}
-                      title={t("memory.forget")}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

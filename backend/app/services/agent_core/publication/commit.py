@@ -34,19 +34,21 @@ class TurnPublicationCommitter:
         model_name: str,
         agent_mode: str = "controller_v1",
     ) -> CommittedPublication:
+        custom_data = {
+            "agent_mode": agent_mode,
+            "turn_status": (
+                turn.status if turn is not None else answer.status
+            ),
+            "publication_mode": answer.publication_mode,
+            "receipt_backed": answer.receipt_backed,
+            "receipt_refs": list(answer.receipt_refs),
+        }
+        custom_data.update(dict(answer.custom_data or {}))
         message = ChatMessage(
             type="ai",
             content=answer.content,
             request_id=user_input.request_id,
-            custom_data={
-                "agent_mode": agent_mode,
-                "turn_status": (
-                    turn.status if turn is not None else answer.status
-                ),
-                "publication_mode": answer.publication_mode,
-                "receipt_backed": answer.receipt_backed,
-                "receipt_refs": list(answer.receipt_refs),
-            },
+            custom_data=custom_data,
         )
         graph = build_turn_execution_graph(
             turn,

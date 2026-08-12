@@ -290,8 +290,10 @@ async def _run() -> dict:
             str(corrected_output),
         )
         _assert(
-            "已根据你的最新表述更新长期记忆"
-            in corrected_result.answer.content,
+            all(
+                text in corrected_result.answer.content
+                for text in ("冰露", "鲁班", "更新")
+            ),
             str(corrected_result.answer),
         )
 

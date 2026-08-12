@@ -72,7 +72,10 @@ class ResearchSearchAdapter:
     ) -> dict[str, Any]:
         del arguments, context
         plan = _require_output(previous, "research_prepare_v1")
-        max_sources = max(3, min(int(plan.get("max_sources") or 8), 20))
+        # SearchRequest.max_results is bounded to 10 by the provider contract;
+        # clamping here keeps the adapter honest even when the controller
+        # proposes a larger research budget.
+        max_sources = max(3, min(int(plan.get("max_sources") or 8), 10))
         queries = [
             str(item).strip()
             for item in plan.get("queries", [])
@@ -236,4 +239,3 @@ __all__ = [
     "ResearchSearchAdapter",
     "ResearchSearchGateway",
 ]
-

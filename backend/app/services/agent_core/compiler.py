@@ -145,6 +145,11 @@ def compile_capability(name: str) -> CompiledCapability:
             domain="memory",
             reason="Create a chain tombstone for resolved facts.",
         ),
+        "research_read": CompiledCapability(
+            operation="research_read_v1",
+            domain="research",
+            reason="Read a bounded slice of one app-owned research run.",
+        ),
         "cancel_active_task": CompiledCapability(
             operation="cancel_active_task_v1",
             domain="task",

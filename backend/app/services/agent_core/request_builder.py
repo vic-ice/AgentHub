@@ -15,6 +15,7 @@ from app.services.agent_core.context_coordinator import (
 from app.services.agent_core.prompt_contracts import (
     ControllerModelRequest,
     TrustedMemoryContext,
+    TrustedResearchRunContext,
     TrustedTaskContext,
     TrustedWorkingStateContext,
 )
@@ -97,11 +98,59 @@ class ControllerRequestBuilder:
             task=task,
             through_sequence=journal_sequence_watermark,
         )
+        assembled.snapshot.research_runs = await self._research_context(
+            db,
+            user_id=user_input.user_id,
+            thread_id=user_input.thread_id,
+        )
         return ControllerModelRequest(
             model_name=model_name,
             current_user_message=user_input.content,
             context=assembled.snapshot,
         )
+
+    async def _research_context(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: UUID,
+        thread_id: UUID,
+    ) -> list[TrustedResearchRunContext]:
+        """Project compact session research run receipts for this thread."""
+
+        from app.services.research.orchestrator import (
+            get_research_orchestrator,
+        )
+
+        try:
+            result = await get_research_orchestrator().list_research_runs(
+                user_id=user_id,
+                limit=10,
+            )
+        except Exception:
+            return []
+        entries: list[TrustedResearchRunContext] = []
+        for run in result.runs:
+            if run.thread_id != thread_id:
+                continue
+            metadata = run.metadata if isinstance(run.metadata, dict) else {}
+            entries.append(
+                TrustedResearchRunContext(
+                    run_id=str(run.id),
+                    objective=str(run.objective or "")[:300],
+                    status=str(run.status or ""),
+                    conclusion=str(metadata.get("conclusion") or "")[:300],
+                    evidence_count=int(metadata.get("evidence_count") or 0),
+                    created_at=(
+                        run.created_at.isoformat()
+                        if run.created_at is not None
+                        else ""
+                    ),
+                )
+            )
+            if len(entries) >= 5:
+                break
+        return entries
 
     async def _memory_context(
         self,

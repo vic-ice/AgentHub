@@ -84,74 +84,64 @@ export type UserInput = {
   model_name?: string | null
   model_uuid?: string | null
   thinking_mode?: boolean
+  research_mode?: "chat" | "deep_research"
   timezone?: string
   custom_data?: Record<string, unknown> | null
 }
 
 // ==================== Memory Types ====================
 
-export type MemoryEvent = {
-  id: string | null
-  type: string
+export type MemoryAdminFact = {
+  schema_key: string
+  memory_key: string
   subject: string
-  value: string
-  polarity: string
-  confidence: number
-  user_id: string
-  thread_id: string | null
-  source: string
-  metadata: Record<string, unknown>
-  state_category: "profile" | "preference" | "relation" | "feedback" | "short_term" | null
-  state_key: string
-  state_status: "pending" | "active" | "needs_confirmation" | "superseded" | "expired" | "forgotten"
-  raw_text: string
-  state_value: Record<string, unknown>
-  relation: Record<string, unknown>
-  use_when: string[]
-  valid_until: string | null
-  confirmation_question: string
-  revision_of: string | null
-  superseded_by: string | null
-  forgotten: boolean
-  created_at: string | null
-  updated_at: string | null
+  predicate: string
+  value: Record<string, unknown>
+  qualifiers: Record<string, unknown>
+  evidence_quote: string
+  version_no: number
+  valid_from: string
+  valid_to: string | null
+  is_tombstone: boolean
 }
 
-export type UserStateConfirmRequest = {
-  user_id: string
-  accept: boolean
-  category?: MemoryEvent["state_category"]
-  state_key?: string
-  summary?: string
-  state_value?: Record<string, unknown>
-  relation?: Record<string, unknown>
-  use_when?: string[]
+export type MemoryAdminCurrentResponse = {
+  facts: MemoryAdminFact[]
 }
 
-export type CurrentMemoryListResult = {
-  user_id: string
-  memories: MemoryEvent[]
-  total: number
-  limit: number
-  offset: number
-  provider_sources: string[]
+export type MemoryAdminHistoryResponse = {
+  memory_key: string
+  versions: MemoryAdminFact[]
 }
 
-export type MemoryForgetRequest = {
+export type MemoryEditRequest = {
   user_id: string
-  memory_id?: string | null
-  subject?: string
-  value?: string
-  memory_type?: string
+  predicate: string
+  value: Record<string, unknown>
+  qualifiers?: Record<string, unknown>
+  evidence_quote?: string
   thread_id?: string | null
-  reason?: string
 }
 
-export type MemoryForgetResult = {
+export type MemoryForgetAdminRequest = {
   user_id: string
-  forgotten_count: number
-  forgotten_event_ids: string[]
-  provider_sources: string[]
+  predicate: string
+  identity?: Record<string, unknown>
+  qualifiers?: Record<string, unknown>
+  evidence_quote?: string
+  thread_id?: string | null
+}
+
+export type MemoryMutationReceipt = {
+  result_mode: "memory_mutation_receipt"
+  receipt_id: string
+  status: "committed" | "noop_duplicate"
+  mutations: {
+    memory_key: string
+    status: "created" | "revised" | "noop_duplicate" | "forgotten"
+    version: MemoryAdminFact
+    previous?: MemoryAdminFact | null
+  }[]
 }
 
 // ==================== Recommendation Signal Types ====================

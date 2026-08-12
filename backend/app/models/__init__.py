@@ -9,6 +9,7 @@ from app.models.book import (
 )
 from app.models.app_provider_config import AppProviderConfigRecord
 from app.models.memory import MemoryEventRecord
+from app.models.memory_management_event import MemoryManagementEvent
 from app.models.model import Model
 from app.models.model_capability import ModelCapabilityCheck
 from app.models.provider import Provider
@@ -39,6 +40,7 @@ __all__ = [
     "Model",
     "ModelCapabilityCheck",
     "MemoryEventRecord",
+    "MemoryManagementEvent",
     "Provider",
     "ProviderConnection",
     "ResearchEvidenceRecord",

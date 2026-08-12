@@ -37,18 +37,9 @@ class CoreCapabilityAvailability:
         cls,
         settings: Any | None = None,
     ) -> "CoreCapabilityAvailability":
-        if settings is None:
-            from app.infra.config import get_settings
-
-            settings = get_settings()
-        return cls(
-            conversation_read=bool(
-                settings.AGENT_CAPABILITY_CONVERSATION_V1
-            ),
-            memory_read=bool(settings.AGENT_CAPABILITY_MEMORY_READ_V1),
-            memory_write=bool(settings.AGENT_CAPABILITY_MEMORY_WRITE_V1),
-            task_control=bool(settings.AGENT_CAPABILITY_TASK_V1),
-        )
+        # All implemented core capabilities are available by default; the
+        # settings knob layer was removed to keep the runtime simple.
+        return cls.all_enabled()
 
     @classmethod
     def all_enabled(cls) -> "CoreCapabilityAvailability":

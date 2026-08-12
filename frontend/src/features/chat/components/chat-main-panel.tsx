@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ArrowDown, XIcon } from "lucide-react"
+import { ArrowDown, SearchCheck, XIcon } from "lucide-react"
 
 import type { LocalChatMessage, ToolCallInfo, ModelInfo } from "@/types"
 import { ModelSelector } from "@/features/chat/components/model-selector"
@@ -43,6 +43,7 @@ type ChatMainPanelProps = {
     quotedMessageId?: string,
     userContent?: string,
     followUpContext?: FollowUpSendContext,
+    researchMode?: boolean,
   ) => Promise<void>
   onStopStreaming: () => void
   onJumpToMessage?: (localId: string) => void // Jump to quoted message callback
@@ -87,6 +88,7 @@ export function ChatMainPanel({
 }: ChatMainPanelProps) {
   const { t } = useI18n()
   const [inputValue, setInputValue] = useState("")
+  const [researchMode, setResearchMode] = useState(false)
 
   // Quote state - show quoted content above input
   const [quotedContent, setQuotedContent] = useState<string | null>(null)
@@ -248,12 +250,20 @@ export function ChatMainPanel({
 
     setInputValue("")
     const currentQuotedMessageId = quotedMessageId
+    const currentResearchMode = researchMode
     setQuotedContent(null)
     setQuotedMessageId(null)
+    setResearchMode(false)
 
-    // Pass quotedMessageId and userContent for display purposes
-    void onSendMessage(finalContent, currentQuotedMessageId || undefined, trimmed, followUpContext)
-  }, [isComposerDisabled, isStreaming, onSendMessage, quotedContent, quotedMessageId])
+    // Pass quotedMessageId, userContent and one-shot research mode
+    void onSendMessage(
+      finalContent,
+      currentQuotedMessageId || undefined,
+      trimmed,
+      followUpContext,
+      currentResearchMode,
+    )
+  }, [isComposerDisabled, isStreaming, onSendMessage, quotedContent, quotedMessageId, researchMode])
 
   const handleSuggestionClick = useCallback(
     (value: string) => {
@@ -471,6 +481,18 @@ export function ChatMainPanel({
             </PromptInputBody>
             <PromptInputFooter className="pb-3 justify-between">
               <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={researchMode ? "default" : "outline"}
+                  className={cn("cursor-pointer gap-1.5", researchMode && "text-background")}
+                  disabled={isStreaming || isInitializing || isLoadingConversation}
+                  onClick={() => setResearchMode((prev) => !prev)}
+                  title="开启后这一轮将执行深度研究，发送后自动关闭"
+                >
+                  <SearchCheck className="size-3.5" />
+                  深度研究
+                </Button>
                 {/* Model selector - only show if there are available models */}
                 {hasAvailableModels && (
                   <ModelSelector

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 from app.schemas.chat import UserInput
@@ -16,6 +17,9 @@ from app.services.agent_core.publication.service import TrustedPublisher
 from app.services.agent_core.receipt_projector import (
     ReceiptContextProjector,
 )
+from app.services.agent_core.research_state_projection import (
+    project_research_controller_context,
+)
 from app.services.agent_core.turn_contracts import (
     ControllerRoundReceipt,
     TurnReceipt,
@@ -24,6 +28,7 @@ from app.services.agent_runtime.contracts import ExecutionContext
 
 
 MAX_CONTROLLER_ROUNDS = 6
+logger = logging.getLogger(__name__)
 
 
 class ControllerPort(Protocol):
@@ -44,6 +49,13 @@ class HarnessPort(Protocol):
     ) -> AgentCoreTurnResult: ...
 
 
+class IntentRouterPort(Protocol):
+    def decide(
+        self,
+        request: ControllerModelRequest,
+    ) -> ControllerOutput | None: ...
+
+
 class TurnControllerLoop:
     """Bound one Controller/ActionPlan/Receipt sequence to at most six rounds."""
 
@@ -54,6 +66,7 @@ class TurnControllerLoop:
         harness: HarnessPort,
         projector: ReceiptContextProjector | None = None,
         publisher: TrustedPublisher | None = None,
+        intent_router: IntentRouterPort | None = None,
         max_rounds: int = MAX_CONTROLLER_ROUNDS,
     ) -> None:
         value = int(max_rounds)
@@ -63,6 +76,7 @@ class TurnControllerLoop:
         self._harness = harness
         self._projector = projector or ReceiptContextProjector()
         self._publisher = publisher or TrustedPublisher()
+        self._intent_router = intent_router
         self._max_rounds = value
 
     async def run(
@@ -80,13 +94,21 @@ class TurnControllerLoop:
 
         for round_no in range(1, self._max_rounds + 1):
             try:
-                output = await self._controller.decide(request)
-            except Exception:
+                output = None
+                if self._intent_router is not None:
+                    output = self._intent_router.decide(request)
+                if output is None:
+                    output = await self._controller.decide(request)
+            except Exception as exc:
+                logger.exception(
+                    "Controller decision failed for request %s",
+                    context.request_id,
+                )
                 return _failed_turn(
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
-                    content="本轮控制决策未能安全完成。",
+                    content=_controller_failure_message(exc),
                 )
             try:
                 result = await self._harness.run(
@@ -96,6 +118,10 @@ class TurnControllerLoop:
                     user_input=user_input,
                 )
             except Exception:
+                logger.exception(
+                    "Agent harness execution failed for request %s",
+                    context.request_id,
+                )
                 rounds.append(
                     ControllerRoundReceipt(
                         round_no=round_no,
@@ -121,6 +147,12 @@ class TurnControllerLoop:
 
             answer = result.answer
             if (
+                answer is None
+                and result.plan is not None
+                and result.receipt is not None
+            ):
+                answer = _research_terminal_answer(result.receipt)
+            if (
                 answer is not None
                 and output.mode == "direct_answer"
                 and evidence
@@ -131,6 +163,10 @@ class TurnControllerLoop:
                         evidence=evidence,
                     )
                 except Exception:
+                    logger.exception(
+                        "Trusted synthesis publication failed for request %s",
+                        context.request_id,
+                    )
                     rounds.append(
                         ControllerRoundReceipt(
                             round_no=round_no,
@@ -180,13 +216,23 @@ class TurnControllerLoop:
                     plan_receipts=plan_receipts,
                     content="本轮回执缺少确定性的发布结果。",
                 )
-            if (
-                result.receipt.status not in {"completed", "partial"}
-                or not any(
-                    action.status == "completed"
-                    for action in result.receipt.actions
+            has_completed = any(
+                action.status == "completed"
+                for action in result.receipt.actions
+            )
+            if not has_completed:
+                reason = _first_failure_reason(result.receipt.actions)
+                return _failed_turn(
+                    request_id=context.request_id,
+                    rounds=rounds,
+                    plan_receipts=plan_receipts,
+                    content=(
+                        f"本轮未能完成：{reason}。请稍后重试或更换问法。"
+                        if reason
+                        else "本轮未能完成，请稍后重试或更换问法。"
+                    ),
                 )
-            ):
+            if result.receipt.status not in {"completed", "partial"}:
                 return _failed_turn(
                     request_id=context.request_id,
                     rounds=rounds,
@@ -203,10 +249,20 @@ class TurnControllerLoop:
                     content="本轮没有可供继续综合的受信结果。",
                 )
             receipts = [*request.context.receipts, *projected][-32:]
+            research_state = project_research_controller_context(
+                [
+                    action
+                    for plan_receipt in plan_receipts
+                    for action in plan_receipt.actions
+                ]
+            )
             request = request.model_copy(
                 update={
                     "context": request.context.model_copy(
-                        update={"receipts": receipts}
+                        update={
+                            "receipts": receipts,
+                            "trusted_research_state": research_state,
+                        }
                     )
                 }
             )
@@ -230,6 +286,88 @@ def _answer_status(answer: PublishedAnswer) -> str:
     if answer.status == "clarification_required":
         return "clarification_required"
     return "failed"
+
+
+def _first_failure_reason(actions) -> str:
+    for action in actions:
+        error = str(getattr(action, "error", "") or "").strip()
+        if error:
+            return error[:160]
+    return ""
+
+
+def _research_terminal_answer(receipt) -> PublishedAnswer | None:
+    """Turn the completed research evidence into a deterministic answer."""
+
+    from app.services.agent_core.publication.research_renderer import (
+        merge_research_reports,
+        research_terminal_answer,
+    )
+
+    reports = [
+        action
+        for action in receipt.actions
+        if action.operation == "research_report_v1"
+        and action.status == "completed"
+        and isinstance(action.output, dict)
+    ]
+    if not reports:
+        return None
+    merged = merge_research_reports(
+        [action.output for action in reports]
+    )
+    return research_terminal_answer(
+        merged,
+        receipt_refs=[action.action_id for action in reports],
+    )
+
+
+def _controller_failure_message(exc: Exception) -> str:
+    message = str(exc).lower()
+    class_name = type(exc).__name__.lower()
+    if any(
+        token in f"{class_name} {message}"
+        for token in (
+            "apiconnectionerror",
+            "connecterror",
+            "clientconnectorerror",
+            "connection error",
+            "cannot connect",
+            "connect call failed",
+            "connection refused",
+            "connection reset",
+            "network",
+            "dns",
+            "10013",
+        )
+    ):
+        return (
+            "模型服务网络连接失败：当前无法连接到模型供应商。"
+            "请检查网络、代理或模型供应商配置后重试。"
+        )
+    if any(token in message for token in ("timeout", "timed out", "超时")):
+        return "模型服务响应超时，请稍后重试或切换模型。"
+    if any(
+        token in message
+        for token in (
+            "quota",
+            "allocationquota",
+            "free tier",
+            "rate limit",
+            "429",
+        )
+    ):
+        return (
+            "模型服务暂时不可用：当前模型的额度已用尽或触发限流。"
+            "请切换模型或稍后重试。"
+        )
+    if any(token in message for token in ("401", "403", "auth", "api key")):
+        return "模型服务认证失败，请检查该模型的配置与密钥。"
+    if any(token in message for token in ("empty", "未输出")):
+        return "模型未返回有效内容，请稍后重试或切换模型。"
+    if "controllerclient" in class_name:
+        return "模型输出格式异常，请稍后重试或切换模型。"
+    return "本轮模型决策未能完成，请稍后重试或更换问法。"
 
 
 def _failed_turn(

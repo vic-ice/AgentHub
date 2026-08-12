@@ -13,11 +13,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services.agent_core.certification_contracts import (
-    AgentModeAdmission,
-)
 from app.services.conversation import ConversationJournalEvent
-from app.services.conversation.summary_builder import SummaryBuildError
 from app.services.conversation.summary_llm_provider import LLMSummaryProvider
 
 
@@ -58,16 +54,6 @@ class _SummaryModel:
         )
 
 
-def _admission(admitted: bool = True) -> AgentModeAdmission:
-    return AgentModeAdmission(
-        admitted=admitted,
-        certification_id="cert-1" if admitted else None,
-        reason=None if admitted else "certification_missing",
-        configuration_fingerprint="a" * 64,
-        controller_fingerprint="b" * 64,
-        source_commit_sha="c" * 40,
-    )
-
 
 def _events() -> list[ConversationJournalEvent]:
     exchange_id = uuid.uuid4()
@@ -103,7 +89,6 @@ class LLMSummaryProviderTests(unittest.IsolatedAsyncioTestCase):
         model = _SummaryModel()
         draft = await LLMSummaryProvider(
             model_name="fixture-model",
-            admission=_admission(),
             model_factory=lambda _name: model,
         ).summarize(previous=None, events=_events())
 
@@ -123,17 +108,6 @@ class LLMSummaryProviderTests(unittest.IsolatedAsyncioTestCase):
             model.schemas[0]["function"]["name"],
             "submit_conversation_summary",
         )
-
-    def test_denied_model_cannot_summarize(self) -> None:
-        with self.assertRaisesRegex(
-            SummaryBuildError,
-            "not_admitted",
-        ):
-            LLMSummaryProvider(
-                model_name="fixture-model",
-                admission=_admission(False),
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

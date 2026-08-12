@@ -90,10 +90,12 @@ class SearchGateway:
 
 def _runtime_providers() -> dict[str, SearchProvider]:
     from app.services.external_search.providers.anysearch import AnySearchProvider
+    from app.services.external_search.providers.ddgs import DDGSProvider
     from app.services.external_search.providers.tavily import TavilyProvider
 
     return {
         "tavily": TavilyProvider(),
+        "ddgs": DDGSProvider(),
         "anysearch": AnySearchProvider(),
     }
 

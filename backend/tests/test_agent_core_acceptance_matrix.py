@@ -37,7 +37,7 @@ class AgentCoreAcceptanceMatrixTests(unittest.TestCase):
                 (
                     "deep_book_research",
                     "深度搜索下最新的好评图书",
-                    "research_start",
+                    "web_search",
                 ),
             ],
         )

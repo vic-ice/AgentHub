@@ -1,7 +1,18 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+
+
+_SELF_SUBJECTS = frozenset({"self", "user", "me", "myself", "我", "本人"})
+
+
+def _subject_label(version: dict) -> str:
+    """主语标签：self 别名用“你”，实体用实体名。"""
+    subject = str((version or {}).get("subject") or "").strip()
+    if not subject or subject in _SELF_SUBJECTS:
+        return "你"
+    return subject
 
 
 def render_memory_mutation(output: dict) -> str:
@@ -40,7 +51,7 @@ def render_memory_mutation(output: dict) -> str:
             old_label = _value_label(previous)
             kind = _fact_kind(version_payload)
             if new_label and old_label:
-                lines.append(f"已把你的{kind}从{old_label}更新为{new_label}。")
+                lines.append(f"已把{_subject_label(version_payload)}的{kind}从{old_label}更新为{new_label}。")
                 continue
         if mutation_status in {"created", "revised"} and new_label:
             lines.append(f"已记录长期记忆：{new_label}。")
@@ -165,8 +176,9 @@ def _history_line(items: list[dict], scope: str) -> str:
         if len(names) == 1:
             return f"你之前叫{names[0]}。"
         return "你之前叫" + names[0] + "；更早叫" + "、".join(names[1:]) + "。"
+    subject = _subject_label(items[0])
     entities = [
-        _value_label(item)
+        _value_label(item, with_subject=False)
         for item in ordered
         if not item.get("is_tombstone")
     ]
@@ -174,8 +186,8 @@ def _history_line(items: list[dict], scope: str) -> str:
     if not entities:
         return ""
     if scope == "earliest":
-        return f"你最早有{entities[0]}。"
-    return "你之前有" + "、".join(entities) + "。"
+        return f"{subject}最早有{entities[0]}。"
+    return subject + "之前有" + "、".join(entities) + "。"
 
 
 def _timeline_line(ordered: list[dict]) -> str:
@@ -188,10 +200,17 @@ def _timeline_line(ordered: list[dict]) -> str:
                 continue
             if item.get("is_tombstone"):
                 continue
+            meta: list[str] = []
             if item.get("superseded_by") is None:
-                segments.append(f"{label}（当前）")
+                meta.append("当前")
             else:
-                segments.append(label)
+                started = _short_date(item.get("valid_from"))
+                if started:
+                    meta.append(f"{started} 起")
+            quote = str(item.get("evidence_quote") or "").strip()
+            if quote:
+                meta.append(f"你说“{quote[:30]}”")
+            segments.append(f"{label}（{'，'.join(meta)}）" if meta else label)
         if not segments:
             return ""
         return "你的名字变更：" + " → ".join(segments) + "。"
@@ -229,7 +248,7 @@ def _current_line(item: dict) -> str:
         return f"你的别名是{alias}。" if alias else ""
     if schema_key == "possession.entity":
         entity = str(value.get("entity") or qualifiers.get("entity") or "").strip()
-        return f"你有{entity}。" if entity else ""
+        return f"{_subject_label(item)}有{entity}。" if entity else ""
     if schema_key == "preference.entity":
         entity = str(value.get("entity") or "").strip()
         polarity = str(value.get("polarity") or "").lower()
@@ -240,12 +259,16 @@ def _current_line(item: dict) -> str:
             "avoid": "想避免",
             "neutral": "偏好",
         }.get(polarity, "偏好")
-        return f"你{verb}{entity}。" if entity else ""
+        return f"{_subject_label(item)}{verb}{entity}。" if entity else ""
     if schema_key == "relationship.entity":
         entity = str(value.get("entity") or "").strip()
         relation = str(value.get("relation") or "").strip()
         if entity and relation:
             return f"你和{entity}的关系：{relation}。"
+    if schema_key == "entity.name":
+        entity = str(value.get("entity") or "").strip()
+        name = str(value.get("name") or "").strip()
+        return f"{entity}的名字是{name}。" if entity and name else ""
     quote = str(item.get("evidence_quote") or "").strip()
     return quote
 
@@ -264,6 +287,8 @@ def _fact_kind(version: dict) -> str:
         return "喜好"
     if schema_key == "relationship.entity":
         return "关系"
+    if schema_key == "entity.name":
+        return "实体名称"
     if schema_key == "instruction.behavior":
         return "行为约定"
     if schema_key == "feedback.outcome":
@@ -271,7 +296,7 @@ def _fact_kind(version: dict) -> str:
     return "状态"
 
 
-def _value_label(version: dict) -> str:
+def _value_label(version: dict, *, with_subject: bool = True) -> str:
     if not isinstance(version, dict):
         return ""
     schema_key = str(version.get("schema_key") or "")
@@ -287,7 +312,25 @@ def _value_label(version: dict) -> str:
         return str(value.get("address") or "").strip()
     if schema_key == "identity.alias":
         return str(value.get("alias") or "").strip()
+    if schema_key == "entity.name":
+        entity = str(value.get("entity") or "").strip()
+        name = str(value.get("name") or "").strip()
+        return f"{entity}的名字是{name}" if entity and name else ""
     entity = str(value.get("entity") or qualifiers.get("entity") or "").strip()
+    if schema_key == "possession.entity":
+        prefix = _subject_label(version) if with_subject else ""
+        return f"{prefix}有{entity}" if entity else ""
+    if schema_key == "preference.entity":
+        polarity = str(value.get("polarity") or "").lower()
+        verb = {
+            "like": "喜欢",
+            "dislike": "不喜欢",
+            "want": "想要",
+            "avoid": "想避免",
+            "neutral": "偏好",
+        }.get(polarity, "偏好")
+        prefix = _subject_label(version) if with_subject else ""
+        return f"{prefix}{verb}{entity}" if entity else ""
     if entity:
         return entity
     for key in ("instruction", "target", "state", "outcome"):
@@ -310,3 +353,4 @@ __all__ = [
     "render_memory_search",
     "render_waiting",
 ]
+

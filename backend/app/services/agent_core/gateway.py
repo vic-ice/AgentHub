@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from pydantic import model_validator
@@ -15,10 +16,13 @@ from app.services.agent_core.harness import AgentCoreHarness
 from app.services.agent_core.request_builder import ControllerRequestBuilder
 from app.services.agent_core.turn_contracts import TurnReceipt
 from app.services.agent_core.turn_loop import TurnControllerLoop
+from app.services.memory.intent.router import MemoryIntentRouter
 from app.services.agent_runtime.contracts import ExecutionContext
 from app.services.tasks.resume_dispatcher import TaskResumeDispatcher
 from app.services.tasks.runner_contracts import TaskRunReceipt
 
+
+logger = logging.getLogger(__name__)
 
 AgentControllerMode = Literal["live"]
 AgentControllerStatus = Literal[
@@ -96,6 +100,7 @@ class AgentControllerGateway:
             turn = await TurnControllerLoop(
                 controller=self._controller,
                 harness=self._harness,
+                intent_router=MemoryIntentRouter(),
             ).run(
                 model_request=request,
                 context=context,
@@ -122,6 +127,10 @@ class AgentControllerGateway:
                 task_run=task_run,
             )
         except Exception as exc:
+            logger.exception(
+                "Agent gateway evaluation failed for request %s",
+                user_input.request_id,
+            )
             return AgentControllerAttempt(
                 mode="live",
                 status="failed",

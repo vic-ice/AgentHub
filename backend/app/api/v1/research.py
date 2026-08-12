@@ -15,6 +15,7 @@ from app.schemas.research import (
     ResearchVisitRequest,
 )
 from app.services.research import ResearchEvidence, get_research_orchestrator
+from app.services.research.report import ResearchReport, build_research_report
 
 api_router = APIRouter(prefix="/research", tags=["Research"])
 
@@ -42,6 +43,27 @@ async def inspect_research_state(
     limit_evidence: int = Query(default=20, ge=1, le=100),
 ) -> ResearchStateResult:
     return await get_research_orchestrator().inspect_research_state(
+        user_id=user_id,
+        run_id=run_id,
+        limit_steps=limit_steps,
+        limit_evidence=limit_evidence,
+    )
+
+
+@api_router.get("/{run_id}/report", response_model=ResearchReport)
+async def get_research_report(
+    run_id: UUID,
+    user_id: UUID = Query(...),
+    limit_steps: int = Query(default=100, ge=1, le=200),
+    limit_evidence: int = Query(default=100, ge=1, le=200),
+) -> ResearchReport:
+    """Return the built final report for one research run.
+
+    The report is the single user-facing artifact; raw evidence and
+    execution steps stay retrievable through the state endpoint and are
+    rendered on demand.
+    """
+    return await build_research_report(
         user_id=user_id,
         run_id=run_id,
         limit_steps=limit_steps,

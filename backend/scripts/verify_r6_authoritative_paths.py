@@ -37,7 +37,7 @@ def _imported_modules(relative: str) -> set[str]:
     return modules
 
 
-def _assert_default_flags() -> None:
+def _assert_no_capability_flags() -> None:
     fields = Settings.model_fields
     for name in (
         "AGENT_CAPABILITY_CONVERSATION_V1",
@@ -45,30 +45,41 @@ def _assert_default_flags() -> None:
         "AGENT_CAPABILITY_MEMORY_WRITE_V1",
         "AGENT_CAPABILITY_TASK_V1",
     ):
-        assert fields[name].default is False, f"{name} must fail closed"
+        assert name not in fields, f"{name} must be removed"
     assert fields["AGENT_LEGACY_MEMORY_WRITE_COMPAT"].default is False
 
 
 def _assert_projection_matrix() -> None:
-    disabled = CapabilityRegistry(
-        core_availability=CoreCapabilityAvailability()
+    production = CapabilityRegistry(
+        core_availability=CoreCapabilityAvailability.from_settings()
     )
-    assert disabled.enabled_names == ()
-    assert [
+    assert {
+        "conversation_read",
+        "remember_memory",
+        "search_memory",
+        "forget_memory",
+        "cancel_active_task",
+    } <= set(production.enabled_names)
+    names = {
         item["function"]["name"]
-        for item in controller_tool_schemas(disabled)
-    ] == ["request_clarification"]
+        for item in controller_tool_schemas(production)
+    }
+    assert "request_clarification" in names
+    assert "plan_task" in names
+    assert {"save_memory", "update_memory"}.isdisjoint(names)
 
+
+def _assert_explicit_matrix_still_restricts() -> None:
     read_only = CapabilityRegistry(
         core_availability=CoreCapabilityAvailability(
             conversation_read=True,
             memory_read=True,
         )
     )
-    assert read_only.enabled_names == (
-        "conversation_read",
-        "search_memory",
-    )
+    assert "conversation_read" in read_only.enabled_names
+    assert "search_memory" in read_only.enabled_names
+    assert "remember_memory" not in read_only.enabled_names
+    assert "forget_memory" not in read_only.enabled_names
     names = {
         item["function"]["name"]
         for item in controller_tool_schemas(read_only)
@@ -116,7 +127,7 @@ def _assert_versioned_memory_path() -> None:
     assert "canonical.status != \"ready\"" in runtime
     assert "MemoryVersionStore(session).commit" in runtime
     assert "MemoryVersionStore(session).forget" in runtime
-    assert "MemoryVersionStore(session).list_current" in runtime
+    assert "store.list_current" in runtime
     assert "_source_event_id(context)" in runtime
 
     imports = _imported_modules(
@@ -150,8 +161,9 @@ def _assert_versioned_memory_path() -> None:
 
 
 def _main() -> int:
-    _assert_default_flags()
+    _assert_no_capability_flags()
     _assert_projection_matrix()
+    _assert_explicit_matrix_still_restricts()
     _assert_journal_authority()
     _assert_versioned_memory_path()
     print(
@@ -161,7 +173,7 @@ def _main() -> int:
                 "journal_is_formal_history_authority": True,
                 "checkpointer_compatibility": "retired",
                 "core_capability_matrix_shared": True,
-                "core_capabilities_default_enabled": False,
+                "core_capabilities_default_enabled": True,
                 "model_memory_tools": [
                     "remember_memory",
                     "search_memory",

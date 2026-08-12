@@ -4,6 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.services.agent_runtime.failure_classifier import (
+    classify_capability_failure,
+)
 from app.services.agent_runtime.contracts import ActionPlan, ActionReceipt, PlanReceipt
 
 
@@ -105,6 +108,12 @@ def project_runtime_failure(
     if failed.status == "blocked":
         message = _blocked_message(stage)
         retryable = False
+    else:
+        disposition = classify_capability_failure(
+            status=failed.status,
+            error_type=str(failed.error or ""),
+        )
+        message, retryable = _disposition_projection(disposition, message)
 
     return RuntimeFailureSummary(
         stage=stage,
@@ -145,3 +154,28 @@ def _blocked_message(stage: FailureStage) -> str:
     if stage == "source_search":
         return "当前策略未允许执行外部检索，因此没有获得可核验来源。"
     return "当前执行策略未允许研究链继续运行。"
+
+
+def _disposition_projection(
+    disposition: str,
+    fallback: str,
+) -> tuple[str, bool]:
+    projections = {
+        "retry": (
+            "外部服务响应超时或网络波动，请稍后重试或更换问法。",
+            True,
+        ),
+        "degrade": (
+            "外部检索服务当前不可用，已尝试其他通道；请稍后重试。",
+            True,
+        ),
+        "skip": (
+            "本次检索没有返回可用内容（空结果或无效页面），已自动过滤。",
+            False,
+        ),
+        "abandon": (
+            "外部服务返回了硬错误，本次未能获得可核验来源。",
+            False,
+        ),
+    }
+    return projections.get(disposition, (fallback, True))

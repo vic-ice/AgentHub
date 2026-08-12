@@ -21,6 +21,7 @@ PublicationMode = Literal[
     "direct",
     "deterministic_receipt",
     "model_synthesis",
+    "deep_research",
 ]
 
 
@@ -119,6 +120,7 @@ class PublishedAnswer(AgentCoreModel):
     receipt_backed: bool = False
     receipt_refs: list[str] = Field(default_factory=list)
     publication_mode: PublicationMode = "direct"
+    custom_data: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod

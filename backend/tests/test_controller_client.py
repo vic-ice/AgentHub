@@ -12,7 +12,6 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services.agent_core.certification_contracts import AgentModeAdmission
 from app.infra.llm.history import model_history_projector
 from app.services.agent_core.capabilities import CapabilityRegistry
 from app.services.agent_core.core_capabilities import (
@@ -33,22 +32,10 @@ from app.services.agent_core.prompt_contracts import (
 )
 
 
-def _admission(*, admitted: bool = True) -> AgentModeAdmission:
-    return AgentModeAdmission(
-        admitted=admitted,
-        certification_id="cert-1" if admitted else None,
-        reason=None if admitted else "certification_missing",
-        configuration_fingerprint="a" * 64,
-        controller_fingerprint="b" * 64,
-        source_commit_sha="c" * 40,
-    )
-
-
-def _request(*, admitted: bool = True) -> ControllerModelRequest:
+def _request() -> ControllerModelRequest:
     return ControllerModelRequest(
         model_name="test-controller",
         current_user_message="我刚才说了什么，你怎么回答的？",
-        admission=_admission(admitted=admitted),
         context=ControllerContextSnapshot(
             conversation=[
                 ConversationContextTurn(role="user", content="你好我是冰露"),
@@ -355,24 +342,6 @@ class ControllerClientTests(unittest.IsolatedAsyncioTestCase):
             "Controller proposal contract",
         ):
             ControllerClient().parse(response)
-
-    async def test_denied_admission_never_builds_or_calls_model(self) -> None:
-        called = False
-
-        def factory(_name):
-            nonlocal called
-            called = True
-            return _BoundModel(AIMessage(content="should not run"))
-
-        with self.assertRaisesRegex(
-            ControllerClientError,
-            "agent_mode_denied",
-        ):
-            await ControllerClient(model_factory=factory).decide(
-                _request(admitted=False)
-            )
-        self.assertFalse(called)
-
 
 if __name__ == "__main__":
     unittest.main()

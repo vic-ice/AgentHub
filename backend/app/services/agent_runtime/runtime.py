@@ -55,6 +55,7 @@ _NATIVE_OPERATIONS = frozenset(
         "create_task_v1",
         "plan_task_v1",
         "cancel_active_task_v1",
+        "research_read_v1",
     }
 )
 
@@ -392,6 +393,13 @@ class SystemRuntime:
                     action.arguments,
                     context=context,
                     capability_registry=self._capability_registry,
+                )
+            elif action.operation == "research_read_v1":
+                from app.services.research.read import execute_research_read
+
+                output = await execute_research_read(
+                    action.arguments,
+                    context=context,
                 )
             elif action.operation == "cancel_active_task_v1":
                 from app.services.tasks.runtime import (

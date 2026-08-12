@@ -16,6 +16,9 @@ from app.services.agent_core.context_assembler import (
     ContextCompressionRequired,
     ConversationContextMaterial,
 )
+from app.services.agent_core.context_coordinator import (
+    ControllerContextCoordinator,
+)
 from app.services.conversation.journal_contracts import ConversationJournalEvent
 from app.services.conversation.summary_builder import (
     SummaryBuildError,
@@ -242,6 +245,126 @@ class ContextAssemblerTests(unittest.TestCase):
             ["旧请求摘要"],
         )
         self.assertEqual(len(result.snapshot.conversation), 2)
+
+
+class _FailingSummaryService:
+    async def summarize_next(self, *args, **kwargs):
+        raise SummaryBuildError("fixture summary model unavailable")
+
+
+class _FixtureLoader:
+    def __init__(self, material: ConversationContextMaterial) -> None:
+        self.material = material
+
+    async def load(self, db, **kwargs):
+        return self.material
+
+
+class _ProgressiveLoader:
+    """Return the full material first, then a shrunk one after summarization."""
+
+    def __init__(
+        self,
+        full: ConversationContextMaterial,
+        reduced: ConversationContextMaterial,
+    ) -> None:
+        self.full = full
+        self.reduced = reduced
+        self.calls = 0
+
+    async def load(self, db, **kwargs):
+        self.calls += 1
+        return self.reduced if self.calls > 1 else self.full
+
+
+class _RecordingSummaryService:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def summarize_next(self, *args, **kwargs):
+        self.calls += 1
+
+
+class ContextCoordinatorDegradationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_summary_failure_degrades_to_recent_window(self) -> None:
+        material = ConversationContextMaterial(events=_events(21))
+        coordinator = ControllerContextCoordinator(
+            loader=_FixtureLoader(material),
+            assembler=ContextAssembler(
+                recent_exchange_limit=20,
+                token_budget=50_000,
+            ),
+            summaries=_FailingSummaryService(),
+        )
+        result = await coordinator.prepare(
+            db=None,  # fixture loader ignores the session
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            current_request_id="degraded-request",
+            current_user_message="当前输入",
+            summary_provider=object(),
+        )
+        self.assertTrue(result.compression_degraded)
+        self.assertIn(
+            "summary_failed",
+            result.degradation_reason or "",
+        )
+        self.assertEqual(result.exact_exchange_count, 20)
+        self.assertIn(
+            "context_visibility_note",
+            result.snapshot.model_dump(mode="json"),
+        )
+        self.assertFalse(result.summary_used)
+
+    async def test_summary_rounds_exhausted_degrades(self) -> None:
+        material = ConversationContextMaterial(events=_events(21))
+        coordinator = ControllerContextCoordinator(
+            loader=_FixtureLoader(material),
+            assembler=ContextAssembler(
+                recent_exchange_limit=20,
+                token_budget=50_000,
+            ),
+            summaries=_RecordingSummaryService(),
+            max_summary_rounds=1,
+        )
+        result = await coordinator.prepare(
+            db=None,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            current_request_id="degraded-request",
+            current_user_message="当前输入",
+            summary_provider=object(),
+        )
+        self.assertTrue(result.compression_degraded)
+        self.assertIn(
+            "compression_rounds_exhausted",
+            result.degradation_reason or "",
+        )
+        self.assertEqual(result.exact_exchange_count, 20)
+
+    async def test_summary_success_path_is_not_degraded(self) -> None:
+        full = ConversationContextMaterial(events=_events(21))
+        reduced = ConversationContextMaterial(events=_events(1))
+        summaries = _RecordingSummaryService()
+        coordinator = ControllerContextCoordinator(
+            loader=_ProgressiveLoader(full, reduced),
+            assembler=ContextAssembler(
+                recent_exchange_limit=20,
+                token_budget=50_000,
+            ),
+            summaries=summaries,
+        )
+        result = await coordinator.prepare(
+            db=None,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            current_request_id="summary-ok-request",
+            current_user_message="当前输入",
+            summary_provider=object(),  # the recording service ignores it
+        )
+        self.assertEqual(summaries.calls, 1)
+        self.assertFalse(result.compression_degraded)
+        self.assertEqual(result.exact_exchange_count, 1)
 
 
 if __name__ == "__main__":

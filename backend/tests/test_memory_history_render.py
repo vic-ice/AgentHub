@@ -79,7 +79,10 @@ class MemoryHistoryRenderTests(unittest.TestCase):
         )
         self.assertEqual(
             rendered,
-            "你的名字变更：小红 → 小白 → 小红（当前）。",
+            "你的名字变更："
+            "小红（2026-01-01 起，你说“I am 小红”） → "
+            "小白（2026-02-01 起，你说“I am 小白”） → "
+            "小红（当前，你说“I am 小红”）。",
         )
 
     def test_current_possession_renders_entity(self) -> None:

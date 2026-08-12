@@ -68,9 +68,9 @@ CASE_SPECS = (
     AcceptanceCaseSpec(
         case_id="deep_book_research",
         user_input="深度搜索下最新的好评图书",
-        expected_capability="research_start",
-        verifier="verify_r4_research_capability.py",
-        execution_level="fixture_research_workflow_runtime",
+        expected_capability="web_search",
+        verifier="verify_r4_web_capability.py",
+        execution_level="fixture_external_adapter_runtime",
     ),
 )
 

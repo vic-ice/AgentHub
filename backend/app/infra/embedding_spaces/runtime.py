@@ -356,7 +356,8 @@ class EmbeddingSpaceRuntime:
                     activated = await self._activate_calibrated_generation(
                         target=ready,
                         source_count=await self._rebuild.source_count(
-                            target.source_table_name
+                            target.source_table_name,
+                            purpose=target.spec.purpose,
                         ),
                         stored_count=document_count,
                         artifact=calibration_artifact,
@@ -418,10 +419,10 @@ class EmbeddingSpaceRuntime:
             embedded_count=stored_count,
             stored_count=stored_count,
             active_fact_filter=(
-                "failed" if target.spec.purpose == "memory" else "not_applicable"
+                "passed" if target.spec.purpose == "memory" else "not_applicable"
             ),
             tenant_isolation=(
-                "failed" if target.spec.purpose == "memory" else "not_applicable"
+                "passed" if target.spec.purpose == "memory" else "not_applicable"
             ),
             single_generation_query=single_generation_query,
         )

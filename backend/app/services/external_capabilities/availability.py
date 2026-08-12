@@ -18,15 +18,14 @@ class ExternalCapabilityAvailability:
         cls,
         settings: Any | None = None,
     ) -> "ExternalCapabilityAvailability":
-        if settings is None:
-            from app.infra.config import get_settings
-
-            settings = get_settings()
+        # Deep Research is triggered by the user's explicit per-turn toggle
+        # (research_mode=deep_research), not by a model-invocable capability.
+        # research_start therefore stays out of the Chat tool set.
         return cls(
-            weather_get=bool(settings.AGENT_CAPABILITY_WEATHER_V1),
-            web_search=bool(settings.AGENT_CAPABILITY_WEB_V1),
-            book_search=bool(settings.AGENT_CAPABILITY_BOOK_V1),
-            research_start=bool(settings.AGENT_CAPABILITY_RESEARCH_V1),
+            weather_get=True,
+            web_search=True,
+            book_search=True,
+            research_start=False,
         )
 
     def enabled(self, capability: str) -> bool:
@@ -42,4 +41,3 @@ class ExternalCapabilityAvailability:
 
 
 __all__ = ["ExternalCapabilityAvailability"]
-
