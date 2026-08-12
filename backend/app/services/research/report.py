@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.services.memory import get_memory_orchestrator
+from app.infra.database import get_database
+from app.services.memory.version_store import MemoryVersionStore
 from app.services.research.contracts import ResearchEvidence, ResearchStateResult
 from app.services.research.orchestrator import get_research_orchestrator
 from app.services.research.verifier import (
@@ -142,19 +144,21 @@ def build_research_report_from_state(
 
 async def _build_memory_context(user_id: UUID) -> ResearchReportMemoryContext:
     try:
-        current = await get_memory_orchestrator().list_current_memories(
-            user_id=user_id,
-            limit=20,
-        )
+        database = get_database()
+        async with database.session() as session:
+            heads = await MemoryVersionStore(session).list_current(
+                user_id=user_id,
+                limit=50,
+            )
     except Exception:
         return ResearchReportMemoryContext()
     constraints = []
     memory_ids = []
-    for memory in current.memories:
-        if memory.id is not None:
-            memory_ids.append(str(memory.id))
+    for memory in heads:
+        memory_ids.append(str(memory.id))
         constraints.append(
-            f"{memory.type}:{memory.subject}:{memory.polarity}:{memory.value}"
+            f"{memory.schema_key}:{memory.subject}:"
+            + json.dumps(memory.value, ensure_ascii=False)
         )
     return ResearchReportMemoryContext(
         memory_ids=memory_ids,

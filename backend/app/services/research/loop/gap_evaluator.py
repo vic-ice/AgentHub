@@ -6,6 +6,7 @@ from app.services.research.evidence_quality import (
     assess_evidence_candidate,
     source_host,
 )
+from app.services.research.dedup import dedup_by_content
 from app.services.research.loop.contracts import (
     ResearchGapAssessment,
     ResearchLoopBudget,
@@ -113,10 +114,14 @@ def evaluate_research_evidence_gaps(
         for record, assessment in assessments
         if assessment.publishable
     ]
+    independent_records = dedup_by_content(
+        publishable_records,
+        text_of=_record_fingerprint_text,
+    )
     independent_sources = {
         source_host(record.source_url)
         or record.source_title.strip().lower()
-        for record in publishable_records
+        for record in independent_records
         if source_host(record.source_url) or record.source_title.strip()
     }
     reason_codes = list(
@@ -203,3 +208,14 @@ def _record_published_date(record: ResearchSourceRecord) -> str:
         or metadata.get("published_at")
         or ""
     ).strip()
+
+
+def _record_fingerprint_text(record: ResearchSourceRecord) -> str:
+    return " ".join(
+        part
+        for part in (
+            record.claim,
+            record.excerpt,
+        )
+        if part
+    )

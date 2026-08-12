@@ -12,6 +12,13 @@ import aiohttp
 from pydantic import BaseModel, Field
 
 from app.services.research.contracts import normalize_text
+from app.services.agent_runtime.failure_classifier import (
+    classify_capability_failure,
+)
+from app.services.research.content_quality_gate import (
+    check_content_garbage,
+    garbage_status,
+)
 from app.services.research.source_extraction import (
     ResearchSourceExtractionResult,
     extract_research_source_records,
@@ -158,6 +165,27 @@ async def fetch_research_source_document(
             metadata={**(metadata or {}), "fetch": fetch},
         )
 
+    is_garbage, garbage_reason = check_content_garbage(content)
+    if is_garbage:
+        status = garbage_status(garbage_reason)
+        return _result_from_document(
+            url=normalized_url,
+            final_url=fetch.get("final_url", normalized_url),
+            query=normalized_query,
+            subquestion=normalized_subquestion,
+            provider_source=provider_name,
+            status=status,
+            source_document=None,
+            include_extraction=include_extraction,
+            error=f"garbage_{garbage_reason}",
+            duration_ms=_duration_ms(started_at),
+            metadata={
+                **(metadata or {}),
+                "fetch": fetch,
+                "garbage_reason": garbage_reason,
+            },
+        )
+
     document = ResearchSourceDocument(
         source_type="web",
         source_title=title or fetch.get("final_url") or normalized_url,
@@ -300,6 +328,10 @@ def _result_from_document(
             "external_call": status not in {"invalid_url", "blocked_url"},
             "provider_source": provider_source,
             "fetch_status": status,
+            "disposition": classify_capability_failure(
+                status=final_status,
+                error_type=error or "",
+            ),
         },
     )
 

@@ -103,25 +103,25 @@ def _markdown(
     )
     if brief.findings:
         lines.extend(["", f"## {'主要发现' if zh else 'Key findings'}"])
-        for index, finding in enumerate(brief.findings, start=1):
+        sentences: list[str] = []
+        for finding in brief.findings:
             citations = "".join(
                 f" [{citation_number[source_id]}]"
                 for source_id in finding.source_ids
                 if source_id in citation_number
             )
-            lines.extend(
-                [
-                    "",
-                    f"{index}. **{_escape(finding.title)}**",
-                    f"   - {finding.summary}{citations}",
-                ]
-            )
+            sentence = f"{_escape(finding.title)}：{finding.summary}{citations}"
             if finding.why_it_matters:
                 label = "价值" if zh else "Why it matters"
-                lines.append(f"   - {label}：{finding.why_it_matters}")
+                sentence += f"（{label}：{finding.why_it_matters}）"
             if finding.caveat:
                 label = "注意" if zh else "Caveat"
-                lines.append(f"   - {label}：{finding.caveat}")
+                sentence += f"（{label}：{finding.caveat}）"
+            sentences.append(sentence)
+        if zh:
+            lines.append("综合来看，" + "；".join(sentences) + "。")
+        else:
+            lines.append("Overall, " + "; ".join(sentences) + ".")
     if sources:
         lines.extend(["", f"## {'来源' if zh else 'Sources'}"])
         for index, source in enumerate(sources, start=1):

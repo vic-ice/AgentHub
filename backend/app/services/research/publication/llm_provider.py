@@ -59,15 +59,33 @@ def _prompt(request: ResearchSynthesisRequest) -> str:
 
 
 def _message_text(response: Any) -> str:
+    """Extract assistant text; fall back to thinking blocks.
+
+    Some thinking-configured providers return the whole answer inside
+    content parts of type "thinking" with an empty final text part.
+    """
+
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
-        return "".join(
-            str(item.get("text") or "")
-            for item in content
-            if isinstance(item, dict) and item.get("type") == "text"
-        ).strip()
+        parts: list[str] = []
+        thinking: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            if item_type == "text":
+                text = str(item.get("text") or "")
+                if text.strip():
+                    parts.append(text)
+            elif item_type == "thinking":
+                thinking.append(str(item.get("thinking") or ""))
+        if parts:
+            return "".join(parts).strip()
+        if thinking:
+            return "".join(thinking).strip()
+        return ""
     return str(content or "").strip()
 
 

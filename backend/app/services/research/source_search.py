@@ -13,6 +13,9 @@ from app.services.research.contracts import (
     normalize_research_token,
     normalize_text,
 )
+from app.services.agent_runtime.failure_classifier import (
+    classify_capability_failure,
+)
 from app.services.research.source_extraction import (
     ResearchSourceExtractionResult,
     extract_research_source_records,
@@ -198,6 +201,10 @@ async def search_external_research_documents(
         status = "timeout"
     else:
         status = "hard_error"
+    disposition = classify_capability_failure(
+        status=status,
+        error_type=_last_attempt_error_type(result),
+    )
     return ResearchSourceSearchProviderResult(
         provider_name=result.provider or "external_search",
         provider_query=search_query,
@@ -207,6 +214,7 @@ async def search_external_research_documents(
         duration_ms=_duration_ms(started_at),
         metadata={
             "provider_source": result.provider or "external_search",
+            "disposition": disposition,
             "provider_raw": {
                 "outcome": result.outcome,
                 "attempts": [
@@ -341,3 +349,13 @@ def _quality(value: Any) -> str:
 
 def _duration_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
+
+
+def _last_attempt_error_type(result: Any) -> str:
+    attempts = getattr(result, "attempts", None)
+    if isinstance(attempts, list):
+        for attempt in reversed(attempts):
+            error_type = str(getattr(attempt, "error_type", "") or "")
+            if error_type:
+                return error_type
+    return str(getattr(result, "error_type", "") or "")

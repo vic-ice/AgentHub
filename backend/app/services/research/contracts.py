@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -298,6 +298,20 @@ class ResearchStateResult(BaseModel):
     steps: list[ResearchStep] = Field(default_factory=list)
     evidence: list[ResearchEvidence] = Field(default_factory=list)
     provider_sources: list[str] = Field(default_factory=list)
+
+
+class ResearchReadInput(BaseModel):
+    """Bounded on-demand read of one session research run."""
+
+    research_run_id: UUID
+    scope: Literal[
+        "report",
+        "findings",
+        "sources",
+        "evidence",
+        "steps",
+    ] = "report"
+    limit: int = Field(default=20, ge=1, le=50)
 
 
 class ResearchRunListResult(BaseModel):

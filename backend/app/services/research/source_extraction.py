@@ -218,7 +218,9 @@ def _source_document(item: dict[str, Any]) -> dict[str, Any]:
     payload = dict(item or {})
     metadata = dict(payload.get("metadata") or {})
     source_type = _source_type(payload.get("source_type") or metadata.get("source_type"))
-    source_title = normalize_text(
+    from app.services.research.text_cleaner import clean_source_title
+
+    source_title = clean_source_title(
         payload.get("source_title")
         or payload.get("title")
         or payload.get("name")
@@ -230,7 +232,9 @@ def _source_document(item: dict[str, Any]) -> dict[str, Any]:
         or payload.get("href")
         or metadata.get("source_url")
     )
-    content = normalize_text(
+    from app.services.research.text_cleaner import clean_text_for_context
+
+    content = clean_text_for_context(
         payload.get("content")
         or payload.get("raw_content")
         or payload.get("text")
@@ -326,8 +330,11 @@ def _select_claim_sentences(
     terms = _query_terms(f"{query} {subquestion}")
     scored: list[tuple[int, int, str, EvidenceQualityAssessment]] = []
     for index, sentence in enumerate(sentences):
+        candidate = _clean_claim_text(sentence)
+        if not candidate or not _claim_looks_complete(candidate):
+            continue
         assessment = assess_evidence_candidate(
-            claim=sentence,
+            claim=candidate,
             query=f"{query} {subquestion}".strip(),
             source_title=source_title,
             source_url=source_url,
@@ -335,10 +342,10 @@ def _select_claim_sentences(
         )
         if not assessment.publishable:
             continue
-        score = _sentence_score(sentence, terms)
+        score = _sentence_score(candidate, terms)
         if terms and score <= 0:
             continue
-        scored.append((score, -index, sentence, assessment))
+        scored.append((score, -index, candidate, assessment))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     selected: list[tuple[int, str, EvidenceQualityAssessment]] = []
     for _score, negative_index, sentence, assessment in scored[:limit]:
@@ -431,6 +438,49 @@ def _first_group(pattern: str, content: str) -> str:
 def _bounded_field(value: str, limit: int) -> str:
     normalized = normalize_text(value)
     return normalized if len(normalized) <= limit else normalized[:limit].rstrip()
+
+
+_NESTED_IMAGE_LINK_RE = re.compile(r"\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MARKDOWN_MARKERS_RE = re.compile(r"\*\*|__|`|\*")
+_LIST_LEADER_RE = re.compile(r"^\s*(?:[-*\u2022\u00b7]|\d+[.\u3001)\uff09])\s*")
+_ORPHAN_CLOSER_RE = re.compile(r"[\]\)\}]")
+_IMAGE_TOKEN_RE = re.compile(r"\b(?:png|jpg|jpeg|webp|gif|img)\b", re.IGNORECASE)
+_PAGE_META_RE = re.compile(r"\d{1,2}\s+\d{2}:\d{2}|\u6d4f\u89c8\u91cf[:\uff1a]\d+")
+_HEADING_MARKER_RE = re.compile(r"#{1,6}\s*")
+_PIPE_OR_HTML_TOKEN_RE = re.compile(r"\||\b(?:htm|html)\b", re.IGNORECASE)
+_PUNCT_RUN_RE = re.compile(r"[\u3002\uff01\uff1f!?\uff1b;]{2,}")
+
+
+def _clean_claim_text(text: str) -> str:
+    """Strip markdown/source artifacts from one candidate claim."""
+
+    cleaned = _NESTED_IMAGE_LINK_RE.sub(" ", text)
+    for _round in range(2):
+        cleaned = _MARKDOWN_IMAGE_RE.sub(" ", cleaned)
+        cleaned = _MARKDOWN_LINK_RE.sub(r"\1", cleaned)
+    cleaned = re.sub(r"\]\([^)]*\)", " ", cleaned)
+    cleaned = _MARKDOWN_MARKERS_RE.sub("", cleaned)
+    cleaned = _ORPHAN_CLOSER_RE.sub(" ", cleaned)
+    cleaned = _IMAGE_TOKEN_RE.sub(" ", cleaned)
+    cleaned = _PAGE_META_RE.sub(" ", cleaned)
+    cleaned = _HEADING_MARKER_RE.sub(" ", cleaned)
+    cleaned = _PIPE_OR_HTML_TOKEN_RE.sub(" ", cleaned)
+    cleaned = _LIST_LEADER_RE.sub("", cleaned)
+    cleaned = re.sub(r"^\s*\u7b80\u4ecb[:\uff1a]\s*", "", cleaned)
+    cleaned = normalize_text(cleaned)
+    return _PUNCT_RUN_RE.sub(lambda match: match.group(0)[0], cleaned)
+
+
+def _claim_looks_complete(text: str) -> bool:
+    """Skip fragments that are neither complete sentences nor book titles."""
+
+    if not text:
+        return False
+    if text[-1] in "\u3002\uff01\uff1f!?.":
+        return True
+    return "\u300a" in text and "\u300b" in text and len(text) >= 15
 
 
 def _split_sentences(content: str) -> list[str]:

@@ -9,6 +9,7 @@ from app.services.research.evidence_quality import (
     assess_evidence_candidate,
     source_host,
 )
+from app.services.research.dedup import dedup_by_content
 from app.services.research.verifier.contracts import (
     ClaimAdmissionDecision,
     ClaimForVerification,
@@ -226,10 +227,14 @@ class ResearchVerifier:
                 corroborated=False,
             )
 
+        independent_records = dedup_by_content(
+            supporting,
+            text_of=_evidence_fingerprint_text,
+        )
         independent_sources = {
             source_host(item.source_url)
             or item.source_title.strip().lower()
-            for item in supporting
+            for item in independent_records
             if source_host(item.source_url) or item.source_title.strip()
         }
         corroborated = len(independent_sources) >= min_independent_sources
@@ -398,3 +403,14 @@ def _evidence_published_date(evidence: ResearchEvidence) -> str:
         or record_metadata.get("published_date")
         or ""
     ).strip()
+
+
+def _evidence_fingerprint_text(evidence: ResearchEvidence) -> str:
+    return " ".join(
+        part
+        for part in (
+            evidence.claim,
+            evidence.excerpt,
+        )
+        if part
+    )

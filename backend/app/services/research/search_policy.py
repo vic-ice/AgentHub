@@ -12,7 +12,13 @@ from app.services.research.query import normalize_research_query
 
 SearchTimeRange = Literal["day", "week", "month", "year"]
 
-_BOOK_RE = re.compile(r"图书|书籍|书单|新书|童书|\bbooks?\b", re.IGNORECASE)
+_BOOK_RE = re.compile(
+    r"图书(?!馆)|书籍|书单|新书|旧书|童书|"
+    r"这种书|这类书|此类书|风格(?:的)?书|同类型(?:的)?书|"
+    r"类似.{0,12}书|像.{0,12}书|"
+    r"\bbooks?\b",
+    re.IGNORECASE,
+)
 _BOOK_MARKETPLACE_DOMAINS = [
     "taobao.com",
     "tmall.com",
@@ -94,6 +100,8 @@ def build_research_search_request(
             except (TypeError, ValueError):
                 max_results = 5
             requirements.append("result_limit")
+    if "book" in requirements and not include_domains:
+        include_domains.extend(["book.douban.com", "douban.com"])
     if (
         "book" in requirements
         and any(domain.endswith("douban.com") for domain in include_domains)

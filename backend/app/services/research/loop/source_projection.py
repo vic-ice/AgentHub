@@ -4,6 +4,7 @@ from typing import Any
 
 from app.services.research.contracts import normalize_text
 from app.services.research.evidence_quality import classify_source, source_quality
+from app.services.research.content_quality_gate import check_content_garbage
 from app.services.research.loop.contracts import (
     ResearchRoundSources,
     ResearchSearchTask,
@@ -65,7 +66,7 @@ def project_research_search_output(
             },
         )
 
-    documents = _source_documents(output)
+    documents, garbage_reasons = _source_documents(output)
     extraction = extract_research_source_records(
         query=search_task.query,
         subquestion=search_task.objective,
@@ -98,12 +99,16 @@ def project_research_search_output(
             "provider_metadata": output.get("metadata") or {},
             "attempts": output.get("attempts") or [],
             "extraction_status": extraction.status,
+            "garbage_dropped_count": len(garbage_reasons),
+            "garbage_reasons": garbage_reasons,
             "execution_disposition": "executed",
         },
     )
 
 
-def _source_documents(output: dict[str, Any]) -> list[dict[str, Any]]:
+def _source_documents(
+    output: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
     existing = _nested(output, ("extraction", "source_records"))
     if not isinstance(existing, list):
         existing = output.get("source_records")
@@ -112,7 +117,7 @@ def _source_documents(output: dict[str, Any]) -> list[dict[str, Any]]:
             item
             for item in existing
             if isinstance(item, dict)
-        ]
+        ], []
 
     result = output.get("result")
     hits = result.get("results") if isinstance(result, dict) else None
@@ -121,6 +126,7 @@ def _source_documents(output: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(hits, list):
         hits = output.get("source_documents")
     documents: list[dict[str, Any]] = []
+    garbage_reasons: list[str] = []
     for item in hits if isinstance(hits, list) else []:
         if not isinstance(item, dict):
             continue
@@ -134,6 +140,13 @@ def _source_documents(output: dict[str, Any]) -> list[dict[str, Any]]:
         title = normalize_text(item.get("title") or item.get("source_title"))
         url = normalize_text(item.get("url") or item.get("source_url"))
         if not content or not (title or url):
+            continue
+        is_garbage, garbage_reason = check_content_garbage(
+            content,
+            min_chars=None,
+        )
+        if is_garbage:
+            garbage_reasons.append(garbage_reason)
             continue
         score = item.get("score")
         relevance = 3
@@ -164,7 +177,7 @@ def _source_documents(output: dict[str, Any]) -> list[dict[str, Any]]:
                 },
             }
         )
-    return documents
+    return documents, garbage_reasons
 
 
 def _last_attempt_error_type(output: dict[str, Any]) -> str:
