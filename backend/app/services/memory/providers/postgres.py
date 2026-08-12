@@ -124,13 +124,31 @@ def _query_terms(query: str, max_terms: int = 8) -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
     for term in raw_terms:
-        if len(term) < 2 or term in _QUERY_STOPWORDS or term in seen:
-            continue
-        seen.add(term)
-        terms.append(term)
-        if len(terms) >= max_terms:
-            break
+        for expanded in _expand_query_term(term):
+            if (
+                len(expanded) < 2
+                or expanded in _QUERY_STOPWORDS
+                or expanded in seen
+            ):
+                continue
+            seen.add(expanded)
+            terms.append(expanded)
+            if len(terms) >= max_terms:
+                return terms
     return terms
+
+
+def _expand_query_term(term: str) -> list[str]:
+    item = str(term or "").strip()
+    if not item:
+        return []
+    expanded = [item]
+    cjk = "".join(re.findall(r"[\u3400-\u9fff]", item))
+    if len(cjk) >= 2:
+        expanded.extend(cjk[index : index + 2] for index in range(len(cjk) - 1))
+    if len(cjk) > 2 and cjk.endswith(("猫", "狗")):
+        expanded.append(cjk[:-1])
+    return expanded
 
 
 class PostgresMemoryProvider(MemoryProvider):

@@ -31,17 +31,6 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
-        WHERE conname = 'fk_memory_events_source_event'
-    ) THEN
-        ALTER TABLE public.memory_events
-            ADD CONSTRAINT fk_memory_events_source_event
-            FOREIGN KEY (source_event_id)
-            REFERENCES public.conversation_events(id)
-            ON DELETE SET NULL;
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
         WHERE conname = 'ck_memory_events_v2_operation'
     ) THEN
         ALTER TABLE public.memory_events

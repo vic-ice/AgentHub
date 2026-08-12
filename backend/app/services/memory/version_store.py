@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation_event import ConversationEventRecord
 from app.models.memory import MemoryEventRecord
+from app.models.memory_management_event import MemoryManagementEvent
 from app.services.memory.version_contracts import (
     CanonicalMemoryFact,
     MemoryMutation,
@@ -231,6 +232,34 @@ class MemoryVersionStore:
         )
         return [_record_to_version(item) for item in result.scalars().all()]
 
+    async def list_current_by_memory_keys(
+        self,
+        *,
+        user_id: UUID,
+        memory_keys: list[str] | tuple[str, ...],
+    ) -> list[MemoryVersionRecord]:
+        keys = sorted(
+            {
+                str(memory_key or "").strip()
+                for memory_key in memory_keys
+                if str(memory_key or "").strip()
+            }
+        )
+        if not keys:
+            return []
+        keys = keys[:500]
+        stmt = select(MemoryEventRecord).where(
+            MemoryEventRecord.user_id == user_id,
+            MemoryEventRecord.memory_key.in_(keys),
+            MemoryEventRecord.superseded_by.is_(None),
+            MemoryEventRecord.is_deleted.is_(False),
+            MemoryEventRecord.operation != "forget",
+        )
+        result = await self._session.execute(
+            stmt.order_by(MemoryEventRecord.valid_from.desc()).limit(len(keys))
+        )
+        return [_record_to_version(item) for item in result.scalars().all()]
+
     async def list_history(
         self,
         *,
@@ -419,22 +448,40 @@ class MemoryVersionStore:
         source_event_id: UUID,
         user_id: UUID,
         thread_id: UUID | None,
-    ) -> ConversationEventRecord:
-        stmt = select(ConversationEventRecord).where(
-            ConversationEventRecord.id == source_event_id,
-            ConversationEventRecord.user_id == user_id,
-            ConversationEventRecord.role == "user",
-        )
-        if thread_id is not None:
-            stmt = stmt.where(
-                ConversationEventRecord.thread_id == thread_id
+    ):
+        """Resolve an owned write source: conversation event or admin action.
+
+        Both source kinds expose ``content`` so the evidence-quote check is
+        identical; the admin ledger makes panel edits first-class user
+        statements without weakening the provenance contract.
+        """
+
+        result = await self._session.execute(
+            select(ConversationEventRecord).where(
+                ConversationEventRecord.id == source_event_id,
+                ConversationEventRecord.user_id == user_id,
+                ConversationEventRecord.role == "user",
             )
-        result = await self._session.execute(stmt)
+        )
         source = result.scalar_one_or_none()
         if source is None:
-            raise MemoryVersionSourceError(
-                "memory commits require an owned user conversation event"
+            admin_result = await self._session.execute(
+                select(MemoryManagementEvent).where(
+                    MemoryManagementEvent.id == source_event_id,
+                    MemoryManagementEvent.user_id == user_id,
+                )
             )
+            source = admin_result.scalar_one_or_none()
+        if source is None:
+            raise MemoryVersionSourceError(
+                "memory commits require an owned user source event"
+            )
+        if thread_id is not None:
+            source_thread_id = getattr(source, "thread_id", None)
+            if source_thread_id is not None and source_thread_id != thread_id:
+                raise MemoryVersionSourceError(
+                    "memory source event belongs to another conversation"
+                )
         return source
 
     async def _lock_memory_keys(

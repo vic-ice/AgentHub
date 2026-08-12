@@ -1,10 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
 import re
 from typing import Any
 
+from app.services.memory.entity_normalizer import normalize_entity_fact
+from app.services.memory.guardrails import (
+    guard_memory_forget_source,
+    guard_memory_write_source,
+)
 from app.services.memory.version_contracts import (
     CanonicalMemoryTarget,
     CanonicalMemoryFact,
@@ -58,6 +63,24 @@ class MemoryCanonicalizer:
         *,
         source_text: str,
     ) -> MemoryCanonicalizationResult:
+        guard = guard_memory_write_source(source_text)
+        if guard.blocked:
+            if guard.reason_code in {
+                "memory_write_question_source",
+                "memory_write_uncertain_source",
+            }:
+                return MemoryCanonicalizationResult(
+                    status="clarification_required",
+                    clarification_question=(
+                        "这句话像是在提问或表达不确定，我不会直接保存为长期事实。"
+                        "如果要我记住，请用确定陈述再说一遍。"
+                    ),
+                    reason_codes=[guard.reason_code],
+                )
+            return MemoryCanonicalizationResult(
+                status="rejected",
+                reason_codes=[guard.reason_code],
+            )
         if not assertions:
             return MemoryCanonicalizationResult(
                 status="clarification_required",
@@ -113,6 +136,12 @@ class MemoryCanonicalizer:
         *,
         source_text: str,
     ) -> MemoryTargetResolutionResult:
+        guard = guard_memory_forget_source(source_text)
+        if guard.blocked:
+            return MemoryTargetResolutionResult(
+                status="rejected",
+                reason_codes=[guard.reason_code],
+            )
         if not targets:
             return MemoryTargetResolutionResult(
                 status="clarification_required",
@@ -164,6 +193,11 @@ class MemoryCanonicalizer:
                     status="rejected",
                     reason_codes=["non_json_memory_target"],
                 )
+            identity_value, qualifiers = normalize_entity_fact(
+                schema.schema_key,
+                identity_value,
+                qualifiers,
+            )
             missing_identity = _missing_fields(
                 identity_value,
                 schema.identity_value_fields,
@@ -220,12 +254,13 @@ class MemoryCanonicalizer:
                 "unknown_memory_predicate",
             )
 
-        subject = _normalize_text(assertion.subject).lower()
+        subject_raw = _normalize_text(assertion.subject)
+        subject = subject_raw.lower()
         if schema.self_subject_only and subject not in _SELF_SUBJECTS:
             return _clarification(
-                "请明确这是关于你本人的事实，还是关于其他人的信息。",
-                "subject_scope_ambiguous",
-            )
+                    "请明确这是关于你本人的事实，还是关于其他人的信息。",
+                    "subject_scope_ambiguous",
+                )
         canonical_subject = "self" if schema.self_subject_only else subject
 
         evidence = _normalize_text(assertion.evidence_quote)
@@ -251,6 +286,11 @@ class MemoryCanonicalizer:
                 status="rejected",
                 reason_codes=["non_json_memory_value"],
             )
+        value, qualifiers = normalize_entity_fact(
+            schema.schema_key,
+            value,
+            qualifiers,
+        )
 
         missing_value = _missing_fields(
             value,
@@ -277,6 +317,12 @@ class MemoryCanonicalizer:
             )
 
         identity = _identity_payload(schema, value, qualifiers)
+        if (
+            not schema.self_subject_only
+            and schema.schema_key != "entity.name"
+            and canonical_subject not in _SELF_SUBJECTS
+        ):
+            identity = {"subject": canonical_subject, **identity}
         memory_key = _memory_key(schema, identity)
         canonical_payload = {
             "schema_key": schema.schema_key,
@@ -409,3 +455,5 @@ def _stable_json(value: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+

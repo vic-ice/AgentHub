@@ -16,8 +16,13 @@ from app.services.memory.version_contracts import (
     RememberMemoryRequest,
     SearchMemoryRequest,
 )
+from app.services.memory.vector_recall import recall_memory_keys
 from app.services.memory.version_search import VersionedMemorySearch
 from app.services.memory.version_store import MemoryVersionStore
+from app.services.memory.write_gate import (
+    validate_forget_write,
+    validate_remember_write,
+)
 
 
 async def execute_remember_memory(
@@ -29,6 +34,12 @@ async def execute_remember_memory(
 ) -> dict[str, Any]:
     request = RememberMemoryRequest.model_validate(arguments)
     source_text = _source_text(context=context, user_input=user_input)
+    ok, reason = validate_remember_write(
+        source_text,
+        [item.model_dump(mode="json") for item in request.assertions],
+    )
+    if not ok:
+        return {"status": "rejected", "reason": reason}
     canonical = MemoryCanonicalizer().canonicalize(
         request.assertions,
         source_text=source_text,
@@ -57,23 +68,37 @@ async def execute_search_memory(
     context: ExecutionContext,
 ) -> dict[str, Any]:
     request = SearchMemoryRequest.model_validate(arguments)
+    semantic_memory_keys = ()
+    if request.scope == "current" and request.query:
+        semantic_memory_keys = await recall_memory_keys(
+            user_id=context.user_id,
+            query=request.query,
+        )
     database = get_database()
     async with database.session() as session:
         store = MemoryVersionStore(session)
-        records = (
-            await store.list_current(
-                user_id=context.user_id,
-                limit=200,
-            )
-            if request.scope == "current"
-            else await store.list_history(
+        if request.scope == "current":
+            records = await store.list_current(
                 user_id=context.user_id,
                 limit=500,
             )
-        )
+            if semantic_memory_keys:
+                records = _merge_records(
+                    records,
+                    await store.list_current_by_memory_keys(
+                        user_id=context.user_id,
+                        memory_keys=semantic_memory_keys,
+                    ),
+                )
+        else:
+            records = await store.list_history(
+                user_id=context.user_id,
+                limit=500,
+            )
     return VersionedMemorySearch().search(
         records,
         request,
+        semantic_memory_keys=semantic_memory_keys,
     ).model_dump(mode="json")
 
 
@@ -86,6 +111,9 @@ async def execute_forget_memory(
 ) -> dict[str, Any]:
     request = ForgetMemoryRequest.model_validate(arguments)
     source_text = _source_text(context=context, user_input=user_input)
+    ok, reason = validate_forget_write(source_text)
+    if not ok:
+        return {"status": "rejected", "reason": reason}
     resolution = MemoryCanonicalizer().resolve_targets(
         request.targets,
         source_text=source_text,
@@ -155,3 +183,15 @@ def _missing_source_result() -> dict[str, Any]:
         "status": "failed",
         "error": "source user event is not committed",
     }
+
+
+def _merge_records(primary: list[Any], extra: list[Any]) -> list[Any]:
+    seen = {getattr(item, "id", None) for item in primary}
+    merged = list(primary)
+    for item in extra:
+        item_id = getattr(item, "id", None)
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        merged.append(item)
+    return merged

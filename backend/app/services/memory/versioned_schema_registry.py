@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
@@ -95,6 +95,26 @@ class VersionedMemorySchemaRegistry:
                 self_subject_only=True,
             ),
             VersionedMemorySchema(
+                schema_key="entity.name",
+                version=1,
+                category="relate",
+                predicates=frozenset(
+                    {
+                        "entity_name",
+                        "name_of",
+                        "object_name",
+                        "named_entity",
+                        "名称",
+                        "名称为",
+                        "英文名",
+                    }
+                ),
+                cardinality="multi",
+                required_value_fields=("entity", "name"),
+                identity_value_fields=("entity",),
+                self_subject_only=False,
+            ),
+            VersionedMemorySchema(
                 schema_key="preference.entity",
                 version=1,
                 category="prefer",
@@ -118,7 +138,7 @@ class VersionedMemorySchemaRegistry:
                 identity_value_fields=("entity",),
                 required_qualifier_fields=(),
                 identity_qualifier_fields=(),
-                self_subject_only=True,
+                self_subject_only=False,
             ),
             VersionedMemorySchema(
                 schema_key="relationship.entity",
@@ -142,7 +162,7 @@ class VersionedMemorySchemaRegistry:
                 identity_value_fields=("entity",),
                 required_qualifier_fields=(),
                 identity_qualifier_fields=(),
-                self_subject_only=True,
+                self_subject_only=False,
             ),
             VersionedMemorySchema(
                 schema_key="possession.entity",
@@ -171,7 +191,7 @@ class VersionedMemorySchemaRegistry:
                 identity_value_fields=("entity",),
                 required_qualifier_fields=(),
                 identity_qualifier_fields=(),
-                self_subject_only=True,
+                self_subject_only=False,
             ),
             VersionedMemorySchema(
                 schema_key="instruction.behavior",
@@ -193,7 +213,7 @@ class VersionedMemorySchemaRegistry:
                 cardinality="multi",
                 required_value_fields=("instruction",),
                 identity_value_fields=("instruction",),
-                self_subject_only=True,
+                self_subject_only=False,
             ),
             VersionedMemorySchema(
                 schema_key="feedback.outcome",
@@ -211,7 +231,7 @@ class VersionedMemorySchemaRegistry:
                 cardinality="multi",
                 required_value_fields=("target", "outcome"),
                 identity_value_fields=("target",),
-                self_subject_only=True,
+                self_subject_only=False,
             ),
             VersionedMemorySchema(
                 schema_key="temporary.state",
@@ -231,7 +251,7 @@ class VersionedMemorySchemaRegistry:
                 cardinality="multi",
                 required_value_fields=("state", "value"),
                 identity_value_fields=("state",),
-                self_subject_only=True,
+                self_subject_only=False,
             ),
         )
         self._by_key = {item.schema_key: item for item in schemas}
@@ -263,7 +283,8 @@ class VersionedMemorySchemaRegistry:
 
     @property
     def schema_keys(self) -> tuple[str, ...]:
-        return tuple(self._by_key)
+        """Externally controlled v1 schema keys; internal schemas are not exposed."""
+        return tuple(key for key in self._by_key if key != "entity.name")
 
     @property
     def categories(self) -> tuple[MemoryCategory, ...]:
@@ -373,3 +394,4 @@ def _normalize_predicate(value: str) -> str:
         .replace(" ", "_")
         .replace("-", "_")
     )
+
