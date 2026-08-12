@@ -86,6 +86,17 @@ def extract_research_source_records(
             )
             continue
 
+        booklist_records = _booklist_records(
+            document,
+            query=normalized_query,
+            subquestion=normalized_subquestion,
+            provider_source=normalized_provider,
+            index=index,
+        )
+        if booklist_records:
+            source_records.extend(booklist_records)
+            continue
+
         explicit_assessment = (
             assess_evidence_candidate(
                 claim=document["claim"],
@@ -352,6 +363,110 @@ def _select_claim_sentences(
         selected.append((-negative_index, sentence, assessment))
     selected.sort(key=lambda item: item[0])
     return selected
+
+
+def _booklist_records(
+    document: dict[str, Any],
+    *,
+    query: str,
+    subquestion: str,
+    provider_source: str,
+    index: int,
+    limit: int = 12,
+) -> list[ResearchSourceRecord]:
+    """Split a booklist/editorial page into one record per book.
+
+    Pages like "10???????????" contain multiple \u300a\u4e66\u540d\u300b
+    entries with author and description; each book becomes its own claim so the
+    final writer can present tiers instead of a single sentence fragment.
+    """
+
+    content = str(document.get("content") or "")
+    titles = re.findall(r"\u300a([^\u300b]{2,80})\u300b", content)
+    if len(titles) < 3:
+        return []
+    records: list[ResearchSourceRecord] = []
+    seen_claims: set[str] = set()
+    for title in titles:
+        title_clean = normalize_text(title)
+        if not title_clean:
+            continue
+        if any(record.claim.startswith("\u300a" + title_clean + "\u300b") for record in records):
+            continue
+        claim = _clean_claim_text(_book_context(content, title_clean))
+        if len(claim) < 20 or claim in seen_claims:
+            continue
+        if not claim.startswith("\u300a"):
+            continue
+        seen_claims.add(claim)
+        assessment = assess_evidence_candidate(
+            claim=claim,
+            query=f"{query} {subquestion}".strip(),
+            source_title=document["source_title"],
+            source_url=document["source_url"],
+            published_date=document["published_date"],
+        )
+        if not assessment.publishable:
+            continue
+        records.append(
+            ResearchSourceRecord(
+                source_type=document["source_type"],
+                source_title=document["source_title"],
+                source_url=document["source_url"],
+                claim=claim,
+                excerpt=claim,
+                quality=document["quality"],
+                relevance=document["relevance"],
+                metadata={
+                    **document["metadata"],
+                    "provider_source": provider_source,
+                    "provider_raw": document["raw_payload"],
+                    "source_extraction": {
+                        "contract_version": RESEARCH_SOURCE_EXTRACTION_CONTRACT_VERSION,
+                        "method": "booklist_entries",
+                        "query": query,
+                        "subquestion": subquestion,
+                        "document_index": index,
+                        "claim_is_source_sentence": False,
+                    },
+                    "evidence_quality": assessment.model_dump(mode="json"),
+                },
+            )
+        )
+        if len(records) >= limit:
+            break
+    return records
+
+
+def _book_context(content: str, title: str) -> str:
+    """Compose one atomic book entry: title + first description sentence + author."""
+
+    marker = "\u300a" + title + "\u300b"
+    start = content.find(marker)
+    if start < 0:
+        return marker
+    tail = content[start + len(marker):]
+    next_marker = tail.find("\u300a")
+    segment = tail if next_marker < 0 else tail[:next_marker]
+    if not re.match(
+        r"^(\s)*(\u672c\u4e66|\u5168\u4e66|\u4f5c\u8005|\u51fa\u7248\u793e|"
+        r"\u7531|\u5185\u5bb9|\u7b80\u4ecb|\u8c46\u74e3|\u8fd9\u672c|"
+        r"\u8be5\u4e66|\u5176\u4e2d|\u662f|\u4e3a|\u4ece)",
+        segment,
+    ):
+        return ""
+    sentences = _split_sentences(segment)
+    parts = []
+    if sentences:
+        parts.append(sentences[0])
+    author = re.search(
+        r"\u4f5c\u8005[:\uff1a]\s*([^\u3002\uff01\uff1f!?\uff1b;]{2,120})",
+        segment,
+    )
+    if author:
+        parts.append("\u4f5c\u8005\uff1a" + normalize_text(author.group(1)).strip())
+    body = "\u3002".join(part for part in parts if part)[:300]
+    return marker + "\uff1a" + body if body else marker
 
 
 def _structured_book_record(

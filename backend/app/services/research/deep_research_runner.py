@@ -197,9 +197,9 @@ async def run_deep_research(
     from app.services.research.report import build_research_report
 
     budget = ResearchLoopBudget(
-        max_search_rounds=2,
-        max_results_per_round=5,
-        max_records_per_round=3,
+        max_search_rounds=3,
+        max_results_per_round=8,
+        max_records_per_round=8,
         min_independent_sources=1,
     )
     orchestrator = get_research_orchestrator()
@@ -458,7 +458,7 @@ async def _search_round(
         subquestion=task.objective,
         documents=documents,
         provider_source=result.provider or "web_search",
-        max_records_per_document=1,
+        max_records_per_document=12,
         metadata={
             "research_round": task.round_index,
             "target_gaps": task.target_gaps,

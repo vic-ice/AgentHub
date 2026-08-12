@@ -29,7 +29,7 @@ ResearchLoopStopReason = Literal[
 class ResearchLoopBudget(BaseModel):
     max_search_rounds: int = Field(default=2, ge=1, le=3)
     max_results_per_round: int = Field(default=5, ge=1, le=10)
-    max_records_per_round: int = Field(default=3, ge=1, le=5)
+    max_records_per_round: int = Field(default=8, ge=1, le=12)
     min_independent_sources: int = Field(default=1, ge=1, le=5)
 
 

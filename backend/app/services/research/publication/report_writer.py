@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 RESEARCH_REPORT_WRITE_CONTRACT_VERSION = "research-report-write-v1"
 # P95 of observed report-model calls ~17.9s (n=4, 11.6-18.0s); 45s keeps
 # 2.5x headroom while bounding worst-case waits before deterministic fallback.
-REPORT_TIMEOUT_SECONDS = 45
+REPORT_TIMEOUT_SECONDS = 90
 MAX_EVIDENCE = 12
 
 _URL_RE = re.compile(r"https?://[^\s)\]>]+\S*", re.IGNORECASE)
@@ -186,48 +186,57 @@ async def _generate_report_once(
     from app.infra.llm import get_llm
 
     started = time.perf_counter()
-    try:
-        model = get_llm(model_id, thinking_mode=None)
-        async with asyncio.timeout(REPORT_TIMEOUT_SECONDS):
-            response = await model.ainvoke(prompt)
-        final_text, thinking_text = _message_text_and_thinking(response)
-        body = final_text or thinking_text
-        if final_text.strip():
-            rendered, cited_ids, ok = _render_final_deliverable(
-                final_text,
-                evidence=evidence,
-                sources=sources,
-                language=language,
-            )
-        else:
-            rendered, cited_ids, ok = _render_freeform(
-                thinking_text,
-                objective=objective,
-                evidence=evidence,
-                sources=sources,
-                language=language,
-            )
-        attempt = {
-            "model_id": model_id,
-            "thinking": None,
-            "ok": ok,
-            "error": "",
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-            "body_chars": len(body or ""),
-            "report_chars": len(rendered or ""),
-        }
-        return rendered, cited_ids, response, body, attempt
-    except Exception as exc:
-        attempt = {
-            "model_id": model_id,
-            "thinking": None,
-            "ok": False,
-            "error": (str(exc) or exc.__class__.__name__)[:200],
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-            "body_chars": 0,
-            "report_chars": 0,
-        }
-        return "", [], None, "", attempt
+    last_attempt: dict[str, Any] = {}
+    for attempt_index in range(2):
+        try:
+            model = get_llm(model_id, thinking_mode=None)
+            async with asyncio.timeout(REPORT_TIMEOUT_SECONDS):
+                response = await model.ainvoke(prompt)
+            final_text, thinking_text = _message_text_and_thinking(response)
+            body = final_text or thinking_text
+            if final_text.strip():
+                rendered, cited_ids, ok = _render_final_deliverable(
+                    final_text,
+                    evidence=evidence,
+                    sources=sources,
+                    language=language,
+                )
+            else:
+                rendered, cited_ids, ok = _render_freeform(
+                    thinking_text,
+                    objective=objective,
+                    evidence=evidence,
+                    sources=sources,
+                    language=language,
+                )
+            attempt = {
+                "model_id": model_id,
+                "thinking": None,
+                "ok": ok,
+                "error": "",
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "body_chars": len(body or ""),
+                "report_chars": len(rendered or ""),
+            }
+            return rendered, cited_ids, response, body, attempt
+        except Exception as exc:
+            last_attempt = {
+                "model_id": model_id,
+                "thinking": None,
+                "ok": False,
+                "error": (str(exc) or exc.__class__.__name__)[:200],
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "body_chars": 0,
+                "report_chars": 0,
+            }
+            if attempt_index == 0:
+                logger.warning(
+                    "report_writer attempt failed, retrying once model=%s error=%s",
+                    model_id,
+                    last_attempt["error"],
+                )
+                continue
+    return "", [], None, "", last_attempt
 
 
 def _render_freeform(
@@ -512,10 +521,10 @@ def _bounded(value: Any, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rstrip()
 
 
-_FINAL_REPORT_INSTRUCTIONS_ZH = '研究已经完成。下面是已筛选、核验并整理好的研究成果。\n\n现在你是一位资深研究编辑，亲手完成这份最终交付：把它写成一篇直接面向用户的最终报告，让用户读完就知道该怎么选、怎么用。\n\n编辑原则：\n1. 有主见：直接给出你的判断和推荐立场，敢于说“最值得”“不建议”；观点放前面，事实作支撑，不要中立地罗列信息。\n2. 信息不要挤：一个要点一段，重要内容充分展开，次要内容一句带过；宁可少而精，敢于砍掉对用户帮助不大的内容。\n3. 结构不要齐：详略跟着内容重要性走，不要机械对齐；先讲什么、怎么组织，由内容和用户问题决定，不套固定模板。\n4. 重点敢取舍：突出真正重要的，敢排雷、敢舍弃；不为了“全面”把无关紧要的东西都搬上来。\n5. 保持专业度：不编造、不夸大证据能支持的结论；有冲突或不确定性时如实呈现；正文不写 URL；引用沿用输入中的 [n] 编号；保留名称、作者、数据等有价值的具体信息。\n6. 直接写最终正文，不输出分析过程、规划、检查过程、修改说明或任务复述。\n7. 善用 Markdown 排版元素（加粗、列表、表格、引用块）增强可读性，让用户扫一眼就能抓住重点；排版为可读性服务，不为了用而用。\n\n输出应像资深研究者完成研究后交付给用户的成品，而不是研究笔记、资料摘要或搜索结果目录。'
+_FINAL_REPORT_INSTRUCTIONS_ZH = '研究已经完成。下面是已筛选、核验并整理好的研究成果。\n\n现在你是一位资深研究编辑，亲手完成这份最终交付：把它写成一篇直接面向用户的最终报告，让用户读完就知道该怎么选、怎么用。\n\n编辑原则：\n1. 有主见：直接给出你的判断和推荐立场，敢于说“最值得”“不建议”；观点放前面，事实作支撑，不要中立地罗列信息。\n2. 信息不要挤：一个要点一段，重要内容充分展开，次要内容一句带过；宁可少而精，敢于砍掉对用户帮助不大的内容。\n3. 结构不要齐：详略跟着内容重要性走，不要机械对齐；先讲什么、怎么组织，由内容和用户问题决定，不套固定模板。\n4. 重点敢取舍但不粗暴删减：按优先级分层呈现——少数几本重点详讲、多数快速带过、必要时说明为什么某本不是首选；材料里有多少有价值信息就保留多少，不要为了精简把 10 本砍成 3 本。\n5. 保持专业度：不编造、不夸大证据能支持的结论；有冲突或不确定性时如实呈现；正文不写 URL；引用沿用输入中的 [n] 编号；保留名称、作者、数据等有价值的具体信息。\n6. 直接写最终正文，不输出分析过程、规划、检查过程、修改说明或任务复述。\n7. 善用 Markdown 排版元素（加粗、列表、表格、引用块）和 emoji（如 📗 入门首选、📘 实战导向、⭐ 推荐、⚠️ 避坑、🗺️ 学习路线、✅ 结论）增强可读性，让用户扫一眼就能抓住重点；排版为可读性服务，不为了用而用。\n\n输出应像资深研究者完成研究后交付给用户的成品，而不是研究笔记、资料摘要或搜索结果目录。'
 
 
-_FINAL_REPORT_INSTRUCTIONS_EN = 'The research is complete. Below is the screened, verified, and organized research material.\n\nNow you are a senior research editor delivering this final piece yourself: write it into a final report that directly serves the user, so that after reading it they know how to choose and how to use it.\n\nEditorial principles:\n1. Be opinionated: state your judgment and recommendation stance directly — dare to say "the most worthwhile" or "not recommended"; put the claim first, facts as support, do not neutrally list information.\n2. Do not cram information: one point per paragraph; expand important content fully and pass over minor content in one sentence; prefer fewer, better items and dare to cut what does not help the user.\n3. Do not force even structure: let depth follow importance, no mechanical alignment; what to cover first and how to organize is decided by the content and the user\'s question, not by a fixed template.\n4. Dare to make trade-offs: highlight what truly matters, flag what to avoid, and leave out what is not needed; do not include everything just for completeness.\n5. Stay professional: do not fabricate or overstate what the evidence supports; present conflicts and uncertainty honestly; no raw URLs in the body; keep [n] citations from the input; keep valuable specifics such as names, authors, and data.\n6. Write the final body directly; do not output analysis process, planning, checking, revision notes, or restate the task.\n7. Use Markdown formatting well (bold, lists, tables, blockquotes) to make the output scannable; formatting serves readability, never use it just for its own sake.\n\nOutput like an expert delivering finished work, not research notes, digests, or a search result listing.'
+_FINAL_REPORT_INSTRUCTIONS_EN = 'The research is complete. Below is the screened, verified, and organized research material.\n\nNow you are a senior research editor delivering this final piece yourself: write it into a final report that directly serves the user, so that after reading it they know how to choose and how to use it.\n\nEditorial principles:\n1. Be opinionated: state your judgment and recommendation stance directly — dare to say "the most worthwhile" or "not recommended"; put the claim first, facts as support, do not neutrally list information.\n2. Do not cram information: one point per paragraph; expand important content fully and pass over minor content in one sentence; prefer fewer, better items and dare to cut what does not help the user.\n3. Do not force even structure: let depth follow importance, no mechanical alignment; what to cover first and how to organize is decided by the content and the user\'s question, not by a fixed template.\n4. Dare to make trade-offs without crude cuts: present by priority tiers - a few items in depth, most items briefly, and when needed explain why something is not the first choice; keep as much valuable material as the input contains, do not cut 10 books down to 3 for brevity.\n5. Stay professional: do not fabricate or overstate what the evidence supports; present conflicts and uncertainty honestly; no raw URLs in the body; keep [n] citations from the input; keep valuable specifics such as names, authors, and data.\n6. Write the final body directly; do not output analysis process, planning, checking, revision notes, or restate the task.\n7. Use Markdown formatting well (bold, lists, tables, blockquotes) and emoji (e.g. 📗 top picks, 📘 hands-on, ⭐ recommended, ⚠️ avoid, 🗺️ learning path, ✅ conclusion) to make the output scannable; formatting serves readability, never use it just for its own sake.\n\nOutput like an expert delivering finished work, not research notes, digests, or a search result listing.'
 
 
 def _prompt_freeform(
