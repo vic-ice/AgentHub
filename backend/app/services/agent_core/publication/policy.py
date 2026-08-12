@@ -47,28 +47,17 @@ def validate_synthesis(
     cleaned = validate_direct_text(text)
     if not evidence:
         raise ValueError("model synthesis requires receipt evidence")
-    for bundle in evidence:
-        if bundle.plan.response_mode != "model":
-            raise ValueError(
-                "model synthesis requires model response-mode evidence"
-            )
-        if any(
-            bool(action.metadata.get("side_effect"))
-            for action in bundle.plan.actions
-        ):
-            raise ValueError(
-                "model synthesis is restricted to read-only receipts"
-            )
-
+    # Side-effect receipts (e.g. a memory write) may legitimately precede a
+    # plain summary in multi-round turns; only URL fabrication and unsafe text
+    # are rejected here, not the presence of a write receipt.
     allowed_urls = _evidence_urls(evidence)
     emitted_urls = set(_URL_RE.findall(cleaned))
     unknown_urls = emitted_urls - allowed_urls
     if unknown_urls:
         raise ValueError("model synthesis contains an unadmitted source URL")
-    if allowed_urls and not emitted_urls:
-        raise ValueError(
-            "model synthesis must cite at least one admitted source URL"
-        )
+    # A plain chat answer may legitimately omit source links even when the
+    # model searched (e.g. "26 degrees and sunny"): only reject fabricated
+    # URLs, not the absence of a citation.
     if (
         len(cleaned) > 800
         and len(allowed_urls) >= 3
