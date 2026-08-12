@@ -4,6 +4,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.services.book_search_contracts import BookSearchStatus
+from app.services.recommendation_signals import RecommendationSignal
+
 
 class BookBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=256)
@@ -37,7 +40,15 @@ class BookSearchRequest(BaseModel):
 
 class BookSearchResponse(BaseModel):
     query: str
+    status: BookSearchStatus = "ok"
     books: list[BookInDB]
+    result_count: int = 0
+    source: str = "external_search"
+    next_action_hint: str = ""
+    error: str | None = None
+    duration_ms: int = 0
+    metadata: dict = Field(default_factory=dict)
+    candidate_sources: dict = Field(default_factory=dict)
 
 
 class BookInteractionCreate(BaseModel):
@@ -60,6 +71,10 @@ class BookInteractionInDB(BookInteractionCreate):
     created_at: datetime
     updated_at: datetime
 
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RecommendationSignalInDB(RecommendationSignal):
     model_config = ConfigDict(from_attributes=True)
 
 

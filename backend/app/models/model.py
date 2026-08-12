@@ -19,7 +19,7 @@ class Model(Base):
         provider: e.g. "dashscope", "zai", references providers table
         model_type: llm, vlm, embedding
         model_id: model identifier without provider prefix, e.g. "qwen3.5-32b"
-        thinking: whether supports thinking mode
+        thinking: configured default thinking mode for runtime requests
         is_default: default model for this model_type
         is_active: whether this model is active
 
@@ -36,15 +36,18 @@ class Model(Base):
     provider: Mapped[str] = mapped_column(
         String(64), ForeignKey("providers.provider"), nullable=False
     )  # e.g. "dashscope", "zai" - FK to providers table
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("provider_connections.id"), nullable=True
+    )
     model_type: Mapped[str] = mapped_column(
         String(16), nullable=False, default="llm"
     )  # llm, vlm, embedding
     model_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, unique=True
+        String(128), nullable=False
     )  # e.g. "qwen3.5-32b" (without provider prefix)
     thinking: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
-    )  # whether supports thinking mode
+    )  # configured request mode; observed capability lives in probe records
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(

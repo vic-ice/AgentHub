@@ -9,6 +9,7 @@ Persistence Function:
 """
 
 import logging
+from typing import Any
 from uuid import UUID
 
 from langgraph.graph.state import CompiledStateGraph
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import chat as chat_crud
 from app.models.trace import TraceExecution
+from app.services.agent_runtime.execution_graph import ExecutionGraph
 from app.utils.dag import DagBuilder
 
 
@@ -169,6 +171,8 @@ async def persist_agent_trace(
     before_checkpoint_id: str | None = None,
     before_message_count: int = 0,
     reasoning_segments: dict[str, str] | None = None,
+    system_tool_steps: list[dict[str, Any]] | None = None,
+    system_execution_graph: ExecutionGraph | dict[str, Any] | None = None,
 ) -> None:
     """Persist token usage and execution DAG after an agent response.
 
@@ -221,7 +225,12 @@ async def persist_agent_trace(
             before_checkpoint_id=before_checkpoint_id,
             before_message_count=before_message_count,
             reasoning_segments=reasoning_segments,
+            system_tool_steps=system_tool_steps,
         )
+        if system_execution_graph is not None:
+            dag.execution_graph = ExecutionGraph.model_validate(
+                system_execution_graph
+            )
         await upsert_trace(
             db=db,
             thread_id=thread_id,

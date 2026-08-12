@@ -4,7 +4,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime
 from typing import Any, Optional, Literal
 
-
 # ==================== Mixin: Mutable Fields ====================
 
 
@@ -17,7 +16,10 @@ class ModelMutableFields(BaseModel):
       naturally excludes fields that the client didn't send
     """
 
-    thinking: Optional[bool] = False
+    thinking: Optional[bool] = Field(
+        default=False,
+        description="Configured default thinking mode for runtime requests.",
+    )
     is_default: Optional[bool] = False
     is_active: Optional[bool] = True
 
@@ -28,7 +30,8 @@ class ModelMutableFields(BaseModel):
 class ModelBase(BaseModel):
     """Model base fields (immutable identity fields)."""
 
-    provider: str  # e.g. "dashscope", "zai"
+    provider: str | None = None  # legacy/provider adapter key
+    connection_id: Optional[str] = None
     model_type: Literal["llm", "vlm", "embedding"] = "llm"
     model_id: str  # e.g. "qwen3.5-32b" (without provider prefix)
 
@@ -49,6 +52,7 @@ class ModelUpdateRequest(ModelMutableFields):
 
     model_id: Optional[str] = None  # New model_id if changing
     provider: Optional[str] = None
+    connection_id: Optional[str] = None
     model_type: Optional[Literal["llm", "vlm", "embedding"]] = None
 
 
@@ -57,6 +61,7 @@ class ModelInDB(BaseModel):
 
     id: str  # UUID primary key
     provider: str
+    connection_id: Optional[str] = None
     model_type: str
     model_id: str
     thinking: bool
@@ -67,7 +72,7 @@ class ModelInDB(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    @field_validator("id", mode="before")
+    @field_validator("id", "connection_id", mode="before")
     @classmethod
     def convert_uuid_to_str(cls, v):
         """Convert UUID to string automatically."""
@@ -84,6 +89,13 @@ class ModelCapabilityStatus(BaseModel):
     provider: str
     provider_model_id: str
     checked_at: datetime
+    probe_kind: Literal["chat", "embedding"] = "chat"
+    probe_ok: bool = False
+    embedding_dimensions: Optional[int] = Field(default=None, ge=1)
+    error_category: Optional[
+        Literal["network", "auth", "model", "rate_limit", "dimension", "provider"]
+    ] = None
+    # Deprecated compatibility field. New consumers should use probe_ok.
     chat_ok: bool
     thinking_request_ok: Optional[bool] = None
     reasoning_text_ok: Optional[bool] = None
@@ -108,6 +120,12 @@ class ModelCapabilityStatus(BaseModel):
 class ModelInfo(ModelInDB):
     """Model info for frontend model selector"""
 
+    model_uuid: Optional[str] = None
+    provider_key: Optional[str] = None
+    connection_name: Optional[str] = None
+    provider_model_id: Optional[str] = None
+    display_name: Optional[str] = None
+    thinking_requested: Optional[bool] = None
     capability: Optional[ModelCapabilityStatus] = None
 
 
@@ -167,6 +185,8 @@ class TestConnectionResponse(BaseModel):
 
 
 class ThinkingModeStatus(BaseModel):
-    """Response for GET /models/thinking-mode."""
+    """Legacy response for the default model's configured request mode."""
 
-    available: bool = Field(description="Whether thinking mode is available")
+    available: bool = Field(
+        description="Whether thinking mode is configured for the default model"
+    )

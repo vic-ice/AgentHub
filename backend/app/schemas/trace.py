@@ -14,10 +14,14 @@ Sections:
 
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.services.agent_runtime.execution_graph import ExecutionGraph
 
 
 # ── 1. Checkpoint info ─────────────────────────────────────────────────
@@ -55,6 +59,11 @@ class ToolStepMetadata(BaseModel):
     tool_name: str
     tool_args: dict = Field(default_factory=dict)
     tool_call_id: str | None = None
+    system_executed: bool = False
+    status: str | None = None
+    latency_ms: int | None = None
+    error: str | None = None
+    depends_on: list[str] = Field(default_factory=list)
 
 
 class StepOutput(BaseModel):
@@ -107,6 +116,19 @@ class StepOutput(BaseModel):
     tool_call_id: str | None = Field(
         None, description="Tool call ID (flattened from tool_metadata)"
     )
+    system_executed: bool = Field(
+        False, description="Whether the application runtime executed this tool"
+    )
+    tool_status: str | None = Field(None, description="Tool execution status")
+    tool_error: str | None = Field(None, description="Tool execution error")
+    latency_ms: int | None = Field(None, description="Tool execution latency")
+    action_id: str | None = Field(
+        None, description="SystemRuntime action identifier"
+    )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="Action identifiers required before this step",
+    )
 
 
 # ── 3. Execution DAG ───────────────────────────────────────────────────
@@ -131,6 +153,13 @@ class ExecutionDag(BaseModel):
     edges: list[tuple[str, str]] = Field(description="Directed edges between nodes")
     total_steps: int = Field(description="Total number of steps")
     steps: list[StepOutput] = Field(description="All step outputs in order")
+    execution_graph: "ExecutionGraph | None" = Field(
+        default=None,
+        description=(
+            "Authoritative ActionPlan/PlanReceipt topology. Legacy message DAG "
+            "fields remain available for historical traces."
+        ),
+    )
 
 
 class ExecutionTrace(BaseModel):
@@ -166,3 +195,8 @@ class TraceListResponse(BaseModel):
     page_size: int = Field(description="Number of items per page")
     has_more: bool = Field(description="Whether there are more pages available")
     filter_hours: int = Field(description="Applied time filter in hours")
+
+
+from app.services.agent_runtime.execution_graph import ExecutionGraph
+
+ExecutionDag.model_rebuild()

@@ -80,8 +80,18 @@ class Settings(BaseSettings):
     # (POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB).
     # No additional configuration required.
 
-    # Default embedding dimension for vector databases
-    EMBEDDING_DIMENSION: int = Field(default=1024, ge=1)
+    # Optional provider hint only. Persistent storage always uses the observed
+    # model output and never treats this value as a schema dimension.
+    EMBEDDING_DIMENSION: Optional[int] = Field(default=None, ge=1)
+    # Operator-controlled semantic revision for providers that change model
+    # weights without changing their public model identifier.
+    EMBEDDING_SPACE_REVISION: str = ""
+    # R7 candidate gate. When false, existing embedding activation and the
+    # routing compatibility threshold remain unchanged.
+    EMBEDDING_GENERATION_GATES_V1: bool = False
+    # Memory vectors are an opt-in semantic projection over canonical
+    # memory_events; the durable source of truth remains relational.
+    EMBEDDING_MEMORY_GENERATIONS_ENABLED: bool = False
 
     # =========================================================================
     # CORS Configuration
@@ -107,6 +117,23 @@ class Settings(BaseSettings):
     # sequential tool calls.  Set to 0 to disable.
     # Recommended: 300 (5 minutes) for production.
     AGENT_STREAM_TIMEOUT: float = Field(default=300.0, ge=0)
+
+    # Optional auxiliary model for lossy context compression. Keeping this
+    # separate means switching the chat model does not change session summary
+    # ownership or compression behavior.
+    AGENT_CONTEXT_SUMMARY_MODEL: str | None = None
+
+    AGENT_STREAM_V1: bool = False
+    AGENT_TASK_RESUME_V1: bool = False
+    AGENT_RELEASE_COMMIT_SHA: str | None = Field(
+        default=None,
+        pattern="^[0-9a-f]{40}$",
+    )
+    # Retired compatibility flags remain parseable for deployment validation,
+    # but every default is fail-closed and enabling the old runtime is rejected.
+    AGENT_LEGACY_HISTORY_READ_FALLBACK: bool = False
+    AGENT_LEGACY_MEMORY_WRITE_COMPAT: bool = False
+    AGENT_LEGACY_RUNTIME_FALLBACK: bool = False
 
     # =========================================================================
     # LiteLLM Router — Per-Call Timeout
@@ -145,6 +172,12 @@ class Settings(BaseSettings):
 
     # Tavily Search API
     TAVILY_API_KEY: Optional[SecretStr] = None
+    # AnySearch API is optional because the provider also supports anonymous use.
+    ANYSEARCH_API_KEY: Optional[SecretStr] = None
+
+    # App-owned external provider configuration. This JSON may define providers
+    # such as mem0 and gbrain, but their fields still map into app contracts.
+    APP_PROVIDER_CONFIGS_JSON: str = ""
 
     # API Key Encryption Configuration
     # This is the AES-256 key used to encrypt API keys stored in the database
@@ -217,6 +250,7 @@ class Settings(BaseSettings):
         "LANGCHAIN_API_KEY",
         "AMAP_KEY",
         "TAVILY_API_KEY",
+        "ANYSEARCH_API_KEY",
         "API_KEY_ENCRYPTION_KEY",
         "SYSTEM_DEFAULT_LLM_API_KEY",
         "JWT_SECRET_KEY",
@@ -260,6 +294,14 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "POSTGRES_MIN_CONNECTIONS_PER_POOL must be <= POSTGRES_MAX_CONNECTIONS_PER_POOL"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_agent_legacy_transition(self) -> "Settings":
+        if self.AGENT_LEGACY_RUNTIME_FALLBACK:
+            raise ValueError(
+                "AGENT_LEGACY_RUNTIME_FALLBACK has been retired"
             )
         return self
 

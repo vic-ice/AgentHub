@@ -3,13 +3,12 @@
 Built once at startup via `init_agent()` during the FastAPI lifespan.
 Multi-turn conversation state is maintained by the checkpointer.
 
-Architecture (simplified — no subagent delegation):
-    User → Agent (checkpointer + dynamic prompt + dynamic model)
-                │
-                ├── get_current_time  (@tool: time queries)
-                └── web_search        (@tool: web search)
+Architecture:
+    Controller proposal -> WorkflowCompiler -> SystemRuntime -> PlanReceipt
+    -> Supervisor
 
-Tools are injected directly — no list_agents/task delegation overhead.
+The supervisor consumes receipts and produces language. It has no direct tool
+execution path; deterministic and LLM planning both happen before this graph.
 """
 
 import logging
@@ -25,13 +24,6 @@ from app.agents.context import AgentRuntimeContext
 from app.agents.middleware.content_filter import content_filter
 from app.agents.middleware.model import dynamic_model
 from app.agents.middleware.prompt import supervisor_prompt
-from app.agents.tools import (
-    create_web_search,
-    get_current_time,
-    record_book_feedback,
-    remember_reading_preference,
-    search_books,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -68,20 +60,8 @@ async def init_agent(
 
     model = get_system_llm()
 
-    # Build tools directly (no subagent delegation)
-    tools: list = [
-        get_current_time,
-        search_books,
-        remember_reading_preference,
-        record_book_feedback,
-    ]
-    try:
-        tools.append(create_web_search())
-    except Exception as exc:
-        logger.warning(
-            "Web search unavailable (%s), agent uses time-only tools",
-            exc,
-        )
+    # Capabilities execute only through SystemRuntime before this graph.
+    tools: list = []
 
     # Build middleware list following the official LangChain middleware order:
     # Pre-processing → Model Selection → Content Filter → Post-processing.
@@ -110,7 +90,7 @@ async def init_agent(
         ),
     )
 
-    logger.info("Agent built with %d tools: %s", len(tools), [t.name for t in tools])
+    logger.info("Receipt-consuming supervisor built with no direct tools")
     return _agent_instance
 
 
