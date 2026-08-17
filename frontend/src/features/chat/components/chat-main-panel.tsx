@@ -306,7 +306,7 @@ export function ChatMainPanel({
 
   return (
     <section className={[
-      "grid h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-background shadow-[inset_0_0_20px_rgba(0,0,0,0.02)] dark:shadow-[inset_0_0_20px_rgba(255,255,255,0.02)] border-x border-border/50",
+      "grid h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-background",
       hasMessages ? "grid-rows-[minmax(0,1fr)_auto]" : "grid-rows-[0fr_1fr]"
     ].join(" ")}>
       <div
@@ -323,7 +323,7 @@ export function ChatMainPanel({
           <div
             ref={conversationRef}
             className={[
-              "chat-messages-scroll-area mx-auto h-full max-w-4xl overflow-y-auto",
+              "chat-messages-scroll-area mx-auto h-full max-w-5xl overflow-y-auto",
               isMessagesScrolling ? "is-scrolling" : "",
             ].join(" ")}
             onScroll={updateScrollButtonState}
@@ -335,7 +335,7 @@ export function ChatMainPanel({
             ) : (
               <div
                 className={cn(
-                  "mx-auto flex w-full flex-col gap-4 pb-3 px-3 pt-8 transition-opacity duration-200",
+                  "mx-auto flex w-full flex-col gap-6 pb-5 px-4 pt-8 transition-opacity duration-200",
                   isLoadingConversation && "opacity-50 pointer-events-none"
                 )}
               >
@@ -388,7 +388,7 @@ export function ChatMainPanel({
           {hasMessages ? (
             <div
               aria-hidden="true"
-              className="chat-messages-bottom-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 mx-auto h-8 max-w-4xl"
+              className="chat-messages-bottom-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 mx-auto h-8 max-w-5xl"
             />
           ) : null}
 
@@ -398,14 +398,14 @@ export function ChatMainPanel({
       </div>
 
       <footer className={[
-        "relative z-20 bg-background transition-all duration-300",
+        "relative z-20 bg-background transition-[height,background-color] duration-200",
         hasMessages ? "" : "h-full flex flex-col items-center justify-center"
       ].join(" ")}>
         {shouldShowScrollButton && hasMessages ? (
           <Button
             size="icon"
             variant="secondary"
-            className="absolute top-0 left-1/2 z-30 cursor-pointer -translate-x-1/2 -translate-y-1/2 rounded-full shadow-md"
+            className="absolute top-0 left-1/2 z-30 cursor-pointer -translate-x-1/2 -translate-y-1/2 rounded-full border border-border bg-card"
             onClick={() => {
               autoScrollEnabledRef.current = true
               setShowScrollButton(false)
@@ -419,9 +419,16 @@ export function ChatMainPanel({
           </Button>
         ) : null}
         <div className={[
-          "mx-auto w-full max-w-4xl space-y-3 overflow-y-auto",
-          hasMessages ? "p-2 mb-2" : "p-6"
+          "mx-auto w-full max-w-5xl space-y-4 overflow-y-auto",
+          hasMessages ? "mb-3 p-3" : "p-6"
         ].join(" ")}>
+          {messages.length === 0 ? (
+            <div className="mx-auto mb-4 max-w-2xl text-center">
+              <p className="font-mono text-xs font-semibold tracking-[0.1em] text-primary">新对话</p>
+              <h1 className="mt-3 text-4xl font-semibold sm:text-5xl">今天想推进什么？</h1>
+              <p className="mt-4 text-[16px] leading-7 text-muted-foreground">直接描述目标；需要系统检索和多步分析时，再开启深度搜索。</p>
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-2 justify-center">
             {messages.length === 0 ? (
               suggestions.map((suggestion) => (
@@ -430,7 +437,7 @@ export function ChatMainPanel({
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="rounded-4 cursor-pointer"
+                  className="h-10 cursor-pointer rounded-full border-border/70 bg-card px-4 hover:bg-muted/60"
                   onClick={() => handleSuggestionClick(suggestion)}
                   disabled={isStreaming || isComposerDisabled}
                 >
@@ -441,7 +448,8 @@ export function ChatMainPanel({
           </div>
 
           <PromptInput
-            className="h-auto min-h-12 bg-background [&_[data-slot=input-group]]:rounded-2xl"
+            className="chat-composer h-auto min-h-14 border-0 bg-transparent [&_[data-slot=input-group]]:rounded-[26px] [&_[data-slot=input-group]]:border-border/70 [&_[data-slot=input-group]]:bg-card [&_[data-slot=input-group]]:shadow-sm [&_[data-slot=input-group]]:transition-[border-color,box-shadow,background-color] [&_[data-slot=input-group]]:duration-150 hover:[&_[data-slot=input-group]]:border-foreground/20 focus-within:[&_[data-slot=input-group]]:border-primary/35 focus-within:[&_[data-slot=input-group]]:shadow-md"
+            data-od-id="chat-composer"
             onSubmit={({ text }) => {
               submitMessage(text)
             }}
@@ -449,7 +457,7 @@ export function ChatMainPanel({
             {/* Quoted content display above input */}
             {quotedContent ? (
               <div className="relative px-3 pt-3">
-                <div className="rounded-lg border border-border/60 bg-muted/30 p-3">
+                <div className="rounded-2xl border border-border/60 bg-muted/30 p-3">
                   {/* Close button */}
                   <Button
                     type="button"
@@ -472,26 +480,33 @@ export function ChatMainPanel({
 
             <PromptInputBody  >
               <PromptInputTextarea
-                className="max-h-26 min-h-8"
+                className="max-h-40 min-h-14 px-4 pb-2 pt-4 text-[16px] leading-7 placeholder:text-muted-foreground/80"
                 disabled={isComposerDisabled}
                 onChange={(event) => setInputValue(event.currentTarget.value)}
                 value={inputValue}
                 placeholder={quotedContent ? t("message.addYourMessage") : t("prompt.placeholder")}
               />
             </PromptInputBody>
-            <PromptInputFooter className="pb-3 justify-between">
-              <div className="flex items-center gap-2">
+            <PromptInputFooter className="justify-between gap-3 px-3 pb-3 pt-1">
+              <div className="flex min-w-0 items-center gap-2">
                 <Button
                   type="button"
                   size="sm"
-                  variant={researchMode ? "default" : "outline"}
-                  className={cn("cursor-pointer gap-1.5", researchMode && "text-background")}
+                  variant="ghost"
+                  className={cn(
+                    "h-9 shrink-0 cursor-pointer gap-1.5 rounded-full border px-3 text-sm transition-[background-color,border-color,color]",
+                    researchMode
+                      ? "border-primary/30 bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
+                      : "border-border/75 bg-muted/35 text-muted-foreground hover:border-foreground/20 hover:bg-muted/70 hover:text-foreground",
+                  )}
                   disabled={isStreaming || isInitializing || isLoadingConversation}
                   onClick={() => setResearchMode((prev) => !prev)}
-                  title="开启后这一轮将执行深度研究，发送后自动关闭"
+                  title="开启后，本轮将执行深度搜索；发送后自动关闭"
+                  aria-pressed={researchMode}
+                  data-od-id="deep-search-toggle"
                 >
-                  <SearchCheck className="size-3.5" />
-                  深度研究
+                  <SearchCheck className="size-4" />
+                  深度搜索
                 </Button>
                 {/* Model selector - only show if there are available models */}
                 {hasAvailableModels && (
@@ -508,7 +523,7 @@ export function ChatMainPanel({
                 disabled={submitButtonDisabled}
                 onClick={isStreaming ? onStopStreaming : undefined}
                 status={status}
-                className="cursor-pointer"
+                className="size-9 shrink-0 cursor-pointer rounded-full shadow-none"
                 type={isStreaming ? "button" : "submit"}
               />
             </PromptInputFooter>

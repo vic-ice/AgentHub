@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from app.infra.database import get_database
-from app.services.memory.version_store import MemoryVersionStore
+from app.services.memory.read_gateway import MemoryReadGateway
 from app.services.research.contracts import ResearchEvidence, ResearchStateResult
 from app.services.research.orchestrator import get_research_orchestrator
 from app.services.research.verifier import (
@@ -66,6 +66,7 @@ async def build_research_report(
     *,
     user_id: UUID,
     run_id: UUID,
+    personalization_mode: Literal["off", "explicit"] = "off",
     limit_steps: int = 100,
     limit_evidence: int = 100,
 ) -> ResearchReport:
@@ -75,7 +76,11 @@ async def build_research_report(
         limit_steps=limit_steps,
         limit_evidence=limit_evidence,
     )
-    memory_context = await _build_memory_context(user_id)
+    memory_context = (
+        await _build_memory_context(user_id)
+        if personalization_mode == "explicit"
+        else ResearchReportMemoryContext()
+    )
     return build_research_report_from_state(
         research_state,
         memory_context=memory_context,
@@ -146,7 +151,7 @@ async def _build_memory_context(user_id: UUID) -> ResearchReportMemoryContext:
     try:
         database = get_database()
         async with database.session() as session:
-            heads = await MemoryVersionStore(session).list_current(
+            heads = await MemoryReadGateway(session).current_versions(
                 user_id=user_id,
                 limit=50,
             )

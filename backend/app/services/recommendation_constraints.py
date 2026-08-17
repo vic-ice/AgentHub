@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.memory.contracts import MemoryEvent
-from app.services.memory.providers.postgres import PostgresMemoryProvider
+from app.services.memory.read_gateway import MemoryReadGateway
 
 
 CONSTRAINTS_CONTRACT_VERSION = "personalized-recommendation-constraints-v1"
@@ -61,20 +61,24 @@ async def build_personalized_recommendation_constraints(
     query: str,
     max_search_terms: int = 3,
 ) -> PersonalizedRecommendationConstraints:
-    provider = PostgresMemoryProvider(session)
-    current = await provider.list_current(
+    memories = await MemoryReadGateway(session).profile_memories(
         user_id=user_id,
-        query="",
         memory_types=sorted(_PROFILE_TYPES),
         limit=100,
     )
     constraints = _constraints_from_memories(
         user_id=user_id,
         query=query,
-        memories=current.memories,
+        memories=memories,
     )
     _apply_search_query_constraints(
         constraints,
+        max_search_terms=max_search_terms,
+    )
+    await _add_reading_anchor_terms(
+        session,
+        user_id=user_id,
+        constraints=constraints,
         max_search_terms=max_search_terms,
     )
     return constraints
@@ -182,3 +186,52 @@ def _add_unique(values: list[str], value: str) -> list[str]:
     if item and item.lower() not in seen:
         return [*values, item]
     return values
+
+
+async def _add_reading_anchor_terms(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    constraints: PersonalizedRecommendationConstraints,
+    max_search_terms: int,
+) -> None:
+    """Fold top read-book style tags into the effective search query.
+
+    Read books are style anchors: their tags help ordinary Search find
+    similar books instead of re-recommending what the user has read.
+    """
+    try:
+        from app.services.books.reading_service import ReadingService
+
+        anchors = await ReadingService(session).reading_anchors(user_id)
+    except Exception:
+        return
+    seen = {item.lower() for item in constraints.search_terms_added}
+    additions: list[str] = []
+    budget = max(0, max_search_terms)
+    for anchor in anchors[:10]:
+        for tag in anchor.get("tags") or []:
+            token = str(tag).strip()
+            if not token or token.lower() in seen:
+                continue
+            if _is_redundant_query_term(token, constraints.original_query):
+                continue
+            seen.add(token.lower())
+            additions.append(token)
+            if len([*constraints.search_terms_added, *additions]) >= budget:
+                break
+        if len([*constraints.search_terms_added, *additions]) >= budget:
+            break
+    if not additions:
+        return
+    constraints.search_terms_added = [
+        *constraints.search_terms_added,
+        *additions,
+    ][:budget]
+    constraints.applied_to_search = True
+    constraints.effective_query = " ".join(
+        item
+        for item in [constraints.original_query.strip(), *constraints.search_terms_added]
+        if item
+    )
+    constraints.metadata["reading_anchor_terms_added"] = additions

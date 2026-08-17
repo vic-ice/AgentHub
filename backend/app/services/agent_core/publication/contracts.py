@@ -83,6 +83,7 @@ class TrustedStreamEvent(AgentCoreModel):
     sequence: int = Field(ge=1)
     type: Literal[
         "turn.started",
+        "step.completed",
         "graph.snapshot",
         "answer.completed",
         "clarification.required",

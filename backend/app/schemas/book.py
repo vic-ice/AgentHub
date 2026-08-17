@@ -2,7 +2,9 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services.book_search_contracts import BookSearchStatus
 from app.services.recommendation_signals import RecommendationSignal
@@ -103,3 +105,69 @@ class UserPreferenceProfileInDB(UserPreferenceProfileBase):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ── Bookshelf (Reading Assets) — frozen v1 ─────────────────────────────────────
+# 契约权威来源：docs/bookshelf-contract.md
+
+ReadingStatus = Literal["want_to_read", "reading", "read", "dropped"]
+BookEvaluation = Literal["liked", "neutral", "disliked", "not_interested"]
+
+
+class ShelfBookBase(BaseModel):
+    id: UUID
+    user_id: UUID
+    book_id: UUID | None = None
+    title: str = Field(..., min_length=1, max_length=256)
+    authors: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    cover_url: str | None = None
+    source_url: str | None = None
+    reading_status: ReadingStatus
+    evaluation: BookEvaluation | None = None
+    note: str = ""
+    rating: int | None = Field(default=None, ge=1, le=5)
+    last_event_at: datetime | None = None
+
+
+class ShelfBook(ShelfBookBase):
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ShelfBookUpsert(BaseModel):
+    user_id: UUID
+    book_id: UUID | None = None
+    title: str = Field(default="", max_length=256)
+    reading_status: ReadingStatus = "want_to_read"
+    evaluation: BookEvaluation | None = None
+    note: str = Field(default="", max_length=2000)
+    rating: int | None = Field(default=None, ge=1, le=5)
+
+    @model_validator(mode="after")
+    def require_book_id_or_title(self) -> "ShelfBookUpsert":
+        if self.book_id is None and not str(self.title or "").strip():
+            raise ValueError("book_id or title is required")
+        return self
+
+
+class ShelfBookUpdate(BaseModel):
+    reading_status: ReadingStatus | None = None
+    evaluation: BookEvaluation | None = None
+    note: str | None = Field(default=None, max_length=2000)
+    rating: int | None = Field(default=None, ge=1, le=5)
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> "ShelfBookUpdate":
+        if not self.model_fields_set:
+            raise ValueError("at least one shelf field must be provided")
+        return self
+
+
+class BookshelfListResponse(BaseModel):
+    user_id: UUID
+    items: list[ShelfBook] = Field(default_factory=list)
+    total: int = 0
+    status: Literal["ok"] = "ok"

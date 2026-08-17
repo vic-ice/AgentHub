@@ -241,3 +241,39 @@ async def persist_agent_trace(
         )
     except Exception:
         logger.exception("Failed to persist DAG for %s", request_id)
+
+
+async def list_usage_trace_rows(
+    db: AsyncSession,
+    *,
+    days: int | None = None,
+    user_id: UUID | None = None,
+    thread_id: UUID | None = None,
+) -> list[TraceExecution]:
+    """Return persisted turn traces scoped for usage aggregation."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.chat import Conversation
+
+    conditions = [Conversation.is_deleted.is_(False)]
+    if days is not None:
+        conditions.append(
+            TraceExecution.created_at
+            >= datetime.now(timezone.utc) - timedelta(days=days)
+        )
+    if user_id is not None:
+        conditions.append(Conversation.user_id == user_id)
+    if thread_id is not None:
+        conditions.append(TraceExecution.thread_id == thread_id)
+    stmt = (
+        select(TraceExecution)
+        .join(
+            Conversation,
+            Conversation.thread_id == TraceExecution.thread_id,
+        )
+        .where(*conditions)
+        .order_by(TraceExecution.created_at.asc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())

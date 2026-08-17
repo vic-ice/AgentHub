@@ -5,331 +5,197 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --radius: 1rem;
-  /* Light Mode - Modern Tech Console Theme */
-
-  /* Background layers */
-  --background: oklch(0.98 0.005 250);
-  /* #F8FAFC - Soft blue-white */
-  --background-elevated: oklch(0.96 0.008 250);
-  /* #F1F5F9 - Elevated surface */
-
-  --foreground: oklch(0.13 0.02 250);
-  /* #0F172A - Deep slate */
-  --card: oklch(1 0 0);
-  /* #FFFFFF - Pure white cards */
-  --card-foreground: oklch(0.13 0.02 250);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.13 0.02 250);
-
-  /* Primary - Tech Blue */
-  --primary: oklch(0.55 0.22 250);
-  /* #2563EB - Vibrant blue */
+  --radius: 0.5rem;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-display: "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
+  --font-mono: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", Consolas, monospace;
+  --background: oklch(0.982 0.006 72);
+  --background-elevated: oklch(0.955 0.008 68);
+  --bg-elevated: var(--background-elevated);
+  --foreground: oklch(0.205 0.012 60);
+  --card: oklch(0.995 0.003 72);
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.61 0.195 39);
   --primary-foreground: oklch(0.99 0 0);
-
-  /* Accent - Cyan glow */
-  --accent: oklch(0.72 0.15 200);
-  /* #38BDF8 - Sky blue */
-  --accent-foreground: oklch(0.13 0.02 250);
-
-  /* Warm colors - For CTA and highlights only */
-  --warm: oklch(0.72 0.18 50);
-  /* #FF9F45 - Warm orange */
-  --warm-soft: oklch(0.85 0.15 75);
-  /* #FFD166 - Soft gold */
-  --warm-foreground: oklch(0.13 0.02 250);
-
-  --secondary: oklch(0.96 0.008 250);
-  --secondary-foreground: oklch(0.13 0.02 250);
-  --muted: oklch(0.96 0.008 250);
-  --muted-foreground: oklch(0.48 0.01 250);
-  /* #64748B - Slate 500 */
-
-  --destructive: oklch(0.58 0.22 25);
-  --border: oklch(0.90 0.01 250);
-  /* Soft border */
-  --input: oklch(0.90 0.01 250);
-  --ring: oklch(0.55 0.22 250);
-
-  /* Sidebar */
-  --sidebar: oklch(0.98 0.005 250);
-  --sidebar-foreground: oklch(0.13 0.02 250);
-  --sidebar-primary: oklch(0.55 0.22 250);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.94 0.02 250);
-  --sidebar-accent-foreground: oklch(0.13 0.02 250);
-  --sidebar-border: oklch(0.90 0.01 250);
-  --sidebar-ring: oklch(0.55 0.22 250);
-
-  /* Chat bubble colors */
-  --ai-bubble: oklch(0.96 0.008 250);
-  /* Soft AI bubble */
-  --user-bubble: oklch(0.55 0.22 250);
-  /* Blue user bubble */
-  --user-bubble-foreground: oklch(0.99 0 0);
-
-  /* Brand accent */
-  --brand-accent: oklch(0.72 0.18 50);
-  /* Warm orange for brand */
-
-  /* Text dim - for placeholder and secondary text */
-  --text-dim: oklch(0.55 0.01 250);
-  /* Gray placeholder text */
-  --text-main: oklch(0.25 0.02 250);
-  /* Main text color */
-
-  /* Switch checked - Warm accent */
-  --switch-checked: oklch(0.72 0.18 50);
-
-  /* Glow effects */
-  --glow-primary: 0 0 20px oklch(0.55 0.22 250 / 0.3);
-  --glow-warm: 0 0 20px oklch(0.72 0.18 50 / 0.4);
-  --glow-accent: 0 0 15px oklch(0.72 0.15 200 / 0.3);
-
-  /* Token stats - Light theme (Cost analysis palette) */
-  /* Input tokens - Blue: Request scale (source) */
-  --token-input: #3B82F6;
-  --token-input-bg: rgba(59, 130, 246, 0.12);
-  --token-input-glow: 0 0 8px rgba(59, 130, 246, 0.35);
-
-  /* Output tokens - Indigo: Generation scale (result) */
-  --token-output: #8B5CF6;
-  --token-output-bg: rgba(139, 92, 246, 0.12);
-  --token-output-glow: 0 0 8px rgba(139, 92, 246, 0.35);
-
-  /* Cache tokens - Green: Savings / Optimization benefits - Strong glow highlight */
-  --token-cache: #22C55E;
-  --token-cache-bg: rgba(34, 197, 94, 0.12);
-  --token-cache-glow: 0 0 12px rgba(34, 197, 94, 0.5);
-
-  /* Reasoning tokens - Amber: Cost / Resource consumption (primary color) */
-  --token-reasoning: #F59E0B;
-  --token-reasoning-bg: rgba(245, 158, 11, 0.12);
-  --token-reasoning-glow: 0 0 10px rgba(245, 158, 11, 0.4);
-
-  --token-total: #4F46E5;
-  --token-total-bg: rgba(79, 70, 229, 0.12);
-  --token-total-glow: 0 0 10px rgba(79, 70, 229, 0.4);
-
-  --token-track: #E5E7EB;
-
-  /* DAG Colors - Light Theme */
-  --dag-bg-main: #EEF2F6;
-  --dag-bg-panel: #FFFFFF;
-  --dag-border: rgba(0, 0, 0, 0.16);
-  --dag-text-primary: #1A1A1A;
-  --dag-text-secondary: #666666;
-  --dag-text-dim: #999999;
-
-  /* Human Node - Gray Blue */
-  --dag-node-human-bg: #F1F5F9;
-  --dag-node-human-border: #94A3B8;
-  --dag-node-human-text: #475569;
-
-  /* AI Node - Blue */
-  --dag-node-ai-bg: #EFF6FF;
-  --dag-node-ai-border: #3B82F6;
-  --dag-node-ai-text: #1D4ED8;
-
-  /* AI Final Node - Green */
-  --dag-node-final-bg: #F0FDF4;
-  --dag-node-final-border: #22C55E;
-  --dag-node-final-text: #16A34A;
-
-  /* Tool Node - Purple */
-  --dag-node-tool-bg: #FAF5FF;
-  --dag-node-tool-border: #A855F7;
-  --dag-node-tool-text: #7E22CE;
-
-  /* Legacy variables for compatibility */
-  --dag-node-user: #64748B;
-  --dag-node-user-light: #F1F5F9;
-  --dag-node-user-border: #94A3B8;
-
-  --dag-node-ai: #3B82F6;
-  --dag-node-ai-light: #EFF6FF;
-  --dag-node-ai-border: #3B82F6;
-
-  --dag-node-tool: #A855F7;
-  --dag-node-tool-light: #FAF5FF;
-  --dag-node-tool-border: #A855F7;
-
-  --dag-node-subagent-from: #3B82F6;
-  --dag-node-subagent-to: #06B6D4;
-
-  --dag-success: #22C55E;
-  --dag-success-light: #F0FDF4;
-  --dag-success-border: #22C55E;
-
-  --dag-error: #EF4444;
-  --dag-error-light: #FEF2F2;
-  --dag-error-border: #EF4444;
-
-  --dag-edge: rgba(0, 0, 0, 0.25);
+  --accent: oklch(0.943 0.012 67);
+  --accent-foreground: var(--foreground);
+  --warm: var(--primary);
+  --warm-soft: oklch(0.935 0.035 48);
+  --warm-foreground: var(--primary-foreground);
+  --secondary: oklch(0.947 0.009 68);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.948 0.008 68);
+  --muted-foreground: oklch(0.49 0.014 60);
+  --destructive: oklch(0.56 0.2 26);
+  --border: oklch(0.875 0.012 66);
+  --input: oklch(0.84 0.013 66);
+  --ring: var(--primary);
+  --sidebar: oklch(0.965 0.008 69);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.925 0.02 55);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--primary);
+  --ai-bubble: oklch(0.955 0.009 70);
+  --user-bubble: var(--warm-soft);
+  --user-bubble-foreground: var(--foreground);
+  --brand-accent: var(--primary);
+  --text-dim: var(--muted-foreground);
+  --text-main: var(--foreground);
+  --switch-checked: var(--primary);
+  --glow-primary: 0 1px 2px oklch(0.2 0.01 60 / 0.07);
+  --glow-warm: var(--glow-primary);
+  --glow-accent: var(--glow-primary);
+  --token-input: oklch(0.58 0.16 252);
+  --token-input-bg: oklch(0.58 0.16 252 / 0.1);
+  --token-output: oklch(0.54 0.12 285);
+  --token-output-bg: oklch(0.54 0.12 285 / 0.1);
+  --token-cache: oklch(0.57 0.13 150);
+  --token-cache-bg: oklch(0.57 0.13 150 / 0.1);
+  --token-reasoning: oklch(0.62 0.13 75);
+  --token-reasoning-bg: oklch(0.62 0.13 75 / 0.1);
+  --token-total: var(--foreground);
+  --token-total-bg: oklch(0.205 0.01 255 / 0.08);
+  --token-input-glow: none;
+  --token-output-glow: none;
+  --token-cache-glow: none;
+  --token-reasoning-glow: none;
+  --token-total-glow: none;
+  --token-track: oklch(0.91 0.006 250);
+  --dag-bg-main: oklch(0.965 0.005 250);
+  --dag-bg-panel: var(--card);
+  --dag-border: oklch(0.84 0.009 250);
+  --dag-text-primary: var(--foreground);
+  --dag-text-secondary: var(--muted-foreground);
+  --dag-text-dim: oklch(0.62 0.01 250);
+  --dag-node-human-bg: oklch(0.94 0.006 250);
+  --dag-node-human-border: oklch(0.66 0.02 250);
+  --dag-node-human-text: oklch(0.38 0.02 250);
+  --dag-node-ai-bg: oklch(0.95 0.025 255);
+  --dag-node-ai-border: var(--primary);
+  --dag-node-ai-text: oklch(0.44 0.16 255);
+  --dag-node-final-bg: oklch(0.95 0.03 150);
+  --dag-node-final-border: oklch(0.57 0.13 150);
+  --dag-node-final-text: oklch(0.42 0.1 150);
+  --dag-node-tool-bg: oklch(0.95 0.018 285);
+  --dag-node-tool-border: oklch(0.58 0.1 285);
+  --dag-node-tool-text: oklch(0.43 0.09 285);
+  --dag-node-user: var(--dag-node-human-border);
+  --dag-node-user-light: var(--dag-node-human-bg);
+  --dag-node-user-border: var(--dag-node-human-border);
+  --dag-node-ai: var(--primary);
+  --dag-node-ai-light: var(--dag-node-ai-bg);
+  --dag-node-ai-border: var(--primary);
+  --dag-node-tool: oklch(0.58 0.1 285);
+  --dag-node-tool-light: var(--dag-node-tool-bg);
+  --dag-node-subagent-from: var(--primary);
+  --dag-node-subagent-to: oklch(0.62 0.1 230);
+  --dag-success: oklch(0.57 0.13 150);
+  --dag-success-light: oklch(0.95 0.03 150);
+  --dag-success-border: var(--dag-success);
+  --dag-error: var(--destructive);
+  --dag-error-light: oklch(0.95 0.03 26);
+  --dag-error-border: var(--destructive);
+  --dag-edge: oklch(0.4 0.01 250 / 0.28);
 }
 
 .dark {
-  /* Dark Mode - Modern Tech Console Theme */
-
-  /* Background layers */
-  --background: oklch(0.12 0.02 260);
-  /* #0B0F1A - Deep tech blue-black */
-  --background-elevated: oklch(0.15 0.02 260);
-  /* #111827 - Elevated surface */
-
-  --foreground: oklch(0.92 0.01 260);
-  /* #E6F1FF - Soft blue-white text */
-  --card: oklch(0.18 0.02 260);
-  /* #1A2238 - Card surface */
-  --card-foreground: oklch(0.92 0.01 260);
-  --popover: oklch(0.16 0.02 260);
-  --popover-foreground: oklch(0.92 0.01 260);
-
-  /* Primary - Tech Cyan */
-  --primary: oklch(0.75 0.15 195);
-  /* #00D1FF - Tech blue */
-  --primary-foreground: oklch(0.12 0.02 260);
-
-  /* Accent - Neon Cyan */
-  --accent: oklch(0.85 0.15 165);
-  /* #00FFC6 - Bright cyan */
-  --accent-foreground: oklch(0.12 0.02 260);
-
-  /* Warm colors - For CTA and highlights only */
-  --warm: oklch(0.72 0.18 50);
-  /* #FF9F45 - Warm orange */
-  --warm-soft: oklch(0.85 0.15 75);
-  /* #FFD166 - Soft gold */
-  --warm-foreground: oklch(0.12 0.02 260);
-
-  --secondary: oklch(0.22 0.02 260);
-  --secondary-foreground: oklch(0.92 0.01 260);
-  --muted: oklch(0.22 0.02 260);
-  --muted-foreground: oklch(0.65 0.02 260);
-  /* #94A3B8 - Slate 400 */
-
-  --destructive: oklch(0.65 0.20 25);
-  --border: oklch(0.30 0.03 260);
-  /* Semi-transparent tech border */
-  --input: oklch(0.25 0.02 260);
-  --ring: oklch(0.75 0.15 195);
-
-  /* Sidebar */
-  --sidebar: oklch(0.10 0.02 260);
-  /* #0B0F1A - Same as main bg */
-  --sidebar-foreground: oklch(0.92 0.01 260);
-  --sidebar-primary: oklch(0.75 0.15 195);
-  --sidebar-primary-foreground: oklch(0.12 0.02 260);
-  --sidebar-accent: oklch(0.20 0.02 260);
-  --sidebar-accent-foreground: oklch(0.92 0.01 260);
-  --sidebar-border: oklch(0.25 0.03 260);
-  --sidebar-ring: oklch(0.75 0.15 195);
-
-  /* Chat bubble colors */
-  --ai-bubble: oklch(0.20 0.02 260);
-  /* Semi-transparent AI bubble */
-  --user-bubble: oklch(0.75 0.15 195);
-  /* Tech blue user bubble */
-  --user-bubble-foreground: oklch(0.12 0.02 260);
-
-  /* Brand accent */
-  --brand-accent: oklch(0.72 0.18 50);
-  /* Warm orange for brand */
-
-  /* Text dim - for placeholder and secondary text (dark mode) */
-  --text-dim: oklch(0.55 0.02 260);
-  /* Gray placeholder text */
-  --text-main: oklch(0.92 0.01 260);
-  /* Main text color */
-
-  /* Switch checked - Warm accent */
-  --switch-checked: oklch(0.72 0.18 50);
-
-  /* Glow effects */
-  --glow-primary: 0 0 20px oklch(0.75 0.15 195 / 0.4);
-  --glow-warm: 0 0 20px oklch(0.72 0.18 50 / 0.5);
-  --glow-accent: 0 0 15px oklch(0.85 0.15 165 / 0.4);
-
-  /* Token stats - Dark theme (Sharp, high contrast) */
-  /* Input tokens - Saturated blue with sharp edges */
-  --token-input: #60A5FA;
-  --token-input-bg: rgba(96, 165, 250, 0.15);
+  --background: oklch(0.16 0.008 60);
+  --background-elevated: oklch(0.19 0.009 60);
+  --bg-elevated: var(--background-elevated);
+  --foreground: oklch(0.93 0.006 70);
+  --card: oklch(0.20 0.009 60);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.185 0.009 60);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.72 0.15 40);
+  --primary-foreground: oklch(0.16 0.008 60);
+  --accent: oklch(0.25 0.014 58);
+  --accent-foreground: var(--foreground);
+  --warm: var(--primary);
+  --warm-soft: oklch(0.29 0.04 42);
+  --warm-foreground: var(--primary-foreground);
+  --secondary: oklch(0.23 0.012 60);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.23 0.012 60);
+  --muted-foreground: oklch(0.69 0.012 65);
+  --destructive: oklch(0.66 0.18 26);
+  --border: oklch(0.32 0.013 60);
+  --input: oklch(0.30 0.013 60);
+  --ring: var(--primary);
+  --sidebar: oklch(0.145 0.008 60);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.25 0.025 48);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: oklch(0.29 0.012 60);
+  --sidebar-ring: var(--primary);
+  --ai-bubble: oklch(0.205 0.011 60);
+  --user-bubble: var(--warm-soft);
+  --user-bubble-foreground: var(--foreground);
+  --brand-accent: var(--primary);
+  --text-dim: var(--muted-foreground);
+  --text-main: var(--foreground);
+  --switch-checked: var(--primary);
+  --glow-primary: 0 1px 2px oklch(0 0 0 / 0.25);
+  --glow-warm: var(--glow-primary);
+  --glow-accent: var(--glow-primary);
+  --token-input: oklch(0.72 0.12 252);
+  --token-input-bg: oklch(0.72 0.12 252 / 0.12);
+  --token-output: oklch(0.72 0.09 285);
+  --token-output-bg: oklch(0.72 0.09 285 / 0.12);
+  --token-cache: oklch(0.72 0.11 150);
+  --token-cache-bg: oklch(0.72 0.11 150 / 0.12);
+  --token-reasoning: oklch(0.76 0.11 75);
+  --token-reasoning-bg: oklch(0.76 0.11 75 / 0.12);
+  --token-total: var(--foreground);
+  --token-total-bg: oklch(0.93 0.006 255 / 0.1);
   --token-input-glow: none;
-
-  /* Output tokens - Saturated violet, distinct from blue */
-  --token-output: #A78BFA;
-  --token-output-bg: rgba(167, 139, 250, 0.15);
   --token-output-glow: none;
-
-  /* Cache tokens - Green (kept for compatibility) */
-  --token-cache: #4ADE80;
-  --token-cache-bg: rgba(74, 222, 128, 0.15);
-  --token-cache-glow: 0 0 15px rgba(74, 222, 128, 0.55);
-
-  /* Reasoning tokens - Amber (kept for compatibility) */
-  --token-reasoning: #FBBF24;
-  --token-reasoning-bg: rgba(251, 191, 36, 0.15);
-  --token-reasoning-glow: 0 0 12px rgba(251, 191, 36, 0.45);
-
-  --token-total: #A5B4FC;
-  --token-total-bg: rgba(165, 180, 252, 0.20);
-  --token-total-glow: 0 0 12px rgba(165, 180, 252, 0.5);
-
-  --token-track: rgba(255, 255, 255, 0.15);
-
-  /* DAG Colors - Dark Theme */
-  --dag-bg-main: #0A0E17;
-  --dag-bg-panel: #1A2332;
-  --dag-border: rgba(255, 255, 255, 0.14);
-  --dag-text-primary: #E6EDF3;
-  --dag-text-secondary: #9FB0C3;
-  --dag-text-dim: #6B7A90;
-
-  /* Human Node - Silver Gray */
-  --dag-node-human-bg: #1E293B;
-  --dag-node-human-border: #64748B;
-  --dag-node-human-text: #CBD5E1;
-
-  /* AI Node - Blue */
-  --dag-node-ai-bg: #172554;
-  --dag-node-ai-border: #60A5FA;
-  --dag-node-ai-text: #93C5FD;
-
-  /* AI Final Node - Green */
-  --dag-node-final-bg: #052E16;
-  --dag-node-final-border: #4ADE80;
-  --dag-node-final-text: #86EFAC;
-
-  /* Tool Node - Purple */
-  --dag-node-tool-bg: #3B1D5C;
-  --dag-node-tool-border: #C084FC;
-  --dag-node-tool-text: #D8B4FE;
-
-  /* Legacy variables for compatibility */
-  --dag-node-user: #94A3B8;
-  --dag-node-user-light: #1E293B;
-  --dag-node-user-border: #64748B;
-
-  --dag-node-ai: #60A5FA;
-  --dag-node-ai-light: #172554;
-  --dag-node-ai-border: #60A5FA;
-
-  --dag-node-tool: #C084FC;
-  --dag-node-tool-light: #3B1D5C;
-  --dag-node-tool-border: #C084FC;
-
-  --dag-node-subagent-from: #60A5FA;
-  --dag-node-subagent-to: #22D3EE;
-
-  --dag-success: #4ADE80;
-  --dag-success-light: #052E16;
-  --dag-success-border: #4ADE80;
-
-  --dag-error: #F87171;
-  --dag-error-light: #450A0A;
-  --dag-error-border: #F87171;
-
-  --dag-edge: rgba(255, 255, 255, 0.25);
+  --token-cache-glow: none;
+  --token-reasoning-glow: none;
+  --token-total-glow: none;
+  --token-track: oklch(0.3 0.012 255);
+  --dag-bg-main: oklch(0.135 0.009 255);
+  --dag-bg-panel: oklch(0.19 0.01 255);
+  --dag-border: oklch(0.34 0.012 255);
+  --dag-text-primary: var(--foreground);
+  --dag-text-secondary: var(--muted-foreground);
+  --dag-text-dim: oklch(0.55 0.012 255);
+  --dag-node-human-bg: oklch(0.23 0.012 255);
+  --dag-node-human-border: oklch(0.55 0.02 255);
+  --dag-node-human-text: oklch(0.82 0.01 255);
+  --dag-node-ai-bg: oklch(0.25 0.045 255);
+  --dag-node-ai-border: var(--primary);
+  --dag-node-ai-text: oklch(0.82 0.08 255);
+  --dag-node-final-bg: oklch(0.24 0.04 150);
+  --dag-node-final-border: oklch(0.72 0.11 150);
+  --dag-node-final-text: oklch(0.84 0.08 150);
+  --dag-node-tool-bg: oklch(0.24 0.03 285);
+  --dag-node-tool-border: oklch(0.72 0.09 285);
+  --dag-node-tool-text: oklch(0.84 0.06 285);
+  --dag-node-user: var(--dag-node-human-border);
+  --dag-node-user-light: var(--dag-node-human-bg);
+  --dag-node-user-border: var(--dag-node-human-border);
+  --dag-node-ai: var(--primary);
+  --dag-node-ai-light: var(--dag-node-ai-bg);
+  --dag-node-ai-border: var(--primary);
+  --dag-node-tool: oklch(0.72 0.09 285);
+  --dag-node-tool-light: var(--dag-node-tool-bg);
+  --dag-node-subagent-from: var(--primary);
+  --dag-node-subagent-to: oklch(0.72 0.09 230);
+  --dag-success: oklch(0.72 0.11 150);
+  --dag-success-light: oklch(0.24 0.04 150);
+  --dag-success-border: var(--dag-success);
+  --dag-error: var(--destructive);
+  --dag-error-light: oklch(0.25 0.05 26);
+  --dag-error-border: var(--destructive);
+  --dag-edge: oklch(0.85 0.01 255 / 0.24);
 }
 
 @theme inline {
@@ -384,12 +250,54 @@
   body {
     @apply bg-background text-foreground antialiased;
     margin: 0;
-    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    font-weight: 450;
+    font-family: var(--font-ui);
+    font-weight: 400;
+    font-size: 16px;
+    line-height: 1.7;
     font-synthesis: weight style;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 22%, transparent);
+    color: var(--foreground);
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: var(--font-mono);
+  }
+
+  h1,
+  h2,
+  h3,
+  [data-slot="dialog-title"],
+  [data-slot="card-title"] {
+    font-family: var(--font-display);
+    letter-spacing: 0;
+  }
+
+  h1,
+  h2,
+  h3 {
+    line-height: 1.35;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
   }
 
   /* Smooth theme transition - applied to color-related properties only */
@@ -895,7 +803,7 @@
 /* ==================== Kanban Font ==================== */
 
 .kanban-page {
-  font-family: Inter, "SF Pro Display", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font-ui);
 }
 
 /* ==================== Pure CSS Icons ==================== */
@@ -906,9 +814,10 @@
   height: 24px;
   position: relative;
   border-radius: 50%;
-  background: linear-gradient(145deg, #f6d365, #fda085);
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.3);
-  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--token-reasoning-bg);
+  border: 1px solid color-mix(in oklab, var(--token-reasoning) 42%, transparent);
+  box-shadow: none;
+  font-family: var(--font-mono);
 }
 
 /* Foreground: $ */
@@ -919,7 +828,7 @@
   top: 4px;
   font-size: 12px;
   font-weight: 700;
-  color: rgba(0, 0, 0, 0.7);
+  color: var(--token-reasoning);
 }
 
 /* Background: ¥ (slightly offset + transparent) */
@@ -930,7 +839,7 @@
   bottom: 3px;
   font-size: 10px;
   font-weight: 700;
-  color: rgba(0, 0, 0, 0.35);
+  color: var(--muted-foreground);
 }
 
 /* Steps icon - Numbered list 1 2 3 */
@@ -1003,4 +912,15 @@
   border-left: 2px solid currentColor;
   border-bottom: 2px solid currentColor;
   transform: translateY(-50%) rotate(45deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

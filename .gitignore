@@ -25,3 +25,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Runtime book-cover cache (downloaded once; never source-controlled)
+backend/data/book_covers/
+
+# Local patch/recovery artifacts
+*.orig
+*.rej

@@ -12,42 +12,10 @@ export function AgentHubLogo({ className, size = "md" }: AgentHubLogoProps) {
     lg: "text-5xl",
   }
 
-  const hubPadding = {
-    sm: "px-2 py-1",
-    md: "px-4 py-1.5",
-    lg: "px-6 py-2",
-  }
-
   return (
-    <span className={cn("flex items-center font-black select-none", sizeClasses[size], className)} style={{ letterSpacing: "-0.02em" }}>
-      <span className="text-gray-900 dark:text-white">Agent</span>
-      <span className="relative" style={{ marginLeft: "0.25em" }}>
-        <span
-          className={cn(
-            "inline-block text-white dark:text-black",
-            hubPadding[size]
-          )}
-          style={{
-            backgroundColor: "#f9a825",
-            borderRadius: "12px",
-            lineHeight: 1,
-            boxShadow: `
-              inset 0 2px 0 rgba(255, 255, 255, 0.25),
-              0 4px 12px rgba(0, 0, 0, 0.4)
-            `,
-          }}
-        >
-          Hub
-        </span>
-        {/* Glossy overlay effect */}
-        <span
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            borderRadius: "12px",
-            background: "linear-gradient(to bottom, rgba(255,255,255,0.25), rgba(255,255,255,0))",
-          }}
-        />
-      </span>
+    <span className={cn("inline-flex items-center gap-[0.32em] select-none", sizeClasses[size], className)}>
+      <span className="font-semibold tracking-[-0.025em] text-foreground">AgentHub</span>
+      <span className="size-[0.28em] rounded-full bg-primary" aria-hidden="true" />
     </span>
   )
 }

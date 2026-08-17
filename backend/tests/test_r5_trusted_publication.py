@@ -176,17 +176,28 @@ class TrustedPublicationTests(unittest.TestCase):
                 ],
             )
 
-    def test_model_synthesis_cannot_cover_side_effect_plan(self) -> None:
+    def test_model_synthesis_can_use_side_effect_receipt_as_evidence(self) -> None:
         plan = _plan(side_effect=True)
         receipt = _receipt(plan, output=_web_output())
-        with self.assertRaisesRegex(ValueError, "read-only"):
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text=(
+                    "## 结果\n\n"
+                    "- [来源一](https://example.com/one)：证据。"
+                ),
+            ),
+            evidence=[
+                ReceiptEvidenceBundle(plan=plan, receipt=receipt)
+            ],
+        )
+        self.assertTrue(answer.receipt_backed)
+
+        with self.assertRaisesRegex(ValueError, "deterministic receipt"):
             TrustedPublisher().publish_synthesis(
                 ControllerOutput(
                     mode="direct_answer",
-                    text=(
-                        "## 结果\n\n"
-                        "- [来源一](https://example.com/one)：证据。"
-                    ),
+                    text="已经更新你的阅读状态。",
                 ),
                 evidence=[
                     ReceiptEvidenceBundle(plan=plan, receipt=receipt)
@@ -235,27 +246,31 @@ class TrustedPublicationTests(unittest.TestCase):
         self.assertEqual(answer.publication_mode, "deterministic_receipt")
         self.assertNotIn("完成", answer.content)
 
-    def test_compiler_rejects_side_effect_mixed_with_model_synthesis(
+    def test_compiler_orders_read_after_side_effect_in_one_batch(
         self,
     ) -> None:
-        with self.assertRaisesRegex(ValueError, "mixed with side effects"):
-            WorkflowCompiler().compile(
-                CapabilityProposalBatch(
-                    proposals=[
-                        ValidatedCapabilityProposal(
-                            call_id="remember",
-                            capability="remember_memory",
-                            side_effect=True,
-                        ),
-                        ValidatedCapabilityProposal(
-                            call_id="web",
-                            capability="web_search",
-                            side_effect=False,
-                        ),
-                    ]
-                ),
-                goal="记住名字并查资料",
-            )
+        plan = WorkflowCompiler().compile(
+            CapabilityProposalBatch(
+                proposals=[
+                    ValidatedCapabilityProposal(
+                        call_id="remember",
+                        capability="remember_memory",
+                        side_effect=True,
+                    ),
+                    ValidatedCapabilityProposal(
+                        call_id="web",
+                        capability="web_search",
+                        side_effect=False,
+                    ),
+                ]
+            ),
+            goal="记住名字并查资料",
+        )
+        self.assertEqual(plan.response_mode, "model")
+        self.assertEqual(
+            plan.actions[1].depends_on,
+            [plan.actions[0].action_id],
+        )
 
 
 class TrustedEvidenceProjectionTests(unittest.TestCase):

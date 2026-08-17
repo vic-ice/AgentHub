@@ -35,6 +35,7 @@ from app.services.recommendation_constraints import (
     build_personalized_recommendation_constraints,
 )
 from app.services.recommendation_signals import (
+    normalize_recommendation_token,
     RecommendationSignalCreate,
     build_follow_up_questions,
     map_interaction_to_recommendation_signal,
@@ -49,6 +50,12 @@ from app.services.tool_admission import (
 from app.utils.logging import get_request_id
 from app.utils.turn_context import get_current_user_message
 
+
+from app.services.books.reading_service import (
+    STATUS_OR_EVALUATION_EVENT_TYPES,
+    ReadingService,
+    write_reading_memory_best_effort,
+)
 
 SEARCH_BOOKS_TOOL_POLICY = ToolPolicyDeclaration(
     tool_name="search_books",
@@ -836,6 +843,7 @@ async def remember_reading_preference(
     )
 
 
+
 @tool(args_schema=RecordBookFeedbackInput)
 async def record_book_feedback(
     user_id: UUID,
@@ -845,7 +853,12 @@ async def record_book_feedback(
     note: str = "",
     rating: int | None = None,
 ) -> str:
-    """Record user feedback on a recommended or mentioned book."""
+    """Record user feedback on a recommended or mentioned book.
+
+    All reading-state writes go through ReadingService so the current shelf,
+    the recommendation-event audit, the legacy interaction row, and the
+    derived long-term memory stay consistent.
+    """
     tool_admission = get_tool_admission_gate().admit_current_turn(
         RECORD_BOOK_FEEDBACK_TOOL_POLICY
     )
@@ -857,102 +870,44 @@ async def record_book_feedback(
 
     db = get_database()
     async with db.session() as session:
-        book = await find_book_by_title(session, book_title)
-        interaction = await create_book_interaction(
-            session,
-            BookInteractionCreate(
-                user_id=user_id,
-                book_id=book.id if book else None,
-                book_title=book.title if book else book_title,
-                interaction_type=interaction_type,
-                note=note or None,
-                rating=rating,
-            ),
-        )
-        signal_plan = map_interaction_to_recommendation_signal(interaction_type)
-        recommendation_event = await create_recommendation_event(
-            session,
-            RecommendationSignalCreate(
-                user_id=user_id,
-                thread_id=thread_id,
-                book_id=book.id if book else None,
-                book_title=interaction.book_title or book_title,
-                event_type=signal_plan.event_type,
-                signal_polarity=signal_plan.signal_polarity,
-                signal_strength=signal_plan.signal_strength,
-                request_id=get_request_id() if get_request_id() != "-" else "",
-                source="book_feedback",
-                metadata={
-                    "interaction_id": str(interaction.id),
-                    "interaction_type": interaction.interaction_type,
-                    "note": note,
-                    "rating": rating,
-                    "writes_long_term_memory": signal_plan.writes_long_term_memory,
-                },
-            ),
-        )
-
-        # The generic memory event below mirrors this feedback into long-term memory.
-
-    normalized_type = interaction_type.strip().lower().replace(" ", "_")
-    memory_type = (
-        "reading_state"
-        if normalized_type in {"want", "want_to_read", "to_read", "read", "finished"}
-        else "feedback"
-    )
-    polarity_map = {
-        "want": "want",
-        "want_to_read": "want",
-        "to_read": "want",
-        "read": "read",
-        "finished": "read",
-        "like": "like",
-        "liked": "like",
-        "similar": "like",
-        "dislike": "dislike",
-        "disliked": "dislike",
-        "not_interested": "avoid",
-        "avoid": "avoid",
-    }
-    admission_result = await get_memory_orchestrator().remember_candidate(
-        MemoryCandidate(
+        service = ReadingService(session)
+        result = await service.upsert_from_feedback(
             user_id=user_id,
-            type=memory_type,
-            subject="book",
-            value=interaction.book_title or book_title,
-            polarity=polarity_map.get(normalized_type, "neutral"),
+            interaction_type=interaction_type,
+            book_title=book_title,
+            note=note,
+            rating=rating,
             thread_id=thread_id,
-            source_kind="book_feedback",
-            source_text=note or normalized_type,
-            metadata={
-                "interaction_id": str(interaction.id),
-                "interaction_type": normalized_type,
-                "note": note,
-                "rating": rating,
-            },
+            request_id=get_request_id() if get_request_id() != "-" else "",
+            source="book_feedback",
         )
-    )
-    saved_memory = admission_result.memory
 
+    memory_summary = await write_reading_memory_best_effort(
+        user_id=user_id,
+        book_title=result.shelf.title,
+        reading_status=result.shelf.reading_status,
+        evaluation=result.shelf.evaluation,
+        thread_id=thread_id,
+        note=note or result.shelf.note,
+        source_kind="book_feedback",
+        source_event_id=(
+            result.events[-1].id
+            if result.events else result.interaction_id
+        ),
+    )
     return json.dumps(
         {
-            "id": str(interaction.id),
-            "user_id": str(interaction.user_id),
-            "book_id": str(interaction.book_id) if interaction.book_id else None,
-            "book_title": interaction.book_title,
-            "interaction_type": interaction.interaction_type,
-            "rating": interaction.rating,
-            "memory_event_id": (
-                str(saved_memory.id) if saved_memory and saved_memory.id else None
+            "id": str(result.interaction_id) if result.interaction_id else None,
+            "user_id": str(result.shelf.user_id),
+            "book_id": str(result.shelf.book_id) if result.shelf.book_id else None,
+            "book_title": result.shelf.title,
+            "interaction_type": interaction_type,
+            "rating": result.shelf.rating,
+            "shelf": result.shelf.model_dump(mode="json"),
+            "recommendation_event": (
+                result.events[-1].model_dump(mode="json") if result.events else None
             ),
-            "recommendation_event": recommendation_signal_from_record(
-                recommendation_event
-            ).model_dump(mode="json"),
-            "memory_admission": admission_result.decision.model_dump(mode="json"),
-            "memory_conflicts": [
-                conflict.model_dump(mode="json")
-                for conflict in admission_result.conflicts
-            ],
+            "memory": memory_summary,
             "tool_admission": tool_admission.model_dump(mode="json"),
         },
         ensure_ascii=False,
@@ -971,7 +926,12 @@ async def record_recommendation_signal(
     note: str = "",
     metadata: dict | None = None,
 ) -> str:
-    """Record a recommendation behavior signal without writing long-term memory."""
+    """Record a recommendation behavior signal.
+
+    Reading-state/evaluation signals (want_to_read / reading / read / dropped /
+    liked / disliked / not_interested) go through ReadingService so the shelf
+    updates immediately; other behavior signals are appended as events only.
+    """
     tool_admission = get_tool_admission_gate().admit_current_turn(
         RECORD_RECOMMENDATION_SIGNAL_TOOL_POLICY
     )
@@ -981,12 +941,50 @@ async def record_recommendation_signal(
             ensure_ascii=False,
         )
 
+    db = get_database()
+    if normalize_recommendation_token(event_type) in STATUS_OR_EVALUATION_EVENT_TYPES:
+        async with db.session() as session:
+            service = ReadingService(session)
+            result = await service.apply_signal_event(
+                user_id=user_id,
+                event_type=event_type,
+                book_title=book_title,
+                thread_id=thread_id,
+                request_id=get_request_id() if get_request_id() != "-" else "",
+                source=source,
+                note=note,
+            )
+        memory_summary = await write_reading_memory_best_effort(
+            user_id=user_id,
+            book_title=result.shelf.title,
+            reading_status=result.shelf.reading_status,
+            evaluation=result.shelf.evaluation,
+            thread_id=thread_id,
+            note=note,
+            source_kind="recommendation_button",
+            source_event_id=(
+                result.events[-1].id
+                if result.events else result.interaction_id
+            ),
+        )
+        return json.dumps(
+            {
+                "shelf": result.shelf.model_dump(mode="json"),
+                "recommendation_event": (
+                    result.events[-1].model_dump(mode="json")
+                    if result.events
+                    else None
+                ),
+                "memory": memory_summary,
+                "tool_admission": tool_admission.model_dump(mode="json"),
+            },
+            ensure_ascii=False,
+        )
+
     event_metadata = dict(metadata or {})
     if note:
         event_metadata["note"] = note
     event_metadata["writes_long_term_memory"] = False
-
-    db = get_database()
     async with db.session() as session:
         book = await find_book_by_title(session, book_title) if book_title else None
         saved = await create_recommendation_event(
@@ -1004,7 +1002,6 @@ async def record_recommendation_signal(
                 metadata=event_metadata,
             ),
         )
-
     return json.dumps(
         {
             "recommendation_event": recommendation_signal_from_record(saved).model_dump(

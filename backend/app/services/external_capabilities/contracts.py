@@ -64,7 +64,20 @@ class WebSearchInput(ExternalCapabilityInput):
 
 
 class BookSearchInput(ExternalCapabilityInput):
-    query: str = Field(min_length=1, max_length=300)
+    query: str = Field(
+        min_length=1,
+        max_length=300,
+        description=(
+            "Required external-catalog discovery or lookup query; this is not "
+            "a query for the user's own Shelf."
+        ),
+    )
+    mode: Literal["recommendation", "lookup"] = Field(
+        default="recommendation",
+        description=(
+            "recommendation discovers new books; lookup retrieves a specifically requested book"
+        ),
+    )
     limit: int = Field(default=5, ge=1, le=10)
     language: str = Field(default="", max_length=24)
     genres: list[str] = Field(default_factory=list, max_length=10)
@@ -175,6 +188,7 @@ class BookEvidence(BaseModel):
         max_length=10,
     )
     error: str = Field(default="", max_length=120)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResearchReportEvidence(BaseModel):

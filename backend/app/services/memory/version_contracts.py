@@ -32,13 +32,73 @@ class VersionedMemoryModel(BaseModel):
 
 
 class MemoryAssertionProposal(VersionedMemoryModel):
-    """Model-visible semantic assertion; all storage identity is absent."""
+    """One model-understood business assertion; storage identity is absent.
 
-    subject: str = Field(min_length=1, max_length=256)
-    predicate: str = Field(min_length=1, max_length=256)
-    value: dict[str, Any] = Field(default_factory=dict)
+    One Controller call may carry several assertions. These fields describe
+    what the user asserted; the runtime validates and routes them without
+    asking another model to reinterpret the original message.
+    """
+
+    subject: str = Field(
+        min_length=1,
+        max_length=256,
+        description=(
+            "Exact entity name stated in the message. For reading facts this "
+            "is the exact book title, never self/user/book/it or another "
+            "generic type label."
+        ),
+    )
+    predicate: str = Field(
+        min_length=1,
+        max_length=256,
+        description="Stable semantic predicate for this one assertion.",
+    )
+    value: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Canonical structured value for this assertion; do not omit a "
+            "status or evaluation explicitly stated by the user."
+        ),
+    )
     qualifiers: dict[str, Any] = Field(default_factory=dict)
     evidence_quote: str = Field(min_length=1, max_length=4000)
+    domain: Literal[
+        "reading",
+        "personal",
+        "possession",
+        "relationship",
+        "plan",
+        "general",
+    ] = "general"
+    kind: Literal[
+        "preference",
+        "state",
+        "feedback",
+        "fact",
+        "agreement",
+        "correction",
+    ] = "fact"
+    entity_type: Literal[
+        "",
+        "book",
+        "person",
+        "pet",
+        "object",
+        "place",
+        "account",
+        "project",
+        "other",
+    ] = ""
+    actor: Literal["user", "third_party"] = "user"
+    modality: Literal[
+        "asserted",
+        "uncertain",
+        "hypothetical",
+        "negated",
+    ] = "asserted"
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    needs_clarification: bool = False
+    clarification_question: str = Field(default="", max_length=1000)
 
     @field_validator(
         "subject",
@@ -55,6 +115,12 @@ class RememberMemoryRequest(VersionedMemoryModel):
     assertions: list[MemoryAssertionProposal] = Field(
         min_length=1,
         max_length=8,
+        description=(
+            "Complete set of independent durable assertions from this one "
+            "message. Preserve every explicitly named entity. A compound "
+            "message about multiple books must include actions for every book "
+            "and every stated status/evaluation dimension."
+        ),
     )
 
 
@@ -145,15 +211,26 @@ class MemoryTargetResolutionResult(VersionedMemoryModel):
     reason_codes: list[str] = Field(default_factory=list)
 
 
+PROVENANCE_SOURCE_KINDS = frozenset({
+    "user_message",
+    "reading_event",
+    "tool_execution",
+    "admin_action",
+    "correction",
+    "system_derived",
+})
+
 class MemoryVersionCommitCommand(VersionedMemoryModel):
     facts: list[CanonicalMemoryFact] = Field(min_length=1, max_length=8)
     source_event_id: UUID
+    source_kind: str = "user_message"
     receipt_id: str = Field(min_length=1, max_length=128)
 
 
 class MemoryVersionForgetCommand(VersionedMemoryModel):
     memory_keys: list[str] = Field(min_length=1, max_length=8)
     source_event_id: UUID
+    source_kind: str = "user_message"
     receipt_id: str = Field(min_length=1, max_length=128)
     evidence_quote: str = Field(min_length=1, max_length=4000)
 

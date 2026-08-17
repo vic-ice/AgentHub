@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -17,6 +18,7 @@ from app.services.research.publication.report_writer import (
     _message_text,
     _resolve_model_id,
 )
+from app.services.execution_progress import report_model_completion
 
 
 RESEARCH_REVIEW_CONTRACT_VERSION = "research-review-v1"
@@ -226,14 +228,32 @@ async def _call_reviewer_model(
     prompt = _review_prompt(workspace, round_index=round_index, budget=budget)
     for thinking_mode in (None, False):
         for attempt in range(2):
+            started = time.perf_counter()
+            response = None
             try:
                 model = get_llm(model_id, thinking_mode=thinking_mode)
                 async with asyncio.timeout(REVIEW_TIMEOUT_SECONDS):
                     response = await model.ainvoke(prompt)
+                await report_model_completion(
+                    response,
+                    title="\u7814\u7a76\u5ba1\u67e5\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+                    detail=f"\u5df2\u5ba1\u67e5\u7b2c {round_index} \u8f6e\u7814\u7a76\u8bc1\u636e",
+                    model_name=model_id,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
                 payload = _json_payload(_message_text(response))
                 if isinstance(payload, dict) and payload.get("verdict"):
                     return payload
-            except Exception:
+            except Exception as exc:
+                await report_model_completion(
+                    response,
+                    title="\u7814\u7a76\u5ba1\u67e5\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+                    detail=f"\u7b2c {round_index} \u8f6e\u7814\u7a76\u5ba1\u67e5\u5931\u8d25",
+                    model_name=model_id,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    status="failed",
+                    error=str(exc) or exc.__class__.__name__,
+                )
                 continue
     return None
 

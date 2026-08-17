@@ -21,6 +21,8 @@ class MemoryAdminFact(BaseModel):
     valid_from: datetime
     valid_to: datetime | None = None
     is_tombstone: bool = False
+    domain: str = "general"
+    kind: str = "fact"
 
 
 class MemoryAdminCurrentResponse(BaseModel):

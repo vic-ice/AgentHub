@@ -11,14 +11,12 @@ from app.services.conversation import ConversationEventRepository
 from app.services.memory.canonicalizer import MemoryCanonicalizer
 from app.services.memory.version_contracts import (
     ForgetMemoryRequest,
-    MemoryVersionCommitCommand,
-    MemoryVersionForgetCommand,
     RememberMemoryRequest,
     SearchMemoryRequest,
 )
 from app.services.memory.vector_recall import recall_memory_keys
 from app.services.memory.version_search import VersionedMemorySearch
-from app.services.memory.version_store import MemoryVersionStore
+from app.services.memory.read_gateway import MemoryReadGateway
 from app.services.memory.write_gate import (
     validate_forget_write,
     validate_remember_write,
@@ -40,26 +38,27 @@ async def execute_remember_memory(
     )
     if not ok:
         return {"status": "rejected", "reason": reason}
-    canonical = MemoryCanonicalizer().canonicalize(
+    from app.services.memory.turn_compiler import compiled_turn_from_assertions
+    from app.services.memory.write_gateway import MemoryWriteGateway
+
+    compiled = compiled_turn_from_assertions(
         request.assertions,
-        source_text=source_text,
+        raw_text=source_text,
     )
-    if canonical.status != "ready":
-        return canonical.model_dump(mode="json")
     source_event_id, database = await _source_event_id(context)
     if source_event_id is None:
         return _missing_source_result()
     async with database.session() as session:
-        receipt = await MemoryVersionStore(session).commit(
-            MemoryVersionCommitCommand(
-                facts=canonical.facts,
-                source_event_id=source_event_id,
-                receipt_id=_receipt_id(context, action_id),
-            ),
+        gateway = MemoryWriteGateway(session)
+        outcome = await gateway.commit_compiled(
+            compiled=compiled,
             user_id=context.user_id,
             thread_id=context.thread_id,
+            source_event_id=source_event_id,
+            receipt_id=_receipt_id(context, action_id),
         )
-    return receipt.model_dump(mode="json")
+    return outcome
+
 
 
 async def execute_search_memory(
@@ -76,22 +75,22 @@ async def execute_search_memory(
         )
     database = get_database()
     async with database.session() as session:
-        store = MemoryVersionStore(session)
+        reader = MemoryReadGateway(session)
         if request.scope == "current":
-            records = await store.list_current(
+            records = await reader.current_versions(
                 user_id=context.user_id,
                 limit=500,
             )
             if semantic_memory_keys:
                 records = _merge_records(
                     records,
-                    await store.list_current_by_memory_keys(
+                    await reader.current_versions_by_keys(
                         user_id=context.user_id,
                         memory_keys=semantic_memory_keys,
                     ),
                 )
         else:
-            records = await store.list_history(
+            records = await reader.history_versions(
                 user_id=context.user_id,
                 limit=500,
             )
@@ -123,20 +122,18 @@ async def execute_forget_memory(
     source_event_id, database = await _source_event_id(context)
     if source_event_id is None:
         return _missing_source_result()
+    from app.services.memory.write_gateway import MemoryWriteGateway
+
     async with database.session() as session:
-        receipt = await MemoryVersionStore(session).forget(
-            MemoryVersionForgetCommand(
-                memory_keys=[
-                    item.memory_key for item in resolution.targets
-                ],
-                source_event_id=source_event_id,
-                receipt_id=_receipt_id(context, action_id),
-                evidence_quote=source_text,
-            ),
+        outcome = await MemoryWriteGateway(session).forget(
             user_id=context.user_id,
             thread_id=context.thread_id,
+            memory_keys=[item.memory_key for item in resolution.targets],
+            source_event_id=source_event_id,
+            receipt_id=_receipt_id(context, action_id),
+            evidence_quote=source_text,
         )
-    return receipt.model_dump(mode="json")
+    return dict(outcome["receipt"])
 
 
 async def _source_event_id(

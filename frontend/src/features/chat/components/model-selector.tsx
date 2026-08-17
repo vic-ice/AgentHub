@@ -119,7 +119,7 @@ export function ModelSelector({
     >
       <SelectTrigger
         size="sm"
-        className="h-9 px-3 text-sm w-[200px] border-border/60 bg-background/80 backdrop-blur-sm hover:bg-accent/30 hover:border-primary/40 transition-all duration-200"
+        className="h-9 w-[clamp(132px,18vw,200px)] rounded-full border-border/75 bg-muted/35 px-3 text-sm transition-[background-color,border-color] duration-150 hover:border-foreground/20 hover:bg-muted/70"
       >
         <SelectValue placeholder={
           <span className="flex items-center gap-2 text-muted-foreground">
@@ -145,7 +145,7 @@ export function ModelSelector({
         position="popper"
         side="top"
         align="start"
-        className="max-h-[320px] w-[240px] border-border/60 bg-popover/95 backdrop-blur-md"
+        className="max-h-[320px] w-[240px] border-border bg-popover"
       >
         {groupedModels.map(({ groupKey, displayName, models: providerModels }) => (
           <SelectGroup key={groupKey}>

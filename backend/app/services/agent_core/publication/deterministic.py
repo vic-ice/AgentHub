@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.agent_core.contracts import PublishedAnswer
+from app.services.agent_core.publication.bookshelf_renderer import render_bookshelf_read
 from app.services.agent_core.publication.memory_renderer import (
     render_memory_forget,
     render_memory_mutation,
@@ -109,6 +110,8 @@ def _render_action(action: ActionReceipt) -> str:
         return render_task_creation(output)
     if action.status != "completed":
         return ""
+    if action.operation == "bookshelf_read_v1":
+        return render_bookshelf_read(output)
     if action.operation == "conversation_read":
         return str(output.get("answer") or "").strip()
     if action.operation == "remember_memory_v2":

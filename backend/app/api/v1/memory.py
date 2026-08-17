@@ -17,15 +17,16 @@ from app.schemas.memory import (
     MemoryForgetAdminRequest,
 )
 from app.services.memory.canonicalizer import MemoryCanonicalizer
+from app.services.memory.classification import derive_domain_kind
 from app.services.memory.version_contracts import (
     ForgetMemoryTargetProposal,
     MemoryAssertionProposal,
     MemoryMutationReceipt,
-    MemoryVersionCommitCommand,
-    MemoryVersionForgetCommand,
     MemoryVersionRecord,
 )
-from app.services.memory.version_store import MemoryVersionStore
+from app.services.memory.version_errors import MemoryVersionTargetNotFound
+from app.services.memory.read_gateway import MemoryReadGateway
+from app.services.memory.write_gateway import MemoryWriteGateway
 
 api_router = APIRouter(prefix="/memory", tags=["Memory"])
 
@@ -40,8 +41,8 @@ async def list_current_memories(
 ) -> MemoryAdminCurrentResponse:
     """List current canonical facts exactly as the chat memory path sees them."""
 
-    store = MemoryVersionStore(db)
-    heads = await store.list_current(user_id=user_id, limit=500)
+    reader = MemoryReadGateway(db)
+    heads = await reader.current_versions(user_id=user_id, limit=500)
     return MemoryAdminCurrentResponse(
         facts=[
             _to_admin_fact(head)
@@ -62,8 +63,8 @@ async def memory_history(
 ) -> MemoryAdminHistoryResponse:
     """Return the full version timeline for one fact."""
 
-    store = MemoryVersionStore(db)
-    records = await store.list_history(user_id=user_id, limit=1000)
+    reader = MemoryReadGateway(db)
+    records = await reader.history_versions(user_id=user_id, limit=1000)
     versions = [
         record
         for record in records
@@ -114,8 +115,8 @@ async def edit_memory(
         )
 
     fact = canonical.facts[0]
-    store = MemoryVersionStore(db)
-    heads = await store.list_current(user_id=request.user_id, limit=500)
+    reader = MemoryReadGateway(db)
+    heads = await reader.current_versions(user_id=request.user_id, limit=500)
     head = next(
         (item for item in heads if item.memory_key == fact.memory_key),
         None,
@@ -137,15 +138,21 @@ async def edit_memory(
     await db.flush()
     await db.refresh(event)
 
-    receipt = await store.commit(
-        MemoryVersionCommitCommand(
-            facts=canonical.facts,
-            source_event_id=event.id,
-            receipt_id=_admin_receipt_id(request.user_id, "edit", event.id),
-        ),
+    gateway = MemoryWriteGateway(db)
+    gateway_result = await gateway.commit_facts(
+        canonical.facts,
         user_id=request.user_id,
         thread_id=request.thread_id,
+        source_event_id=event.id,
+        receipt_id=_admin_receipt_id(request.user_id, "edit", event.id),
+        evidence_quote=evidence,
     )
+    if gateway_result.get("status") == "clarification_required":
+        raise _clarification_error(
+            ["gateway_entity_resolution_ambiguous"],
+            gateway_result.get("clarification_question", ""),
+        )
+    receipt = MemoryMutationReceipt.model_validate(gateway_result["receipt"])
     await db.commit()
     return receipt
 
@@ -179,7 +186,6 @@ async def forget_memory(
             resolution.clarification_question,
         )
 
-    store = MemoryVersionStore(db)
     event = MemoryManagementEvent(
         user_id=request.user_id,
         thread_id=request.thread_id,
@@ -197,18 +203,22 @@ async def forget_memory(
     await db.flush()
     await db.refresh(event)
 
-    receipt = await store.forget(
-        MemoryVersionForgetCommand(
-            memory_keys=[
-                item.memory_key for item in resolution.targets
-            ],
+    gateway = MemoryWriteGateway(db)
+    try:
+        gateway_result = await gateway.forget(
+            user_id=request.user_id,
+            thread_id=request.thread_id,
+            memory_keys=[item.memory_key for item in resolution.targets],
             source_event_id=event.id,
             receipt_id=_admin_receipt_id(request.user_id, "forget", event.id),
             evidence_quote=evidence,
-        ),
-        user_id=request.user_id,
-        thread_id=request.thread_id,
-    )
+        )
+    except MemoryVersionTargetNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="memory fact not found",
+        ) from exc
+    receipt = MemoryMutationReceipt.model_validate(gateway_result["receipt"])
     await db.commit()
     return receipt
 
@@ -239,6 +249,8 @@ def _to_admin_fact(record: MemoryVersionRecord) -> MemoryAdminFact:
         valid_from=record.valid_from,
         valid_to=record.valid_to,
         is_tombstone=record.is_tombstone,
+        domain=derive_domain_kind("", record.subject, record.schema_key)[0],
+        kind=derive_domain_kind("", record.subject, record.schema_key)[1],
     )
 
 

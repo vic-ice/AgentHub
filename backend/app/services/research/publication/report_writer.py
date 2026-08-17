@@ -20,6 +20,7 @@ from app.infra.llm.model_candidates import (
     record_model_success,
 )
 from app.services.research.report import ResearchReport
+from app.services.execution_progress import report_model_completion
 
 
 logger = logging.getLogger(__name__)
@@ -185,13 +186,21 @@ async def _generate_report_once(
 
     from app.infra.llm import get_llm
 
-    started = time.perf_counter()
     last_attempt: dict[str, Any] = {}
     for attempt_index in range(2):
+        call_started = time.perf_counter()
+        response = None
         try:
             model = get_llm(model_id, thinking_mode=None)
             async with asyncio.timeout(REPORT_TIMEOUT_SECONDS):
                 response = await model.ainvoke(prompt)
+            await report_model_completion(
+                response,
+                title="\u7814\u7a76\u62a5\u544a\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+                detail="\u7814\u7a76\u62a5\u544a\u8349\u7a3f\u5df2\u751f\u6210",
+                model_name=model_id,
+                duration_ms=int((time.perf_counter() - call_started) * 1000),
+            )
             final_text, thinking_text = _message_text_and_thinking(response)
             body = final_text or thinking_text
             if final_text.strip():
@@ -214,18 +223,27 @@ async def _generate_report_once(
                 "thinking": None,
                 "ok": ok,
                 "error": "",
-                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "duration_ms": int((time.perf_counter() - call_started) * 1000),
                 "body_chars": len(body or ""),
                 "report_chars": len(rendered or ""),
             }
             return rendered, cited_ids, response, body, attempt
         except Exception as exc:
+            await report_model_completion(
+                response,
+                title="\u7814\u7a76\u62a5\u544a\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+                detail="\u7814\u7a76\u62a5\u544a\u6a21\u578b\u8c03\u7528\u5931\u8d25",
+                model_name=model_id,
+                duration_ms=int((time.perf_counter() - call_started) * 1000),
+                status="failed",
+                error=str(exc) or exc.__class__.__name__,
+            )
             last_attempt = {
                 "model_id": model_id,
                 "thinking": None,
                 "ok": False,
                 "error": (str(exc) or exc.__class__.__name__)[:200],
-                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "duration_ms": int((time.perf_counter() - call_started) * 1000),
                 "body_chars": 0,
                 "report_chars": 0,
             }

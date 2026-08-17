@@ -27,6 +27,7 @@ from app.services.conversation.authoritative_reader import (
     JournalConversationReader,
 )
 from app.services.conversation.contracts import ConversationReadRequest
+from app.services.books.read_runtime import execute_bookshelf_read
 from app.services.memory.version_contracts import (
     ForgetMemoryRequest,
     RememberMemoryRequest,
@@ -39,6 +40,10 @@ from app.services.memory.version_runtime import (
 )
 from app.services.tasks.contracts import TaskPlanDraft
 from app.utils.turn_context import user_message_scope
+from app.services.execution_progress import (
+    report_completed_step,
+    summarize_step_result,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,7 @@ _RETIRED_CHAT_MEMORY_WRITE_OPERATIONS = frozenset(
 _NATIVE_OPERATIONS = frozenset(
     {
         "conversation_read",
+        "bookshelf_read_v1",
         "remember_memory_v2",
         "search_memory_v2",
         "forget_memory_v2",
@@ -103,6 +109,7 @@ class SystemRuntime:
                 )
                 if recovered is not None:
                     receipts.append(recovered)
+                    await _report_action_receipt(recovered)
                     continue
                 dependency_failure = _dependency_failure(action, receipts)
                 if dependency_failure:
@@ -124,6 +131,7 @@ class SystemRuntime:
                             receipt=receipt,
                         )
                     )
+                    await _report_action_receipt(receipts[-1])
                     continue
 
                 admitted, reason = self._admit_action(
@@ -149,6 +157,7 @@ class SystemRuntime:
                             receipt=receipt,
                         )
                     )
+                    await _report_action_receipt(receipts[-1])
                     continue
 
                 receipt = await self._execute_planned_action(
@@ -166,6 +175,7 @@ class SystemRuntime:
                         receipt=receipt,
                     )
                 )
+                await _report_action_receipt(receipts[-1])
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         status = _plan_status(receipts)
@@ -359,6 +369,11 @@ class SystemRuntime:
                     action,
                     context=context,
                 )
+            elif action.operation == "bookshelf_read_v1":
+                output = await execute_bookshelf_read(
+                    action.arguments,
+                    context=context,
+                )
             elif action.operation == "remember_memory_v2":
                 output = await execute_remember_memory(
                     action.arguments,
@@ -433,6 +448,25 @@ class SystemRuntime:
             )
         except Exception as exc:
             return _failed_action_receipt(action, exc=exc, started=started)
+
+
+async def _report_action_receipt(receipt: ActionReceipt) -> None:
+    status = receipt.status
+    await report_completed_step(
+        kind="action",
+        status=status,
+        title=f"\u6267\u884c {receipt.operation}",
+        detail=(
+            summarize_step_result(receipt.output)
+            if status == "completed"
+            else (receipt.error or f"\u6b65\u9aa4\u72b6\u6001\uff1a{status}")
+        ),
+        step_id=f"action:{receipt.action_id}",
+        action_id=receipt.action_id,
+        operation=receipt.operation,
+        duration_ms=receipt.duration_ms,
+        error=receipt.error or None,
+    )
 
 
 def _completed_action_receipt(

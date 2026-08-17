@@ -25,7 +25,7 @@ from app.services.agent_core.working_state import (
 from app.services.conversation.summary_llm_provider import (
     LLMSummaryProvider,
 )
-from app.services.memory.version_store import MemoryVersionStore
+from app.services.memory.read_gateway import MemoryReadGateway
 from app.services.tasks.repository import TaskRepository
 
 
@@ -158,7 +158,7 @@ class ControllerRequestBuilder:
         *,
         user_id: UUID,
     ) -> list[TrustedMemoryContext]:
-        records = await MemoryVersionStore(db).list_current(
+        records = await MemoryReadGateway(db).current_versions(
             user_id=user_id,
             limit=50,
         )

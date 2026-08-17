@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud.book import get_or_create_preference_profile
 from app.models.book import Book, BookInteraction, RecommendationEvent
 from app.services.memory.contracts import MemoryEvent
-from app.services.memory.providers.postgres import PostgresMemoryProvider
+from app.services.memory.read_gateway import MemoryReadGateway
 from app.services.recommendation_signals import (
     NEGATIVE_EVENT_TYPES,
     READING_STATE_EVENT_TYPES,
@@ -23,10 +23,25 @@ from app.services.recommendation_signals import (
     normalize_recommendation_text,
     normalize_recommendation_token,
 )
+from app.services.books.reading_service import normalize_book_title
 
 
+import logging
+
+
+logger = logging.getLogger(__name__)
 PROJECTION_CONTRACT_VERSION = "recommendation-projection-v1"
 DEFAULT_ATTENTION_HALF_LIFE_DAYS = 30.0
+READING_ANCHOR_WEIGHTS: dict[str, dict[str, float]] = {
+    "liked": {"tag": 0.22, "author": 0.30},
+    "neutral": {"tag": 0.08, "author": 0.10},
+    "disliked": {"tag": -0.10, "author": -0.15},
+    "not_interested": {"tag": -0.10, "author": -0.15},
+    None: {"tag": 0.15, "author": 0.20},
+}
+READING_ANCHOR_MAX_POSITIVE = 0.6
+READING_ANCHOR_MAX_NEGATIVE = -0.3
+
 CURRENT_MEMORY_PREFERENCE_SOURCE = "current_memory"
 LEGACY_PROFILE_PREFERENCE_SOURCE = "legacy_profile_fallback"
 _WORD_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.IGNORECASE)
@@ -139,6 +154,8 @@ class RecommendationProjector:
         preferences = await self._load_preference_snapshot(user_id)
         events = await self._load_events(user_id)
         interactions = await self._load_interactions(user_id)
+        shelf = await self._load_shelf(user_id)
+        anchors = await self._load_reading_anchors(user_id)
         now = datetime.now(timezone.utc)
         source_by_book_id = {
             str(book_id): dict(source)
@@ -151,6 +168,8 @@ class RecommendationProjector:
         for index, book in enumerate(books):
             source_info = source_by_book_id.get(str(getattr(book, "id", "")), {})
             projection = self._project_book(
+                shelf=shelf,
+                anchors=anchors,
                 user_id=user_id,
                 query=query,
                 book=book,
@@ -184,6 +203,9 @@ class RecommendationProjector:
                 "suppressed_count": len(suppressed),
                 "preference_source": preferences.preference_source,
                 "current_memory_count": preferences.current_memory_count,
+                "shelf_authoritative": True,
+                "shelf_entry_count": len(shelf),
+                "reading_anchor_count": len(anchors),
                 "current_memory_ids": preferences.current_memory_ids,
                 "legacy_profile_fallback_used": preferences.legacy_profile_fallback_used,
                 "legacy_profile_fallback_buckets": (
@@ -193,18 +215,49 @@ class RecommendationProjector:
             },
         )
 
+    async def _load_shelf(
+        self,
+        user_id: UUID,
+    ) -> dict[str, tuple[str | None, str | None]]:
+        """Load authoritative Shelf; never fake a safe new-book set on failure."""
+        try:
+            from app.services.books.reading_service import ReadingService
+
+            service = ReadingService(self.session)
+            try:
+                await service.ensure_backfilled(user_id)
+            except Exception:
+                raise
+            return await service.current_snapshot(user_id)
+        except Exception:
+            logger.warning("Shelf snapshot unavailable during projection", exc_info=True)
+            raise
+
+
+    async def _load_reading_anchors(
+        self,
+        user_id: UUID,
+    ) -> list[dict[str, Any]]:
+        """Load read-book style anchors (fail-open)."""
+        try:
+            from app.services.books.reading_service import ReadingService
+
+            return await ReadingService(self.session).reading_anchors(user_id)
+        except Exception:
+            logger.warning("Reading anchors unavailable during projection", exc_info=True)
+            return []
+
+
     async def _load_preference_snapshot(
         self,
         user_id: UUID,
     ) -> CurrentMemoryPreferenceSnapshot:
-        provider = PostgresMemoryProvider(self.session)
-        current = await provider.list_current(
+        memories = await MemoryReadGateway(self.session).profile_memories(
             user_id=user_id,
-            query="",
             memory_types=sorted(_MEMORY_PROFILE_TYPES),
             limit=100,
         )
-        snapshot = _snapshot_from_current_memories(current.memories)
+        snapshot = _snapshot_from_current_memories(memories)
 
         profile = await get_or_create_preference_profile(self.session, user_id)
         fallback_buckets: list[str] = []
@@ -257,6 +310,8 @@ class RecommendationProjector:
         preference_source: str,
         events: list[RecommendationEvent],
         interactions: list[BookInteraction],
+        shelf: dict[str, tuple[str | None, str | None]],
+        anchors: list[dict[str, Any]],
         now: datetime,
     ) -> RecommendationCandidateProjection:
         title = normalize_recommendation_text(book.title)
@@ -274,6 +329,8 @@ class RecommendationProjector:
         )
         projection.score += projection.base_score
 
+        self._apply_shelf_state(projection, book=book, shelf=shelf)
+
         self._apply_query_features(projection, query=query, book=book)
         self._apply_memory_features(
             projection,
@@ -283,6 +340,7 @@ class RecommendationProjector:
             favorite_authors=favorite_authors,
             disliked_authors=disliked_authors,
         )
+        self._apply_reading_anchors(projection, book=book, anchors=anchors)
         self._apply_behavior_features(
             projection,
             book=book,
@@ -365,6 +423,8 @@ class RecommendationProjector:
                     delta=-0.35,
                     positive=False,
                 )
+                projection.suppressed = True
+                projection.suppression_reasons.append("avoided_style")
         for author in favorite_authors:
             token = author.strip()
             if token and token.lower() in authors:
@@ -428,12 +488,6 @@ class RecommendationProjector:
                 continue
             event_type = normalize_recommendation_token(interaction.interaction_type)
             delta = _interaction_delta(event_type)
-            if event_type in {"read", "finished", "already_read"}:
-                projection.suppressed = True
-                projection.suppression_reasons.append("already_read")
-            elif event_type in {"dislike", "disliked", "not_interested", "avoid"}:
-                projection.suppressed = True
-                projection.suppression_reasons.append("negative_book_feedback")
             if delta:
                 projection.behavior_score += delta
                 projection.features.append(
@@ -453,15 +507,6 @@ class RecommendationProjector:
             strength = _to_float(event.signal_strength)
             decay = _decay_multiplier(event.created_at, now, self.attention_half_life_days)
             delta = _event_delta(event_type, event.signal_polarity, strength) * decay
-            if event_type in READING_STATE_EVENT_TYPES:
-                projection.suppressed = True
-                projection.suppression_reasons.append("already_read")
-            elif event_type in NEGATIVE_EVENT_TYPES:
-                projection.suppressed = True
-                projection.suppression_reasons.append("negative_recommendation_signal")
-            elif event_type in SUPPRESSION_EVENT_TYPES:
-                projection.suppressed = True
-                projection.suppression_reasons.append(f"suppressed_by_{event_type}")
             if delta:
                 projection.behavior_score += delta
                 if delta > 0:
@@ -493,6 +538,108 @@ class RecommendationProjector:
         projection.suppression_reasons = _unique(projection.suppression_reasons)
         projection.positive_reasons = _unique(projection.positive_reasons)
         projection.negative_reasons = _unique(projection.negative_reasons)
+
+    def _apply_shelf_state(
+        self,
+        projection: RecommendationCandidateProjection,
+        *,
+        book: Book,
+        shelf: dict[str, tuple[str | None, str | None]],
+    ) -> None:
+        """Keep every Shelf-known book out of the new-book candidate set."""
+        status, evaluation = _shelf_state_for_book(book, shelf)
+        if status in {"reading", "read", "dropped"}:
+            projection.suppressed = True
+            projection.suppression_reasons.append(f"shelf_status_{status}")
+        if evaluation in {"disliked", "not_interested"}:
+            projection.suppressed = True
+            projection.suppression_reasons.append(f"shelf_evaluation_{evaluation}")
+        if status == "want_to_read":
+            projection.suppressed = True
+            projection.suppression_reasons.append("shelf_status_want_to_read")
+
+
+    def _apply_reading_anchors(
+        self,
+        projection: RecommendationCandidateProjection,
+        *,
+        book: Book,
+        anchors: list[dict[str, Any]],
+    ) -> None:
+        """Similarity to read-book style anchors, weighted by feedback.
+
+        liked -> strong positive; neutral -> mild positive; disliked /
+        not_interested -> soft negative sample (down-rank similar, never a
+        hard style block); no feedback -> mild positive (user read it).
+        """
+        if not anchors:
+            return
+        haystack = _book_text(book)
+        candidate_tags = {
+            str(t).strip().lower()
+            for t in (getattr(book, "tags", None) or [])
+            if str(t).strip()
+        }
+        candidate_authors = {
+            str(a).strip().lower()
+            for a in (getattr(book, "authors", None) or [])
+            if str(a).strip()
+        }
+        delta = 0.0
+        matched = 0
+        for anchor in anchors:
+            anchor_title = str(anchor.get("title") or "").strip()
+            weights = READING_ANCHOR_WEIGHTS.get(
+                anchor.get("evaluation"),
+                READING_ANCHOR_WEIGHTS[None],
+            )
+            feedback = anchor.get("evaluation") or "none"
+            for tag in anchor.get("tags") or []:
+                token = str(tag).strip()
+                if not token:
+                    continue
+                if token.lower() in candidate_tags or _memory_value_matches(token, haystack):
+                    delta += weights["tag"]
+                    matched += 1
+                    projection.features.append(
+                        RecommendationProjectionFeature(
+                            source="reading_anchor",
+                            key="tag",
+                            value=token,
+                            score_delta=weights["tag"],
+                            reason=f"similar to read book {anchor_title!r} (feedback={feedback})",
+                        )
+                    )
+            for author in anchor.get("authors") or []:
+                token = str(author).strip()
+                if token and token.lower() in candidate_authors:
+                    delta += weights["author"]
+                    matched += 1
+                    projection.features.append(
+                        RecommendationProjectionFeature(
+                            source="reading_anchor",
+                            key="author",
+                            value=token,
+                            score_delta=weights["author"],
+                            reason=f"same author as read book {anchor_title!r} (feedback={feedback})",
+                        )
+                    )
+        if not matched:
+            return
+        delta = max(
+            READING_ANCHOR_MAX_NEGATIVE,
+            min(READING_ANCHOR_MAX_POSITIVE, delta),
+        )
+        projection.behavior_score += delta
+        if delta > 0:
+            projection.positive_reasons.append(
+                f"similar to {matched} read book anchor(s)",
+            )
+        elif delta < 0:
+            projection.negative_reasons.append(
+                f"negative sample overlap from {matched} read book anchor(s)",
+            )
+
 
     def _apply_source_features(
         self,
@@ -627,6 +774,24 @@ def _query_terms(query: str, max_terms: int = 12) -> list[str]:
         if len(terms) >= max_terms:
             break
     return terms
+
+
+def _shelf_state_for_book(
+    book: Book,
+    shelf: dict[str, tuple[str | None, str | None]],
+) -> tuple[str | None, str | None]:
+    """Match a candidate book against the shelf snapshot by id then title."""
+    book_id = getattr(book, "id", None)
+    if book_id is not None:
+        state = shelf.get(f"book:{book_id}")
+        if state is not None:
+            return state
+    title = normalize_book_title(getattr(book, "title", "") or "")
+    if title:
+        state = shelf.get(f"title:{title}")
+        if state is not None:
+            return state
+    return (None, None)
 
 
 def _same_book(book: Book, book_id: UUID | None, book_title: str | None) -> bool:

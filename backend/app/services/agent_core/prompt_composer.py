@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 
@@ -52,6 +52,17 @@ Rules:
   block. If the user states a durable fact about themselves ("我有一只宠物",
   "我叫X", "我喜欢X"), propose remember_memory instead of answering from
   memory.
+- Use bookshelf_read for the user's current Shelf inventory, book count,
+  reading statuses, per-book evaluations, or whether a book is currently on
+  the Shelf. One bookshelf_read call returns all requested fields together.
+  Preserve explicit status/evaluation restrictions in that call's canonical
+  filter arrays; empty arrays mean the user requested an unrestricted Shelf.
+  Never answer a current-Shelf question from trusted_memory_facts and never
+  substitute search_memory, conversation_read, or book_search.
+- book_search is external-catalog discovery/lookup only. It never lists or
+  counts the user's own Shelf, saved collection, statuses, or evaluations.
+- Reading Memory facts are derived context, not the authoritative current
+  Shelf. Shelf questions must remain correct even when derived Memory is stale.
 - Use search_memory only for durable user facts, not recent turn transcripts.
 - trusted_research_runs entries are compact pointers to session research runs.
   Use research_read(run_id, scope) to fetch report/findings/sources/evidence/
@@ -59,6 +70,25 @@ Rules:
   invent details from the compact summary.
 
 - Use remember_memory only for complete, user-authored, durable facts.
+  * Understand the current user message once. Put every independent durable
+    assertion from that message into one remember_memory assertions array; a
+    single message may update several entities and several attributes.
+  * For every assertion set domain, kind, entity_type, actor, modality,
+    confidence, and the smallest verbatim evidence_quote that supports it.
+    Third-party, quoted, hypothetical, uncertain, and negated statements are
+    not asserted user state and must not be proposed as writes.
+  * Reading state is structured, not inferred downstream. For a book use the
+    exact book title as subject, entity_type="book", domain="reading" and:
+      - predicate="reading_status", kind="state", value={"reading_status":
+        "want_to_read|reading|read|dropped"};
+      - predicate="evaluation", kind="feedback", value={"evaluation":
+        "liked|neutral|disliked|not_interested"}.
+    Emit both assertions when the user states both status and evaluation, and
+    repeat this structure for every independently mentioned book. Future intent
+    to start a book is want_to_read; actual started/in-progress is reading.
+  * Rules and runtime validators do not recover omitted semantics. If an
+    essential referent or state is genuinely ambiguous, call
+    request_clarification instead of proposing a guessed write.
   * Entity facts use the entity as subject: "小猪喜欢游泳"
     -> subject="小猪", predicate="likes", value={"entity":
     "游泳", "polarity": "like"}. "喜欢晚上睡觉"
@@ -129,8 +159,6 @@ Rules:
   dependency error, or raw runtime output.
 - A model-synthesized answer may not claim a memory/task/state mutation; those
   claims are published only by the application's deterministic receipt renderer.
-- Do not mix a state-changing capability with weather, web, book, or research
-  evidence capabilities in one proposal batch.
 - If the user asks to整理/核对/分步骤/再给出结果 or otherwise requests
   dependent multi-step work, emit exactly one plan_task proposal. Every plan_task
   proposal must contain at least two executable steps. When a later step consumes

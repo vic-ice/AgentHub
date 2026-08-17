@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.conversation_event import ConversationEventRecord
 from app.models.memory import MemoryEventRecord
 from app.models.memory_management_event import MemoryManagementEvent
+from app.services.memory.classification import derive_domain_kind
 from app.services.memory.version_contracts import (
     CanonicalMemoryFact,
     MemoryMutation,
@@ -41,17 +42,27 @@ class MemoryVersionStore:
         user_id: UUID,
         thread_id: UUID | None,
     ) -> MemoryMutationReceipt:
-        source = await self._require_user_source(
-            source_event_id=command.source_event_id,
-            user_id=user_id,
-            thread_id=thread_id,
-        )
+        provenance = _provenance_context(command.source_kind)
+        if provenance is None:
+            source = await self._require_user_source(
+                source_event_id=command.source_event_id,
+                user_id=user_id,
+                thread_id=thread_id,
+            )
+            for fact in command.facts:
+                if fact.evidence_quote.casefold() not in source.content.casefold():
+                    raise MemoryVersionSourceError(
+                        "canonical evidence is absent from the source user event"
+                    )
+        else:
+            for fact in command.facts:
+                if not str(fact.evidence_quote or "").strip():
+                    raise MemoryVersionSourceError(
+                        "provenance-based commits require evidence_quote"
+                    )
+
+
         _assert_unique_batch(command.facts)
-        for fact in command.facts:
-            if fact.evidence_quote.casefold() not in source.content.casefold():
-                raise MemoryVersionSourceError(
-                    "canonical evidence is absent from the source user event"
-                )
 
         facts = sorted(command.facts, key=lambda item: item.memory_key)
         await self._lock_memory_keys(
@@ -107,6 +118,7 @@ class MemoryVersionStore:
                 user_id=user_id,
                 thread_id=thread_id,
                 source_event_id=command.source_event_id,
+                source_kind=command.source_kind,
                 receipt_id=command.receipt_id,
                 operation=("create" if previous is None else "correct"),
                 mutation_status=status,
@@ -140,22 +152,15 @@ class MemoryVersionStore:
         user_id: UUID,
         thread_id: UUID | None,
     ) -> MemoryMutationReceipt:
-        source = await self._require_user_source(
-            source_event_id=command.source_event_id,
-            user_id=user_id,
-            thread_id=thread_id,
-        )
-        if command.evidence_quote.casefold() not in source.content.casefold():
-            raise MemoryVersionSourceError(
-                "forget evidence is absent from the source user event"
+        keys = sorted(command.memory_keys)
+        source = None
+        if _provenance_context(command.source_kind) is None:
+            source = await self._require_user_source(
+                source_event_id=command.source_event_id,
+                user_id=user_id,
+                thread_id=thread_id,
             )
-        keys = sorted(set(command.memory_keys))
-        await self._lock_memory_keys(user_id=user_id, memory_keys=keys)
-        await self._assert_forget_receipt_reuse_is_compatible(
-            user_id=user_id,
-            receipt_id=command.receipt_id,
-            memory_keys=keys,
-        )
+
         heads = {
             key: await self._current_head(
                 user_id=user_id,
@@ -188,6 +193,7 @@ class MemoryVersionStore:
                 previous,
                 evidence_quote=command.evidence_quote,
                 source_event_id=command.source_event_id,
+                source_kind=command.source_kind,
                 receipt_id=command.receipt_id,
                 user_id=user_id,
                 thread_id=thread_id,
@@ -311,12 +317,16 @@ class MemoryVersionStore:
         user_id: UUID,
         thread_id: UUID | None,
         source_event_id: UUID,
+        source_kind: str = "user_message",
         receipt_id: str,
         operation: str,
         mutation_status: str,
     ) -> MemoryEventRecord:
         now = datetime.now(timezone.utc)
         record_id = uuid.uuid4()
+        domain = str(fact.value.get("domain") or "") or derive_domain_kind("", fact.subject, fact.schema_key)[0]
+        kind = str(fact.value.get("kind") or "") or derive_domain_kind("", fact.subject, fact.schema_key)[1]
+        entity_id = _uuid_or_none(fact.value.get("entity_id"))
         record = MemoryEventRecord(
             id=record_id,
             user_id=user_id,
@@ -327,8 +337,12 @@ class MemoryVersionStore:
             polarity=_legacy_polarity(fact),
             confidence=1.0,
             source="chat_turn",
+            domain=domain,
+            kind=kind,
+            entity_id=entity_id,
             metadata_json={
                 "memory_v2": {
+                    "provenance": {"source_kind": source_kind},
                     "subject": fact.subject,
                     "predicate": fact.predicate,
                     "value": fact.value,
@@ -386,6 +400,7 @@ class MemoryVersionStore:
         *,
         evidence_quote: str,
         source_event_id: UUID,
+        source_kind: str = "user_message",
         receipt_id: str,
         user_id: UUID,
         thread_id: UUID | None,
@@ -405,10 +420,16 @@ class MemoryVersionStore:
             polarity="neutral",
             confidence=1.0,
             source="chat_turn",
+            domain=previous.domain,
+            kind=previous.kind,
+            entity_id=previous.entity_id,
             metadata_json={
                 "memory_v2": {
+                    "provenance": {"source_kind": source_kind},
                     "subject": _memory_v2(previous).get("subject", "self"),
-                    "predicate": previous.schema_key,
+                    "predicate": _memory_v2(previous).get(
+                        "predicate", previous.schema_key
+                    ),
                     "value": {},
                     "qualifiers": {},
                     "evidence_quote": evidence_quote,
@@ -645,6 +666,8 @@ def _memory_v2(record: MemoryEventRecord) -> dict[str, Any]:
 
 
 def _legacy_type(schema_key: str) -> str:
+    if schema_key.startswith("reading.state"):
+        return "reading_state"
     if schema_key.startswith("preference."):
         return "preference"
     if schema_key.startswith("relationship."):
@@ -655,6 +678,8 @@ def _legacy_type(schema_key: str) -> str:
 
 
 def _legacy_subject(schema_key: str) -> str:
+    if schema_key.startswith("reading."):
+        return "book"
     return "entity" if schema_key.startswith("relationship.") else "user"
 
 
@@ -674,3 +699,23 @@ def _stable_json(value: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+def _uuid_or_none(value: Any) -> UUID | None:
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+_PROVENANCE_KINDS = frozenset({
+    "reading_event",
+    "tool_execution",
+    "correction",
+    "system_derived",
+})
+
+
+def _provenance_context(source_kind: str):
+    kind = str(source_kind or "user_message").strip()
+    return kind if kind in _PROVENANCE_KINDS else None

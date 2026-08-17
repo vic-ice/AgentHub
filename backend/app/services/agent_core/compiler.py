@@ -31,22 +31,6 @@ class WorkflowCompiler:
         if not batch.proposals:
             raise ValueError("cannot compile an empty capability batch")
 
-        model_synthesis_requested = any(
-            (
-                descriptor_for_capability(proposal.capability) is not None
-                and descriptor_for_capability(
-                    proposal.capability
-                ).response_mode
-                == "model"
-            )
-            for proposal in batch.proposals
-        )
-        if model_synthesis_requested and any(
-            proposal.side_effect for proposal in batch.proposals
-        ):
-            raise ValueError(
-                "read-only model synthesis cannot be mixed with side effects"
-            )
 
         terminal_ids = {
             proposal.call_id: (
@@ -56,14 +40,27 @@ class WorkflowCompiler:
             )
             for proposal in batch.proposals
         }
+        side_effect_terminals = [
+            terminal_ids[proposal.call_id]
+            for proposal in batch.proposals
+            if proposal.side_effect
+        ]
         actions: list[PlannedAction] = []
         response_modes: list[ResponseMode] = []
         for proposal in batch.proposals:
             compiled = compile_capability(proposal.capability)
             response_modes.append(compiled.response_mode)
-            dependencies = [
+            dependencies = list(dict.fromkeys(
                 terminal_ids[item] for item in proposal.depends_on
-            ]
+            ))
+            # A mixed turn is understood once by the Controller. Read-only
+            # evidence actions consume the newly committed state, so they wait
+            # for every state mutation from the same semantic batch.
+            if not proposal.side_effect and compiled.response_mode == "model":
+                dependencies = list(dict.fromkeys([
+                    *dependencies,
+                    *side_effect_terminals,
+                ]))
             if proposal.capability == "research_start":
                 actions.extend(
                     compile_research_workflow(
@@ -125,6 +122,11 @@ def compile_capability(name: str) -> CompiledCapability:
             response_mode=external.response_mode,
         )
     compiled = {
+        "bookshelf_read": CompiledCapability(
+            operation="bookshelf_read_v1",
+            domain="books",
+            reason="Read the authoritative current Bookshelf aggregate.",
+        ),
         "conversation_read": CompiledCapability(
             operation="conversation_read",
             domain="conversation",

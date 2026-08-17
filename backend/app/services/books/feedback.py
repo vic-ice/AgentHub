@@ -12,6 +12,22 @@ _READ_RE = re.compile(
     r"看过|读过|已读|读完|已经读|already\s+read|finished\s+reading|read\s+it",
     re.IGNORECASE,
 )
+_READING_RE = re.compile(
+    r"正在读|正在看|在读|在看|阅读中|currently\s+reading|reading\s+now",
+    re.IGNORECASE,
+)
+_DROPPED_RE = re.compile(
+    r"弃读|不读了|看不下去|不想读了|停读|dropped|quit\s+reading|gave\s+up",
+    re.IGNORECASE,
+)
+_LIKED_RE = re.compile(
+    r"很喜欢|非常喜欢|超喜欢|特别喜欢|挺喜欢|喜欢|不错|好看|值得一读|好看极了|like\s+it|loved\s+it",
+    re.IGNORECASE,
+)
+_NEUTRAL_RE = re.compile(
+    r"一般|还行|马马虎虎|普普通通|中规中矩|凑合|so-so|okay",
+    re.IGNORECASE,
+)
 _NEGATIVE_RE = re.compile(
     r"不感兴趣|没兴趣|不喜欢|讨厌|not\s+interested|dislike|hate",
     re.IGNORECASE,
@@ -22,6 +38,30 @@ _TITLE_AFTER_READ_RE = re.compile(
 )
 _TITLE_AFTER_EN_READ_RE = re.compile(
     rf"\bi\s+(?:already\s+)?(?:read|finished(?:\s+reading)?)\s+(?P<title>{_TITLE})",
+    re.IGNORECASE,
+)
+_TITLE_AFTER_READING_RE = re.compile(
+    rf"(?:我)?(?:正在读|正在看|在读|在看|阅读中)(?:的是|的|着)?(?P<title>{_TITLE})",
+    re.IGNORECASE,
+)
+_TITLE_AFTER_EN_READING_RE = re.compile(
+    rf"\bi\s+am\s+reading\s+(?P<title>{_TITLE})",
+    re.IGNORECASE,
+)
+_TITLE_AFTER_DROPPED_RE = re.compile(
+    rf"(?:我)?(?:弃读|不读了|看不下去|不想读了|停读)(?:了|的|过)?(?P<title>{_TITLE})",
+    re.IGNORECASE,
+)
+_TITLE_AFTER_EN_DROPPED_RE = re.compile(
+    rf"\bi\s+(?:dropped|quit(?:\s+reading)?)\s+(?P<title>{_TITLE})",
+    re.IGNORECASE,
+)
+_TITLE_AFTER_LIKED_RE = re.compile(
+    rf"(?:我)?(?<!不)(?:很|非常|超|特别|挺)?喜欢(?P<title>{_TITLE})",
+    re.IGNORECASE,
+)
+_TITLE_AFTER_NEUTRAL_RE = re.compile(
+    rf"(?:我)?(?:觉得|感觉)?(?P<title>{_TITLE})(?:一般|还行|马马虎虎|普普通通|中规中矩)",
     re.IGNORECASE,
 )
 _TITLE_BEFORE_NEGATIVE_RE = re.compile(
@@ -43,6 +83,14 @@ def extract_book_feedback(text: str) -> dict[str, Any]:
     quoted = _quoted_title(normalized)
     if quoted and _READ_RE.search(normalized):
         return _payload(quoted, "read")
+    if quoted and _READING_RE.search(normalized):
+        return _payload(quoted, "reading")
+    if quoted and _DROPPED_RE.search(normalized):
+        return _payload(quoted, "dropped")
+    if quoted and _LIKED_RE.search(normalized) and not _NEGATIVE_RE.search(normalized):
+        return _payload(quoted, "liked")
+    if quoted and _NEUTRAL_RE.search(normalized):
+        return _payload(quoted, "neutral")
     if quoted and _NEGATIVE_RE.search(normalized):
         return _payload(
             quoted,
@@ -54,15 +102,18 @@ def extract_book_feedback(text: str) -> dict[str, Any]:
             title = _clean_title(match.group("title"))
             if _valid_title(title):
                 return _payload(title, "read")
-    for pattern in (_TITLE_BEFORE_NEGATIVE_RE, _TITLE_AFTER_NEGATIVE_RE):
+    for pattern in (_TITLE_AFTER_READING_RE, _TITLE_AFTER_EN_READING_RE):
         match = pattern.search(normalized)
         if match:
             title = _clean_title(match.group("title"))
             if _valid_title(title):
-                return _payload(
-                    title,
-                    "disliked" if _is_dislike(normalized) else "not_interested",
-                )
+                return _payload(title, "reading")
+    for pattern in (_TITLE_AFTER_DROPPED_RE, _TITLE_AFTER_EN_DROPPED_RE):
+        match = pattern.search(normalized)
+        if match:
+            title = _clean_title(match.group("title"))
+            if _valid_title(title):
+                return _payload(title, "dropped")
     return {}
 
 
@@ -70,7 +121,23 @@ def _payload(book_title: str, event_type: str) -> dict[str, Any]:
     interaction_type = "read"
     polarity = "neutral"
     strength = 1.0
-    if event_type == "disliked":
+    if event_type == "reading":
+        interaction_type = "reading"
+        polarity = "neutral"
+        strength = 0.7
+    elif event_type == "dropped":
+        interaction_type = "dropped"
+        polarity = "neutral"
+        strength = 0.5
+    elif event_type == "liked":
+        interaction_type = "like"
+        polarity = "positive"
+        strength = 0.85
+    elif event_type == "neutral":
+        interaction_type = "neutral"
+        polarity = "neutral"
+        strength = 0.5
+    elif event_type == "disliked":
         interaction_type = "dislike"
         polarity = "negative"
         strength = 0.9
@@ -90,7 +157,12 @@ def _payload(book_title: str, event_type: str) -> dict[str, Any]:
 
 def _looks_like_history_question(text: str) -> bool:
     question = any(marker in text for marker in ("?", "？", "哪些", "什么", "吗"))
-    return question and bool(_READ_RE.search(text) or _NEGATIVE_RE.search(text))
+    return question and bool(
+        _READ_RE.search(text)
+        or _READING_RE.search(text)
+        or _DROPPED_RE.search(text)
+        or _NEGATIVE_RE.search(text)
+    )
 
 
 def _quoted_title(text: str) -> str:
@@ -125,4 +197,3 @@ def _valid_title(title: str) -> bool:
 
 def _is_dislike(text: str) -> bool:
     return bool(re.search(r"不喜欢|讨厌|dislike|hate", text, re.IGNORECASE))
-

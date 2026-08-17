@@ -19,7 +19,10 @@ from app.services.external_capabilities.book import BookSearchRuntimeAdapter
 from app.services.external_capabilities.runtime import (
     ExternalCapabilityRuntime,
 )
-from app.services.external_search.contracts import SearchHit, SearchResult
+from app.services.external_capabilities.contracts import (
+    BookEvidence,
+    ExternalEvidenceSource,
+)
 
 
 def _availability(*, book: bool) -> ExternalCapabilityAvailability:
@@ -55,24 +58,20 @@ def _compile_book_plan():
     )
 
 
-class _BookGatewayStub:
-    async def search(self, request):
-        return SearchResult(
-            outcome="found",
-            provider="private-book-provider",
+class _RecommendationServiceStub:
+    async def search(self, request, *, user_id):
+        del user_id
+        return BookEvidence(
+            status="ok",
             query=request.query,
-            effective_query=request.query,
-            hits=[
-                SearchHit(
+            sources=[
+                ExternalEvidenceSource(
                     title="《天气之书》",
                     url="https://books.example/weather",
                     snippet="作者：示例作者；适合儿童阅读。",
-                    content="RAW_BOOK_PAGE",
-                    provider="private-book-provider",
-                    metadata={"cache_write": "must-not-happen"},
                 )
             ],
-            metadata={"provider_dump": "must-not-leak"},
+            metadata={"owner": "RecommendationService"},
         )
 
 
@@ -91,6 +90,7 @@ class BookCapabilityContractTests(unittest.TestCase):
             properties,
             {
                 "query",
+                "mode",
                 "limit",
                 "language",
                 "genres",
@@ -127,7 +127,9 @@ class BookCapabilityRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runtime = ExternalCapabilityRuntime(
             availability=_availability(book=False),
             adapters=[
-                BookSearchRuntimeAdapter(search_gateway=_BookGatewayStub())
+                BookSearchRuntimeAdapter(
+                    recommendation_service=_RecommendationServiceStub()
+                )
             ],
         )
 
@@ -154,7 +156,9 @@ class BookCapabilityRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runtime = ExternalCapabilityRuntime(
             availability=_availability(book=True),
             adapters=[
-                BookSearchRuntimeAdapter(search_gateway=_BookGatewayStub())
+                BookSearchRuntimeAdapter(
+                    recommendation_service=_RecommendationServiceStub()
+                )
             ],
         )
 

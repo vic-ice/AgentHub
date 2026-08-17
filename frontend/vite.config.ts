@@ -31,6 +31,12 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      // Keep the local entry deterministic. If another frontend already owns
+      // this port, fail loudly instead of silently moving to 5174/5175 and
+      // leaving the browser connected to an older project.
+      host: "127.0.0.1",
+      port: 5173,
+      strictPort: true,
       proxy: {
         // SSE streaming endpoint — use selfHandleResponse to bypass
         // http-proxy's internal buffering. We manually forward each chunk

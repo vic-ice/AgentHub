@@ -12,7 +12,7 @@ function InputGroup({ className, ...props }: React.ComponentProps<"div">) {
       data-slot="input-group"
       role="group"
       className={cn(
-        "group/input-group border-input bg-background relative flex w-full items-center rounded-3xl border transition-[color,box-shadow] outline-none",
+        "group/input-group border-input bg-background relative flex w-full items-center rounded-xl border transition-[border-color,box-shadow] outline-none",
         "h-12 min-w-0 has-[>textarea]:h-auto",
 
         // Variants based on alignment.
@@ -86,7 +86,7 @@ const inputGroupButtonVariants = cva(
         sm: "h-8 px-2.5 gap-1.5 rounded-xl has-[>svg]:px-2.5",
         "icon-xs":
           "size-6 rounded-[calc(var(--radius)-5px)] p-0 has-[>svg]:p-0",
-        "icon-sm": "size-9 p-0 has-[>svg]:p-0 rounded-2xl",
+        "icon-sm": "size-9 p-0 has-[>svg]:p-0 rounded-lg",
       },
     },
     defaultVariants: {

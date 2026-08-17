@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 from app.infra.llm import get_llm
 from app.services.research.publication.contracts import ResearchBrief
 from app.services.research.publication.provider import ResearchSynthesisRequest
+from app.services.execution_progress import report_model_completion
 
 
 SYNTHESIS_TIMEOUT_SECONDS = 45
@@ -27,10 +29,30 @@ class LLMResearchSynthesisProvider:
     ) -> ResearchBrief:
         model = get_llm(self.model_id)
         prompt = _prompt(request)
-        async with asyncio.timeout(SYNTHESIS_TIMEOUT_SECONDS):
-            response = await model.ainvoke(prompt)
+        started = time.perf_counter()
+        response = None
+        try:
+            async with asyncio.timeout(SYNTHESIS_TIMEOUT_SECONDS):
+                response = await model.ainvoke(prompt)
+        except Exception as exc:
+            await report_model_completion(
+                response,
+                title="\u7814\u7a76\u7efc\u5408\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+                detail="\u7814\u7a76\u7efc\u5408\u5931\u8d25",
+                model_name=self.model_id,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                status="failed",
+                error=str(exc) or exc.__class__.__name__,
+            )
+            raise
+        await report_model_completion(
+            response,
+            title="\u7814\u7a76\u7efc\u5408\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+            detail="\u5df2\u6839\u636e\u5df2\u63a5\u7eb3\u8bc1\u636e\u751f\u6210\u7efc\u5408\u7ed3\u679c",
+            model_name=self.model_id,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
         return ResearchBrief.model_validate(_json_payload(_message_text(response)))
-
 
 def _prompt(request: ResearchSynthesisRequest) -> str:
     schema = ResearchBrief.model_json_schema()

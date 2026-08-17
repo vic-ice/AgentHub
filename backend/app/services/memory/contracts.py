@@ -4,7 +4,16 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.services.memory.classification import (
+    MEMORY_DOMAINS,
+    MEMORY_KINDS,
+    derive_domain_kind,
+)
+
+MEMORY_DOMAINS = MEMORY_DOMAINS
+MEMORY_KINDS = MEMORY_KINDS
 
 
 MEMORY_TYPES = frozenset(
@@ -34,6 +43,9 @@ MEMORY_SUBJECTS = frozenset(
         "person",
         "object",
         "entity",
+        "account",
+        "place",
+        "project",
     }
 )
 MEMORY_POLARITIES = frozenset(
@@ -107,7 +119,9 @@ MEMORY_PROVIDER_STATUS_TO_CONTRACT = {
     "rate_limited": "failed",
     "skipped": "skipped",
 }
-MEMORY_ENTITY_TYPES = frozenset({"pet", "person", "object", "entity"})
+MEMORY_ENTITY_TYPES = frozenset(
+    {"book", "person", "pet", "object", "place", "account", "project", "other"}
+)
 MEMORY_ENTITY_RELATIONS = frozenset(
     {"owns", "related_to", "uses", "cares_for"}
 )
@@ -178,7 +192,7 @@ class MemoryEntityFact(BaseModel):
         token = normalize_memory_token(value)
         if not token:
             raise ValueError("entity_type cannot be empty")
-        return token[:80]
+        return validate_memory_token("entity_type", token, MEMORY_ENTITY_TYPES)
 
     @field_validator("relation", mode="before")
     @classmethod
@@ -218,6 +232,15 @@ class MemoryEvent(BaseModel):
             "pacing, content, pet, person, object, or entity."
         )
     )
+    domain: str | None = Field(
+        default=None,
+        description="Unified memory domain: reading/personal/possession/relationship/plan/general.",
+    )
+    kind: str | None = Field(
+        default=None,
+        description="Unified fact kind: preference/state/feedback/fact/agreement/correction.",
+    )
+    entity_id: UUID | None = Field(default=None, description="Stable entity registry id; entity facts must bind one.")
     value: str = Field(description="Concise memory value in natural language.")
     polarity: str = Field(
         default="neutral",
@@ -270,6 +293,19 @@ class MemoryEvent(BaseModel):
     @classmethod
     def validate_subject(cls, value: Any) -> str:
         return validate_memory_token("subject", value, MEMORY_SUBJECTS)
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def validate_domain(cls, value: Any) -> str | None:
+        token = validate_optional_memory_token("domain", value, MEMORY_DOMAINS)
+        return token or None
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def validate_kind(cls, value: Any) -> str | None:
+        token = validate_optional_memory_token("kind", value, MEMORY_KINDS)
+        return token or None
+
 
     @field_validator("polarity", mode="before")
     @classmethod
@@ -334,11 +370,25 @@ def memory_source_for_candidate_source_kind(source_kind: str) -> str:
     return "tool"
 
 
+    @model_validator(mode="after")
+    def derive_missing_domain_kind(self) -> "MemoryEvent":
+        if self.domain is None or self.kind is None:
+            domain, kind = derive_domain_kind(self.type, self.subject, self.state_key)
+            if self.domain is None:
+                self.domain = domain
+            if self.kind is None:
+                self.kind = kind
+        return self
+
+
 class MemoryCandidate(BaseModel):
     """Candidate long-term memory proposed by an agent, tool, API, or provider."""
 
     type: str = Field(description="Memory type proposed for persistence.")
     subject: str = Field(description="Memory subject proposed for persistence.")
+    domain: str | None = Field(default=None, description="Unified memory domain (auto-derived when omitted).")
+    kind: str | None = Field(default=None, description="Unified fact kind (auto-derived when omitted).")
+    entity_id: UUID | None = Field(default=None, description="Stable entity registry id; entity facts must bind one.")
     value: str = Field(description="Concise memory value proposed for persistence.")
     polarity: str = Field(default="neutral")
     scope: str = Field(default="long_term_memory")
@@ -361,6 +411,19 @@ class MemoryCandidate(BaseModel):
     @classmethod
     def validate_subject(cls, value: Any) -> str:
         return validate_memory_token("subject", value, MEMORY_SUBJECTS)
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def validate_domain(cls, value: Any) -> str | None:
+        token = validate_optional_memory_token("domain", value, MEMORY_DOMAINS)
+        return token or None
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def validate_kind(cls, value: Any) -> str | None:
+        token = validate_optional_memory_token("kind", value, MEMORY_KINDS)
+        return token or None
+
 
     @field_validator("polarity", mode="before")
     @classmethod
@@ -394,6 +457,17 @@ class MemoryCandidate(BaseModel):
     def clean_source_text(cls, value: Any) -> str:
         return normalize_memory_value(value)
 
+    @model_validator(mode="after")
+    def derive_missing_domain_kind(self) -> "MemoryCandidate":
+        if self.domain is None or self.kind is None:
+            domain, kind = derive_domain_kind(self.type, self.subject)
+            if self.domain is None:
+                self.domain = domain
+            if self.kind is None:
+                self.kind = kind
+        return self
+
+
     def to_memory_event(self) -> MemoryEvent:
         metadata = dict(self.metadata)
         admission_metadata = dict(metadata.get("admission") or {})
@@ -405,7 +479,15 @@ class MemoryCandidate(BaseModel):
             }
         )
         metadata["admission"] = admission_metadata
+        user_state = dict(metadata.get("user_state") or {})
+        state_key = str(user_state.get("state_key") or "")
+        state_value = user_state.get("state_value") if isinstance(user_state.get("state_value"), dict) else {}
         return MemoryEvent(
+            state_key=state_key,
+            state_value=state_value,
+            entity_id=self.entity_id,
+            domain=self.domain,
+            kind=self.kind,
             user_id=self.user_id,
             thread_id=self.thread_id,
             type=self.type,

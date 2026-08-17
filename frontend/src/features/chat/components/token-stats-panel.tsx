@@ -1,19 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from "react"
-import { Activity } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { Activity, ChevronDown, Coins, RefreshCw } from "lucide-react"
+
+import { getCurrentUserId } from "@/lib/api"
 import type { ConversationInDB } from "@/types"
-import { useI18n } from "@/i18n"
-import { cn } from "@/lib/utils"
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip as RechartsTooltip,
-  CartesianGrid,
-} from "recharts"
 
 interface TokenStatsPanelProps {
-  /** Current conversation with cumulative token stats */
   currentConversation: ConversationInDB | null
 }
 
@@ -23,440 +14,239 @@ type DailyStat = {
   total_tokens: number
   input_tokens: number
   output_tokens: number
+  cached_tokens: number
+  reasoning_tokens: number
 }
 
-// Format number for chart
-const formatNumber = (num: number): string => {
-  if (num >= 1000000) return (num / 1000000).toFixed(1) + "M"
-  if (num >= 1000) return (num / 1000).toFixed(1) + "K"
-  return num.toString()
+type ConversationUsage = {
+  thread_id: string
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
 }
 
-// Format date for chart
-const formatDate = (dateStr: string): string => {
-  const date = new Date(dateStr)
+type TokenSegment = {
+  key: string
+  label: string
+  value: number
+  color: string
+  hint: string
+}
+
+function compactNumber(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return value.toLocaleString("zh-CN")
+}
+
+function shortDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
   return `${date.getMonth() + 1}/${date.getDate()}`
 }
 
-// Custom tooltip for stacked bar chart
-function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) {
-  const { t } = useI18n()
+function numberField(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0
+}
 
-  if (active && payload && payload.length) {
-    const data = payload[0].payload
-    return (
-      <div className="rounded-lg px-3 py-2 text-xs bg-popover/95 backdrop-blur-sm border border-border shadow-lg">
-        <p className="font-medium mb-1.5 text-foreground">{label}</p>
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <div className="size-2 rounded-sm" style={{ backgroundColor: 'var(--token-input)' }} />
-            <span className="text-muted-foreground">{t("token.input")}:</span>
-            <span className="font-medium text-foreground">{data.input_tokens?.toLocaleString() ?? 0}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="size-2 rounded-sm" style={{ backgroundColor: 'var(--token-output)' }} />
-            <span className="text-muted-foreground">{t("token.output")}:</span>
-            <span className="font-medium text-foreground">{data.output_tokens?.toLocaleString() ?? 0}</span>
-          </div>
-          <div className="pt-1 mt-1 border-t border-border flex items-center gap-2">
-            <span className="text-muted-foreground">{t("token.total")}:</span>
-            <span className="font-semibold text-foreground">{data.total_tokens?.toLocaleString() ?? 0}</span>
-          </div>
-        </div>
-      </div>
-    )
+function parseDailyStats(payload: unknown): DailyStat[] {
+  if (!Array.isArray(payload)) return []
+  return payload.flatMap((item) => {
+    if (!item || typeof item !== "object") return []
+    const record = item as Record<string, unknown>
+    if (typeof record.date !== "string") return []
+    return [{
+      date: record.date,
+      conversation_count: numberField(record.conversation_count),
+      total_tokens: numberField(record.total_tokens),
+      input_tokens: numberField(record.input_tokens),
+      output_tokens: numberField(record.output_tokens),
+      cached_tokens: numberField(record.cached_tokens),
+      reasoning_tokens: numberField(record.reasoning_tokens),
+    }]
+  })
+}
+
+function pastSevenDays(): string[] {
+  const result: string[] = []
+  const today = new Date()
+  for (let index = 6; index >= 0; index -= 1) {
+    const date = new Date(today)
+    date.setDate(date.getDate() - index)
+    result.push(date.toISOString().split("T")[0])
   }
-  return null
-}
-
-// Donut Chart Component
-interface DonutChartProps {
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-}
-
-function DonutChart({ inputTokens, outputTokens, totalTokens }: DonutChartProps) {
-  const { t } = useI18n()
-
-  // Calculate percentages
-  const inputPercentage = totalTokens > 0 ? (inputTokens / totalTokens) * 100 : 0
-  const outputPercentage = totalTokens > 0 ? (outputTokens / totalTokens) * 100 : 0
-
-  // SVG parameters
-  const size = 140
-  const strokeWidth = 16
-  const radius = (size - strokeWidth) / 2
-  const circumference = 2 * Math.PI * radius
-  const center = size / 2
-
-  // Calculate stroke dash arrays
-  // Input arc (starts from top, goes clockwise)
-  const inputDash = (inputPercentage / 100) * circumference
-  // Output arc (continues after input)
-  const outputDash = (outputPercentage / 100) * circumference
-
-  // Rotation to start from top (-90 degrees)
-  const rotation = -90
-
-  return (
-    <div className="relative flex items-center justify-center">
-      {/* Circular background container */}
-      <div
-        className="rounded-full overflow-hidden"
-        style={{ width: size, height: size }}
-      >
-        <svg
-          width={size}
-          height={size}
-          className="transform transition-transform duration-300"
-          style={{ transform: `rotate(${rotation}deg)` }}
-        >
-          {/* Background track */}
-          <circle
-            cx={center}
-            cy={center}
-            r={radius}
-            fill="none"
-            stroke="var(--token-track)"
-            strokeWidth={strokeWidth}
-          />
-
-          {/* Input tokens arc (blue) */}
-          {inputTokens > 0 && (
-            <circle
-              cx={center}
-              cy={center}
-              r={radius}
-              fill="none"
-              stroke="var(--token-input)"
-              strokeWidth={strokeWidth}
-              strokeDasharray={`${inputDash} ${circumference - inputDash}`}
-              strokeLinecap="round"
-              className="transition-all duration-500 ease-out"
-            />
-          )}
-
-          {/* Output tokens arc (purple) */}
-          {outputTokens > 0 && (
-            <circle
-              cx={center}
-              cy={center}
-              r={radius}
-              fill="none"
-              stroke="var(--token-output)"
-              strokeWidth={strokeWidth}
-              strokeDasharray={`${outputDash} ${circumference - outputDash}`}
-              strokeDashoffset={-inputDash}
-              strokeLinecap="round"
-              className="transition-all duration-500 ease-out"
-            />
-          )}
-        </svg>
-      </div>
-
-      {/* Center content */}
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-xs text-muted-foreground">{t("token.total")}</span>
-        <span className="text-lg font-bold text-foreground">
-          {totalTokens.toLocaleString()}
-        </span>
-      </div>
-    </div>
-  )
-}
-
-// Separate Chart Component - uses fixed dimensions to avoid ResponsiveContainer measurement issues
-// Chart container is 200px height with p-3 (12px each side), so chart area is ~176px
-// Width is flexible but we use a reasonable fixed width for the chart
-interface DailyStatsChartProps {
-  chartData: Array<{
-    date: string
-    input_tokens: number
-    output_tokens: number
-    total_tokens: number
-  }>
-}
-
-function DailyStatsChart({ chartData }: DailyStatsChartProps) {
-  // Fixed dimensions - no need for ResponsiveContainer measurement
-  const chartWidth = 280
-  const chartHeight = 176
-
-  return (
-    <div className="h-full w-full flex items-center justify-center">
-      <BarChart
-        width={chartWidth}
-        height={chartHeight}
-        data={chartData}
-        margin={{ top: 10, right: 10, left: -15, bottom: 25 }}
-      >
-        <CartesianGrid
-          strokeDasharray="3 3"
-          stroke="var(--border)"
-          vertical={false}
-        />
-        <XAxis
-          dataKey="date"
-          interval={0}
-          tick={{ fill: 'var(--text-dim)', fontSize: 10, angle: -45, textAnchor: 'end' }}
-          axisLine={{ stroke: 'var(--border)' }}
-          tickLine={false}
-        />
-        <YAxis
-          tick={{ fill: 'var(--text-dim)', fontSize: 10 }}
-          axisLine={false}
-          tickLine={false}
-          tickFormatter={formatNumber}
-        />
-        <RechartsTooltip content={<ChartTooltip />} />
-        {/* Stack order: input (bottom) → output (top) */}
-        <Bar
-          dataKey="input_tokens"
-          stackId="a"
-          fill="var(--token-input)"
-          radius={[0, 0, 0, 0]}
-        />
-        <Bar
-          dataKey="output_tokens"
-          stackId="a"
-          fill="var(--token-output)"
-          radius={[4, 4, 0, 0]}
-        />
-      </BarChart>
-    </div>
-  )
+  return result
 }
 
 export function TokenStatsPanel({ currentConversation }: TokenStatsPanelProps) {
-  const { t } = useI18n()
-  const [isFlipped, setIsFlipped] = useState(false)
-  const [chartRenderKey, setChartRenderKey] = useState(0)
+  const [showTrend, setShowTrend] = useState(false)
   const [dailyStats, setDailyStats] = useState<DailyStat[]>([])
   const [isLoadingStats, setIsLoadingStats] = useState(false)
+  const [statsError, setStatsError] = useState("")
+  const [conversationUsage, setConversationUsage] = useState<ConversationUsage | null>(null)
 
-  // Get cumulative tokens from conversation (or default to 0)
-  const tokens = {
-    input_tokens: currentConversation?.input_tokens ?? 0,
-    output_tokens: currentConversation?.output_tokens ?? 0,
-    total_tokens: currentConversation?.total_tokens ?? 0,
-  }
-
-  // Generate past N days date strings (YYYY-MM-DD format)
-  const generatePastDays = (days: number): string[] => {
-    const dates: string[] = []
-    const today = new Date()
-    for (let i = days - 1; i >= 0; i--) {
-      const date = new Date(today)
-      date.setDate(date.getDate() - i)
-      dates.push(date.toISOString().split('T')[0])
+  useEffect(() => {
+    const controller = new AbortController()
+    const threadId = currentConversation?.thread_id
+    const userId = getCurrentUserId()
+    if (!threadId || !userId) {
+      return () => controller.abort()
     }
-    return dates
-  }
+    void fetch(
+      `/api/v1/chat/conversations/${threadId}/stats?user_id=${encodeURIComponent(userId)}`,
+      { signal: controller.signal },
+    )
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("usage unavailable")))
+      .then((payload: ConversationUsage) => setConversationUsage(payload))
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setConversationUsage(null)
+        }
+      })
+    return () => controller.abort()
+  }, [currentConversation?.thread_id, currentConversation?.total_tokens])
 
-  // Fetch daily stats when flipped
+  const activeUsage = conversationUsage?.thread_id === currentConversation?.thread_id
+    ? conversationUsage
+    : null
+  const tokens = useMemo(() => ({
+    input: activeUsage?.input_tokens ?? currentConversation?.input_tokens ?? 0,
+    output: activeUsage?.output_tokens ?? currentConversation?.output_tokens ?? 0,
+    cache: activeUsage?.cached_tokens ?? 0,
+    reasoning: activeUsage?.reasoning_tokens ?? 0,
+    total: activeUsage?.total_tokens ?? currentConversation?.total_tokens ?? 0,
+  }), [activeUsage, currentConversation])
+
+  const segments = useMemo<TokenSegment[]>(() => [
+    { key: "input", label: "\u65b0\u8f93\u5165", value: Math.max(0, tokens.input - tokens.cache), color: "var(--token-input)", hint: "\u672a\u547d\u4e2d Provider Prompt Cache \u7684\u8f93\u5165" },
+    { key: "output", label: "\u53ef\u89c1\u8f93\u51fa", value: Math.max(0, tokens.output - tokens.reasoning), color: "var(--token-output)", hint: "\u9664\u63a8\u7406\u5916\u7684\u6a21\u578b\u8f93\u51fa" },
+    { key: "cache", label: "\u7f13\u5b58\u8bfb\u53d6", value: tokens.cache, color: "var(--muted-foreground)", hint: "Provider \u8fd4\u56de\u7684 cached tokens" },
+    { key: "reasoning", label: "\u63a8\u7406", value: tokens.reasoning, color: "var(--border)", hint: "Provider \u8fd4\u56de\u7684 reasoning tokens" },
+  ], [tokens])
+
+  const denominator = Math.max(
+    tokens.total,
+    segments.reduce((sum, segment) => sum + segment.value, 0),
+    1,
+  )
+
   const fetchDailyStats = useCallback(async () => {
     setIsLoadingStats(true)
+    setStatsError("")
     try {
-      const response = await fetch(`/api/v1/chat/stats/daily?days=7`)
-      if (response.ok) {
-        const data = await response.json()
-
-        // Create a map from the API response
-        const dataMap = new Map<string, DailyStat>()
-        data.forEach((d: any) => {
-          dataMap.set(d.date, {
-            date: d.date,
-            conversation_count: d.conversation_count ?? 0,
-            total_tokens: d.total_tokens ?? 0,
-            input_tokens: d.input_tokens ?? 0,
-            output_tokens: d.output_tokens ?? 0,
-          })
-        })
-
-        // Fill in missing dates with zero values
-        const past7Days = generatePastDays(7)
-        const filledData: DailyStat[] = past7Days.map(date => {
-          return dataMap.get(date) || {
-            date,
-            conversation_count: 0,
-            total_tokens: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-          }
-        })
-
-        setDailyStats(filledData)
+      const params = new URLSearchParams({ days: "7" })
+      const userId = getCurrentUserId()
+      if (userId) params.set("user_id", userId)
+      const response = await fetch(`/api/v1/chat/stats/daily?${params.toString()}`)
+      if (!response.ok) {
+        throw new Error(`\u7edf\u8ba1\u8bfb\u53d6\u5931\u8d25\uff08${response.status}\uff09`)
       }
+      const parsed = parseDailyStats(await response.json())
+      const byDate = new Map(parsed.map((item) => [item.date, item]))
+      setDailyStats(pastSevenDays().map((date) => byDate.get(date) ?? {
+        date,
+        conversation_count: 0,
+        total_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        reasoning_tokens: 0,
+      }))
     } catch (error) {
-      console.error("Failed to fetch daily stats:", error)
+      setStatsError(error instanceof Error ? error.message : "\u65e0\u6cd5\u8bfb\u53d6\u4e03\u65e5\u8d8b\u52bf")
     } finally {
       setIsLoadingStats(false)
     }
   }, [])
 
-  // Fetch data when flipped
-  useEffect(() => {
-    if (isFlipped && dailyStats.length === 0) {
-      fetchDailyStats()
-    }
-  }, [isFlipped, dailyStats.length, fetchDailyStats])
+  const toggleTrend = () => {
+    const next = !showTrend
+    setShowTrend(next)
+    if (next && dailyStats.length === 0 && !isLoadingStats) void fetchDailyStats()
+  }
 
-  // Handle transition end to trigger chart render after animation completes
-  const handleTransitionEnd = useCallback(() => {
-    if (isFlipped && chartRenderKey === 0) {
-      // Increment key to force chart component to mount
-      setChartRenderKey(prev => prev + 1)
-    }
-  }, [isFlipped, chartRenderKey])
-
-  // Reset chart when flipping back
-  useEffect(() => {
-    if (!isFlipped) {
-      setChartRenderKey(0)
-    }
-  }, [isFlipped])
-
-  // Calculate percentages for display
-  const inputPercentage = tokens.total_tokens > 0
-    ? ((tokens.input_tokens / tokens.total_tokens) * 100).toFixed(1)
-    : "0"
-  const outputPercentage = tokens.total_tokens > 0
-    ? ((tokens.output_tokens / tokens.total_tokens) * 100).toFixed(1)
-    : "0"
-
-  // Prepare chart data - memoized to prevent unnecessary re-renders
-  const chartData = useMemo(() =>
-    dailyStats.map(d => ({
-      date: formatDate(d.date),
-      input_tokens: d.input_tokens,
-      output_tokens: d.output_tokens,
-      total_tokens: d.total_tokens,
-    })),
-    [dailyStats]
-  )
-
-  // Determine if chart should render (only when key > 0 and data exists)
-  const shouldRenderChart = chartRenderKey > 0 && chartData.length > 0
+  const maxDaily = Math.max(...dailyStats.map((item) => item.total_tokens), 1)
 
   return (
-    <div style={{ perspective: '1000px' }}>
-      <div
-        className="relative transition-transform duration-500 ease-out"
-        style={{
-          transformStyle: 'preserve-3d',
-          transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)',
-        }}
-        onTransitionEnd={handleTransitionEnd}
-      >
-        {/* Front Side */}
-        <div
-          className={cn(
-            "rounded-2xl bg-gradient-to-br from-muted/30 to-muted/50",
-            "border border-border/50 overflow-hidden",
-            "backdrop-blur-sm shadow-lg"
-          )}
-          style={{ backfaceVisibility: 'hidden' }}
-        >
-          {/* Header */}
-          <div className="p-3 flex items-center justify-between border-b border-border/30 bg-muted/20">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setIsFlipped(true)}
-                className="flex items-center justify-center cursor-pointer hover:opacity-80 transition-opacity"
-                title={t("token.flipToStats")}
-              >
-                <div className="icon-money-dual" />
-              </button>
-              <span className="text-sm font-semibold text-foreground">
-                {t("token.title")}
-              </span>
-            </div>
+    <section className="overflow-hidden border border-border bg-card" data-od-id="token-usage-panel">
+      <header className="flex min-h-12 items-center justify-between border-b border-border px-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Coins className="size-4" aria-hidden="true" />
+            Token 用量
           </div>
+          <p className="mt-0.5 text-xs text-muted-foreground">当前会话累计</p>
+        </div>
+        <strong className="font-mono text-base font-semibold tabular-nums">{compactNumber(tokens.total)}</strong>
+      </header>
 
-          {/* Donut Chart */}
-          <div className="p-4 flex flex-col items-center">
-            <DonutChart
-              inputTokens={tokens.input_tokens}
-              outputTokens={tokens.output_tokens}
-              totalTokens={tokens.total_tokens}
+      <div className="p-3">
+        <div className="flex h-2 w-full overflow-hidden bg-muted" aria-label="Token 构成">
+          {segments.map((segment) => (
+            <span
+              key={segment.key}
+              className="h-full min-w-0"
+              style={{ width: `${(segment.value / denominator) * 100}%`, backgroundColor: segment.color }}
+              title={`${segment.label} ${segment.value.toLocaleString("zh-CN")}`}
             />
-
-            {/* Legend - only show percentages */}
-            <div className="mt-4 flex items-center gap-6 text-xs">
-              <div className="flex items-center gap-1.5">
-                <div
-                  className="size-2.5 rounded-sm"
-                  style={{ backgroundColor: 'var(--token-input)' }}
-                />
-                <span className="text-muted-foreground">{t("token.input")}</span>
-                <span className="font-medium text-foreground">{inputPercentage}%</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div
-                  className="size-2.5 rounded-sm"
-                  style={{ backgroundColor: 'var(--token-output)' }}
-                />
-                <span className="text-muted-foreground">{t("token.output")}</span>
-                <span className="font-medium text-foreground">{outputPercentage}%</span>
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
 
-        {/* Back Side */}
-        <div
-          className={cn(
-            "absolute inset-0",
-            "rounded-2xl bg-gradient-to-br from-muted/30 to-muted/50",
-            "border border-border/50 overflow-hidden",
-            "backdrop-blur-sm shadow-lg"
-          )}
-          style={{
-            backfaceVisibility: 'hidden',
-            transform: 'rotateY(180deg)',
-          }}
-        >
-          {/* Header */}
-          <div className="p-3 flex items-center justify-between border-b border-border/30 bg-muted/20">
-            <button
-              type="button"
-              onClick={() => setIsFlipped(false)}
-              className="size-7 rounded-lg flex items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors"
-              title={t("token.flipBack")}
-            >
-              <div className="icon-arrow-left text-muted-foreground" />
-            </button>
-            <div className="flex items-center gap-1.5">
-              <span className="text-sm font-semibold text-foreground">
-                {t("token.title")}
-              </span>
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+          {segments.map((segment) => (
+            <div key={segment.key} className="min-w-0">
+              <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className="size-2" style={{ backgroundColor: segment.color }} aria-hidden="true" />
+                {segment.label}
+              </dt>
+              <dd className="mt-1 font-mono text-sm font-medium tabular-nums text-foreground">{compactNumber(segment.value)}</dd>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={segment.hint}>{segment.hint}</p>
             </div>
-            <div className="size-7" />
-          </div>
+          ))}
+        </dl>
 
-          {/* Chart Container */}
-          <div className="p-3 h-[200px] relative">
+        <button
+          type="button"
+          onClick={toggleTrend}
+          className="mt-3 flex min-h-10 w-full items-center justify-between border-t border-border pt-3 text-left text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-expanded={showTrend}
+        >
+          <span>最近 7 日趋势</span>
+          <ChevronDown className={`size-4 transition-transform ${showTrend ? "rotate-180" : ""}`} aria-hidden="true" />
+        </button>
+
+        {showTrend && (
+          <div className="mt-2 border-t border-border pt-3">
             {isLoadingStats ? (
-              /* Loading state - fetching data */
-              <div className="h-full flex flex-col items-center justify-center gap-2">
-                <Activity className="size-5 animate-pulse text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">{t("token.statsLoading")}</span>
+              <div className="flex min-h-24 items-center justify-center gap-2 text-xs text-muted-foreground" role="status">
+                <Activity className="size-4 animate-pulse" aria-hidden="true" />正在读取趋势…
               </div>
-            ) : !shouldRenderChart ? (
-              /* Waiting for flip animation to complete */
-              <div className="h-full flex flex-col items-center justify-center gap-2">
-                <Activity className="size-5 animate-pulse text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">{t("token.statsLoading")}</span>
+            ) : statsError ? (
+              <div className="py-3 text-xs text-destructive" role="alert">
+                <p>{statsError}</p>
+                <button type="button" onClick={() => void fetchDailyStats()} className="mt-2 inline-flex min-h-9 items-center gap-1.5 font-medium underline underline-offset-4">
+                  <RefreshCw className="size-3.5" />重试
+                </button>
               </div>
             ) : (
-              /* Chart - only mounts when renderKey changes after animation */
-              <DailyStatsChart key={chartRenderKey} chartData={chartData} />
+              <div className="space-y-2">
+                {dailyStats.map((item) => (
+                  <div key={item.date} className="grid grid-cols-[34px_minmax(0,1fr)_44px] items-center gap-2 text-[11px]">
+                    <span className="font-mono text-muted-foreground">{shortDate(item.date)}</span>
+                    <div className="flex h-2 overflow-hidden bg-muted">
+                      <span style={{ width: `${(item.input_tokens / maxDaily) * 100}%`, backgroundColor: "var(--token-input)" }} />
+                      <span style={{ width: `${(item.output_tokens / maxDaily) * 100}%`, backgroundColor: "var(--token-output)" }} />
+                    </div>
+                    <span className="text-right font-mono text-muted-foreground">{compactNumber(item.total_tokens)}</span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
-        </div>
+        )}
       </div>
-    </div>
+    </section>
   )
 }

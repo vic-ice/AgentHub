@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -20,6 +21,7 @@ from app.services.agent_core.task_plan_proposal import (
     ControllerTaskPlanProposal,
 )
 from app.utils.message import convert_message_content_to_string
+from app.services.execution_progress import report_model_completion
 
 
 REQUEST_CLARIFICATION_TOOL: dict[str, Any] = {
@@ -80,24 +82,46 @@ class ControllerClient:
         self._model_factory = model_factory or _default_model_factory
 
     async def decide(self, request: ControllerModelRequest) -> ControllerOutput:
-        model = self._model_factory(request.model_name)
-        bind_tools = getattr(model, "bind_tools", None)
-        if not callable(bind_tools):
-            raise ControllerClientError("model does not expose bind_tools")
-        schemas = controller_tool_schemas(self._registry)
-        runnable = bind_tools(list(schemas), tool_choice="auto")
-        messages = model_history_projector.project(
-            self._prompt_composer.compose(request)
-        )
-        response = await asyncio.wait_for(
-            runnable.ainvoke(list(messages)),
-            timeout=request.timeout_seconds,
-        )
-        if not isinstance(response, AIMessage):
-            raise ControllerClientError(
-                f"expected AIMessage, got {type(response).__name__}"
+        started = time.perf_counter()
+        response: AIMessage | None = None
+        try:
+            model = self._model_factory(request.model_name)
+            bind_tools = getattr(model, "bind_tools", None)
+            if not callable(bind_tools):
+                raise ControllerClientError("model does not expose bind_tools")
+            schemas = controller_tool_schemas(self._registry)
+            runnable = bind_tools(list(schemas), tool_choice="auto")
+            messages = model_history_projector.project(
+                self._prompt_composer.compose(request)
             )
-        return self.parse(response)
+            response = await asyncio.wait_for(
+                runnable.ainvoke(list(messages)),
+                timeout=request.timeout_seconds,
+            )
+            if not isinstance(response, AIMessage):
+                raise ControllerClientError(
+                    f"expected AIMessage, got {type(response).__name__}"
+                )
+            output = self.parse(response)
+        except Exception as exc:
+            await report_model_completion(
+                response,
+                title="\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+                detail="Controller \u672a\u80fd\u5f62\u6210\u6709\u6548\u51b3\u7b56",
+                model_name=request.model_name,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                status="failed",
+                error=str(exc) or exc.__class__.__name__,
+            )
+            raise
+        await report_model_completion(
+            response,
+            title="\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+            detail=_decision_detail(output),
+            model_name=request.model_name,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return output
 
     def parse(self, response: AIMessage) -> ControllerOutput:
         content = convert_message_content_to_string(response.content).strip()
@@ -156,6 +180,15 @@ class ControllerClient:
             tool_calls=calls,
         )
 
+
+def _decision_detail(output: ControllerOutput) -> str:
+    if output.mode == "direct_answer":
+        return "\u6a21\u578b\u5df2\u751f\u6210\u6700\u7ec8\u56de\u590d"
+    if output.mode == "request_clarification":
+        return "\u6a21\u578b\u9700\u8981\u7528\u6237\u8865\u5145\u4fe1\u606f"
+    if output.mode == "task_plan_proposal":
+        return "\u6a21\u578b\u5df2\u751f\u6210\u4efb\u52a1\u8ba1\u5212"
+    return f"\u6a21\u578b\u5df2\u89c4\u5212 {len(output.tool_calls)} \u4e2a\u6267\u884c\u52a8\u4f5c"
 
 def _default_model_factory(model_name: str):
     return get_llm(model_name)

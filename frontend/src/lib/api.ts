@@ -2,6 +2,8 @@ import type {
   AppProviderConfigList,
   AppProviderConfig,
   AppProviderConfigUpdate,
+  BookEvaluation,
+  BookshelfListResponse,
   ChatHistory,
   ChatMessage,
   ConversationInDB,
@@ -24,9 +26,13 @@ import type {
   MemoryEditRequest,
   MemoryForgetAdminRequest,
   MemoryMutationReceipt,
+  ReadingStatus,
   RecommendationEventType,
   RecommendationSignal,
   RecommendationSignalCreate,
+  ShelfBook,
+  ShelfBookUpdate,
+  ShelfBookUpsert,
   ResearchFinishRequest,
   ResearchRunListResult,
   ResearchRunStatus,
@@ -265,6 +271,74 @@ export async function listRecommendationSignals(input: {
   return requestJson<RecommendationSignal[]>(
     `/books/recommendation-events/${encodeURIComponent(input.userId)}?${params.toString()}`,
   )
+}
+
+
+// ── Bookshelf（阅读资产书架，frozen v1）───────────────────────────────────────
+// 契约权威来源：docs/bookshelf-contract.md；前端只依赖 ShelfBook 类型。
+
+export async function getBookshelf(input: {
+  userId: string
+  status?: ReadingStatus
+  evaluation?: BookEvaluation
+  q?: string
+  limit?: number
+  offset?: number
+}): Promise<BookshelfListResponse> {
+  const params = new URLSearchParams({
+    limit: String(input.limit ?? 5000),
+    offset: String(input.offset ?? 0),
+  })
+  if (input.status) {
+    params.set("status", input.status)
+  }
+  if (input.evaluation) {
+    params.set("evaluation", input.evaluation)
+  }
+  if (input.q) {
+    params.set("q", input.q)
+  }
+  return requestJson<BookshelfListResponse>(
+    `/books/shelf/${encodeURIComponent(input.userId)}?${params.toString()}`,
+  )
+}
+
+export async function upsertShelfBook(input: ShelfBookUpsert): Promise<ShelfBook> {
+  return requestJson<ShelfBook>("/books/shelf", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
+export async function updateShelfBook(
+  entryId: string,
+  input: ShelfBookUpdate,
+): Promise<ShelfBook> {
+  return requestJson<ShelfBook>(`/books/shelf/${encodeURIComponent(entryId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  })
+}
+
+export async function removeShelfBook(
+  entryId: string,
+): Promise<void> {
+  // Contract: DELETE returns 204 with no body; handle by response.ok,
+  // never parse JSON.
+  const response = await fetch(`${apiBaseUrl}/books/shelf/${encodeURIComponent(entryId)}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+  })
+  if (!response.ok) {
+    let details = ""
+    try {
+      const payload = (await response.json()) as { detail?: string }
+      details = payload.detail ? `: ${payload.detail}` : ""
+    } catch {
+      details = ""
+    }
+    throw new Error(`HTTP ${response.status}${details}`)
+  }
 }
 
 export async function listResearchRuns(input: {

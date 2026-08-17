@@ -68,6 +68,8 @@ class MemoryFactExtractor:
             legacy_type=legacy_type,
             legacy_subject=legacy_subject,
             legacy_value=legacy_value,
+            domain=proposal.domain,
+            kind=proposal.kind,
             polarity=polarity,
             durability=(
                 "short_term"

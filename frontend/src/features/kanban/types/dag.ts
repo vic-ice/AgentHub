@@ -1,3 +1,5 @@
+import type { CompletedExecutionStep, ModelTokenUsage } from "@/types";
+
 /**
  * Types for DAG visualization of agent execution steps.
  * Pure CSS implementation — no React Flow dependency.
@@ -80,6 +82,9 @@ export interface ExecutionDagRaw {
   total_steps: number;
   steps: MessageStepRaw[];
   execution_graph?: ExecutionGraphRaw | null;
+  progress_steps?: CompletedExecutionStep[];
+  usage_summary?: ModelTokenUsage;
+  business_type?: string;
 }
 
 // ============================================================================

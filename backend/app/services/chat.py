@@ -1,8 +1,7 @@
 """Single-entry chat orchestration for Agent Core.
 
 The service records the user event, delegates every decision to Agent Core,
-and commits only a trusted publication.  It has no dependency on the retired
-planner/runtime stack.
+and commits only a trusted publication. It has no legacy runtime fallback.
 """
 
 from __future__ import annotations
@@ -16,10 +15,13 @@ from app.infra.llm import resolve_model_name
 from app.infra.llm.resolver import refresh_model_cache_if_missing
 from app.schemas.chat import ChatMessage, UserInput
 from app.services.agent_core.chat_entry import AgentChatEntry
-from app.services.agent_core.publication.commit import (
-    TurnPublicationCommitter,
-)
+from app.services.agent_core.publication.commit import TurnPublicationCommitter
 from app.services.conversation import ConversationJournalService
+from app.services.execution_progress import (
+    ExecutionProgressCollector,
+    attach_progress_to_answer,
+    bind_execution_progress,
+)
 
 
 class ChatService:
@@ -42,18 +44,24 @@ class ChatService:
         """Run one committed production Agent Core turn."""
 
         journal = ConversationJournalService()
-        user_event = await journal.record_user_message(
-            db,
-            user_input,
-        )
+        user_event = await journal.record_user_message(db, user_input)
         await db.commit()
+        collector = ExecutionProgressCollector(
+            business_type=(
+                "research"
+                if user_input.research_mode == "deep_research"
+                else "chat"
+            )
+        )
 
         if user_input.research_mode == "deep_research":
             from app.services.research.deep_research_runner import (
                 run_deep_research_turn,
             )
 
-            answer = await run_deep_research_turn(user_input)
+            with bind_execution_progress(collector):
+                answer = await run_deep_research_turn(user_input)
+            answer = attach_progress_to_answer(answer, collector)
             committed = await self._committer.commit(
                 db,
                 user_input=user_input,
@@ -74,32 +82,30 @@ class ChatService:
         if requested_model:
             await refresh_model_cache_if_missing(model_name)
         if user_input.model_name != model_name:
-            user_input = user_input.model_copy(
-                update={"model_name": model_name}
-            )
+            user_input = user_input.model_copy(update={"model_name": model_name})
 
-        entry = await self._agent_entry.run(
-            db,
-            user_input=user_input,
-            model_name=model_name,
-            journal_sequence_watermark=user_event.sequence_no,
-        )
+        with bind_execution_progress(collector):
+            entry = await self._agent_entry.run(
+                db,
+                user_input=user_input,
+                model_name=model_name,
+                journal_sequence_watermark=user_event.sequence_no,
+            )
         if entry.message is None or entry.answer is None:
             raise HTTPException(
                 status_code=503,
                 detail="Agent Core did not produce a safe response.",
             )
 
+        answer = attach_progress_to_answer(entry.answer, collector)
         committed = await self._committer.commit(
             db,
             user_input=user_input,
-            answer=entry.answer,
+            answer=answer,
             turn=entry.attempt.turn,
             model_name=model_name,
             agent_mode=str(
-                entry.message.custom_data.get(
-                    "agent_mode", "controller_v1"
-                )
+                entry.message.custom_data.get("agent_mode", "controller_v1")
             ),
         )
         return committed.message

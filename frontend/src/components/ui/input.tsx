@@ -8,19 +8,18 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       type={type}
       data-slot="input"
       className={cn(
-        "file:text-foreground placeholder:text-muted-foreground selection:bg-primary selection:text-primary-foreground h-10 w-full min-w-0 rounded-xl border bg-transparent px-4 py-2 text-base transition-all duration-200 outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm",
+        "file:text-foreground placeholder:text-muted-foreground selection:bg-primary selection:text-primary-foreground h-11 w-full min-w-0 rounded-md border border-input bg-card px-3.5 py-2 text-base transition-[background-color,border-color,box-shadow] duration-150 outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-[15px]",
         // Dark mode
         "dark:bg-white/[0.03] dark:border-[var(--border)] dark:text-[var(--text-main)]",
         "dark:placeholder:text-[var(--text-dim)]",
-        "dark:hover:border-primary/30 dark:hover:bg-white/[0.05]",
-        "dark:focus:border-primary/50 dark:focus:bg-white/[0.05]",
-        "dark:focus:ring-2 dark:focus:ring-primary/20 dark:focus:shadow-[0_0_20px_rgba(0,209,255,0.15)]",
+        "dark:hover:border-foreground/25 dark:hover:bg-white/[0.05]",
+        "dark:focus:border-primary/60 dark:focus:bg-white/[0.05]",
+        "dark:focus:ring-2 dark:focus:ring-primary/15",
         // Light mode
-        "border-slate-200 bg-white/80 text-slate-900",
-        "placeholder:text-slate-400",
-        "hover:border-primary/30 hover:bg-white",
-        "focus:border-primary/50 focus:bg-white",
-        "focus:ring-2 focus:ring-primary/10 focus:shadow-[0_0_15px_rgba(37,99,235,0.1)]",
+        "text-foreground",
+        "hover:border-foreground/25",
+        "focus:border-primary focus:bg-card",
+        "focus:ring-2 focus:ring-primary/10",
         // Error state
         "aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
         // Hide browser's native password reveal button (Edge/IE/Chrome)
@@ -88,13 +87,13 @@ function RoundedSearchInput({ className, ...props }: React.ComponentProps<"input
           "dark:placeholder:text-[var(--text-dim)]",
           "dark:hover:border-primary/30 dark:hover:bg-white/[0.05]",
           "dark:focus:border-primary/50 dark:focus:bg-white/[0.05]",
-          "dark:focus:ring-2 dark:focus:ring-primary/20 dark:focus:shadow-[0_0_20px_rgba(0,209,255,0.15)]",
+          "dark:focus:ring-2 dark:focus:ring-primary/15",
           // Light mode
           "border-slate-200 bg-slate-50/50 text-slate-900",
           "placeholder:text-slate-400",
           "hover:border-primary/30 hover:bg-white",
           "focus:border-primary/50 focus:bg-white",
-          "focus:ring-2 focus:ring-primary/10 focus:shadow-[0_0_15px_rgba(37,99,235,0.1)]",
+          "focus:ring-2 focus:ring-primary/10",
           className
         )}
         {...props}

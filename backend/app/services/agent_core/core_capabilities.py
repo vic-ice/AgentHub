@@ -6,6 +6,7 @@ from typing import Any
 
 _CAPABILITY_FIELDS = {
     "conversation_read": "conversation_read",
+    "bookshelf_read": "bookshelf_read",
     "remember_memory": "memory_write",
     "search_memory": "memory_read",
     "forget_memory": "memory_write",
@@ -14,6 +15,7 @@ _CAPABILITY_FIELDS = {
 
 _OPERATION_FIELDS = {
     "conversation_read": "conversation_read",
+    "bookshelf_read_v1": "bookshelf_read",
     "remember_memory_v2": "memory_write",
     "search_memory_v2": "memory_read",
     "forget_memory_v2": "memory_write",
@@ -28,6 +30,7 @@ class CoreCapabilityAvailability:
     """One capability matrix shared by model projection and runtime admission."""
 
     conversation_read: bool = False
+    bookshelf_read: bool = False
     memory_read: bool = False
     memory_write: bool = False
     task_control: bool = False
@@ -47,6 +50,7 @@ class CoreCapabilityAvailability:
 
         return cls(
             conversation_read=True,
+            bookshelf_read=True,
             memory_read=True,
             memory_write=True,
             task_control=True,

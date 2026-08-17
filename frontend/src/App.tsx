@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Brain, Languages, MessageSquare, Moon, PlugZap, SearchCheck, Share2, Sun, Settings } from "lucide-react"
+import { BookOpen, Brain, Languages, MessageSquare, Moon, PlugZap, SearchCheck, Share2, Sun, Settings } from "lucide-react"
 
 import {
   AlertDialog,
@@ -28,6 +28,7 @@ import {
 } from "@/lib/api"
 import type {
   ChatMessage,
+  CompletedExecutionStep,
   ConversationInDB,
   LocalChatMessage,
   StreamEvent,
@@ -50,9 +51,10 @@ import {
   TokenStatsPanel,
   TurnDAGSidebar,
 } from "@/features/chat/components"
-import { ProviderConfigDialog } from "@/features/chat/components/provider-config-dialog"
+import { ProviderConfigDialog } from "@/features/chat/components/provider-config-workbench-v2"
 import { AppProviderConfigDialog } from "@/features/chat/components/app-provider-config-dialog"
 import { ResearchView } from "@/features/research/components/research-view"
+import { BookshelfView } from "@/features/bookshelf/components/bookshelf-view"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import {
@@ -184,6 +186,7 @@ function App() {
 
   // Selected request_id for viewing historical DAG
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null)
+  const [liveExecutionSteps, setLiveExecutionSteps] = useState<CompletedExecutionStep[]>([])
 
 
 
@@ -194,7 +197,7 @@ function App() {
   const [showProviderConfig, setShowProviderConfig] = useState(false)
   const [showAppProviderConfig, setShowAppProviderConfig] = useState(false)
   const [showNoModelDialog, setShowNoModelDialog] = useState(false)
-  const [mainView, setMainView] = useState<"chat" | "research">("chat")
+  const [mainView, setMainView] = useState<"chat" | "research" | "bookshelf">("chat")
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const streamControllersRef = useRef<Map<string, AbortController>>(new Map())
@@ -854,6 +857,7 @@ function App() {
 
       setAppError(null)
       setSelectedRequestId(null) // Reset to show latest request after streaming ends
+      setLiveExecutionSteps([])
       updateThreadMessages(targetThreadId, (previous) => [
         ...previous,
         toLocalMessage(
@@ -927,7 +931,19 @@ function App() {
               }
               return
             }
-
+            if (event.type === "step.completed") {
+              if (isTargetActive) {
+                setLiveExecutionSteps((previous) => {
+                  if (previous.some((item) => item.step_id === event.content.step.step_id)) {
+                    return previous
+                  }
+                  return [...previous, event.content.step].sort(
+                    (left, right) => left.order - right.order,
+                  )
+                })
+              }
+              return
+            }
             if (event.type === "graph.snapshot") {
               if (!isTargetActive) {
                 return
@@ -1478,7 +1494,7 @@ function App() {
   if (isAuthLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
+        <div className="text-muted-foreground">正在加载工作区…</div>
       </div>
     )
   }
@@ -1495,7 +1511,11 @@ function App() {
 
   return (
     <>
-      <SidebarProvider defaultOpen className="h-screen min-h-0 overflow-hidden">
+      <SidebarProvider
+        defaultOpen
+        className="h-screen min-h-0 overflow-hidden bg-[var(--background-elevated)]"
+        data-ui-revision="artistic-editorial-2026-08"
+      >
         <ChatSidebar
           threadId={threadId}
           conversations={conversations}
@@ -1516,7 +1536,7 @@ function App() {
           currentUser={currentUser}
         />
 
-        <SidebarInset className="min-h-0 overflow-hidden bg-background flex-1">
+        <SidebarInset className="min-h-0 overflow-hidden border-x border-border bg-background flex-1">
           {mainView === "chat" ? (
             <ChatMainPanel
               appError={appError}
@@ -1546,36 +1566,38 @@ function App() {
               hasAvailableModels={hasAvailableModels}
               selectedRequestId={selectedRequestId}
             />
-          ) : (
+          ) : mainView === "research" ? (
             <ResearchView userId={effectiveUserId} />
+          ) : (
+            <BookshelfView userId={effectiveUserId} />
           )}
         </SidebarInset>
 
         {/* Right Panel - same width as left sidebar (16rem) */}
-        <aside className="hidden md:flex flex-col gap-2 border-l border-border bg-background p-2 w-64 min-w-64">
+        <aside className="hidden w-72 min-w-72 flex-col gap-4 bg-[var(--background-elevated)] p-4 md:flex">
           {/* Top Section: Configuration */}
           <div className="space-y-2">
             {/* Utility buttons */}
-            <div className="flex gap-1 w-full">
+            <div className="grid w-full grid-cols-4 gap-1 border border-border bg-card p-1" aria-label="工作区工具">
               <Button
                 type="button"
                 size="icon"
-                variant={mainView === "chat" ? "default" : "outline"}
-                className="size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                variant={mainView === "chat" ? "default" : "ghost"}
+                className="h-10 w-full"
                 onClick={() => setMainView("chat")}
-                aria-label="Chat"
-                title="Chat"
+                aria-label="对话"
+                title="对话"
               >
                 <MessageSquare className="size-4" />
               </Button>
               <Button
                 type="button"
                 size="icon"
-                variant={mainView === "research" ? "default" : "outline"}
-                className="size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                variant={mainView === "research" ? "default" : "ghost"}
+                className="h-10 w-full"
                 onClick={() => setMainView("research")}
-                aria-label="Research"
-                title="Research"
+                aria-label="研究"
+                title="研究"
                 disabled={!effectiveUserId}
               >
                 <SearchCheck className="size-4" />
@@ -1583,8 +1605,20 @@ function App() {
               <Button
                 type="button"
                 size="icon"
-                variant="outline"
-                className="size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                variant={mainView === "bookshelf" ? "default" : "ghost"}
+                className="h-10 w-full"
+                onClick={() => setMainView("bookshelf")}
+                aria-label="我的书架"
+                title="我的书架"
+                disabled={!effectiveUserId}
+              >
+                <BookOpen className="size-4" />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-10 w-full"
                 disabled={messages.length === 0}
                 onClick={() => {
                   navigator.clipboard.writeText(window.location.href)
@@ -1598,8 +1632,8 @@ function App() {
               <Button
                 type="button"
                 size="icon"
-                variant="outline"
-                className="cursor-pointer size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                variant="ghost"
+                className="h-10 w-full"
                 onClick={toggleTheme}
                 aria-label={t("theme.switch")}
                 title={t("theme.switch")}
@@ -1613,8 +1647,8 @@ function App() {
               <Button
                 type="button"
                 size="icon"
-                variant="outline"
-                className="cursor-pointer size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                variant="ghost"
+                className="h-10 w-full"
                 onClick={toggleLocale}
                 aria-label={t("language.switch")}
                 title={t("language.switch")}
@@ -1624,8 +1658,8 @@ function App() {
               <Button
                 type="button"
                 size="icon"
-                variant="outline"
-                className="cursor-pointer size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                variant="ghost"
+                className="h-10 w-full"
                 onClick={() => setShowMemoryDialog(true)}
                 aria-label={t("memory.open")}
                 title={t("memory.open")}
@@ -1636,8 +1670,8 @@ function App() {
               <Button
                 type="button"
                 size="icon"
-                variant="outline"
-                className="cursor-pointer size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                variant="ghost"
+                className="h-10 w-full"
                 onClick={() => setShowProviderConfig(true)}
                 aria-label={t("provider.configure")}
                 title={t("provider.configure")}
@@ -1649,14 +1683,14 @@ function App() {
             <Button
               type="button"
               size="sm"
-              variant="outline"
-              className="h-8 w-full justify-start gap-2"
+              variant="ghost"
+              className="h-11 w-full justify-start gap-2 border border-border bg-card px-3"
               onClick={() => setShowAppProviderConfig(true)}
-              aria-label="App Providers"
-              title="App Providers"
+              aria-label="应用服务"
+              title="应用服务"
             >
               <PlugZap className="size-4" />
-              <span className="truncate text-xs">App Providers</span>
+              <span className="truncate text-xs">应用服务</span>
             </Button>
 
           </div>
@@ -1668,6 +1702,7 @@ function App() {
                 threadId={threadId || null}
                 isStreaming={isStreaming}
                 requestId={selectedRequestId}
+                liveSteps={liveExecutionSteps}
               />
             )}
           </div>

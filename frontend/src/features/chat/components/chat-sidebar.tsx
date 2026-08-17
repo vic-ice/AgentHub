@@ -56,13 +56,12 @@ function SearchInput({ value, onChange }: { value: string; onChange: (value: str
         placeholder={t("conversation.search") || "Search conversations..."}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full h-9 pl-9 pr-3 rounded-xl bg-sidebar-accent/30 border border-transparent
+        className="w-full h-9 pl-9 pr-3 rounded-lg bg-background/70 border border-sidebar-border
                    text-sm text-sidebar-foreground placeholder:text-sidebar-foreground/40
-                   transition-all duration-200 ease-out
-                   focus:outline-none focus:border-primary/40 focus:bg-sidebar-accent/50
-                   focus:shadow-[0_0_0_3px_rgba(0,209,255,0.1)]
-                   dark:focus:shadow-[0_0_0_3px_rgba(0,209,255,0.15)]
-                   hover:bg-sidebar-accent/40"
+                   transition-[background-color,border-color,box-shadow] duration-150
+                   focus:outline-none focus:border-primary/60 focus:bg-background
+                   focus:ring-2 focus:ring-primary/10
+                   hover:bg-background"
       />
     </div>
   )
@@ -107,10 +106,10 @@ export function ChatSidebar({
             <button
               onClick={() => toggleSidebar()}
               title={t("sidebar.expand") || "Expand sidebar"}
-              className="size-8 flex items-center justify-center transition-all duration-150 hover:scale-90 cursor-pointer"
+              className="size-8 flex items-center justify-center rounded-lg transition-colors duration-150 hover:bg-sidebar-accent cursor-pointer"
             >
-              <div className="size-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold text-sm">
-                <span className="text-[#FFB800]">A</span><span>H</span>
+              <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-xs font-semibold text-background">
+                AH
               </div>
             </button>
           </div>
@@ -140,7 +139,7 @@ export function ChatSidebar({
       <SidebarSeparator />
 
       <SidebarContent className={isCollapsed ? "pb-3" : "px-1 pb-3"}>
-        <SidebarGroup className="pt-2 mt-2">
+        <SidebarGroup className="mt-2 border-b border-sidebar-border pb-3 pt-2">
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
@@ -171,7 +170,7 @@ export function ChatSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup className="pt-1 group-data-[collapsible=icon]:hidden">
+        <SidebarGroup className="pt-3 group-data-[collapsible=icon]:hidden">
           <SidebarGroupLabel className="px-2">{t("conversation.recent")}</SidebarGroupLabel>
           <SidebarGroupContent>
             {/* Search input */}
@@ -195,15 +194,15 @@ export function ChatSidebar({
                       <div className="group/item relative">
                         <SidebarMenuButton
                           isActive={isActive}
-                          className={`h-auto items-start py-2.5 pr-10 cursor-pointer rounded-xl
-                                     transition-all duration-200 ease-out
+                          className={`h-auto min-h-14 items-start border-l-2 py-2.5 pr-10 cursor-pointer rounded-none
+                                     transition-[background-color,color] duration-150
                                      ${isActive
-                              ? 'bg-gradient-to-r from-warm/15 to-transparent border-l-2 border-warm pl-3 ml-0'
-                              : 'hover:bg-sidebar-accent/50 hover:translate-x-0.5'}`}
+                              ? 'border-primary bg-sidebar-accent text-sidebar-accent-foreground'
+                              : 'border-transparent hover:bg-sidebar-accent/65'}`}
                           onClick={() => onOpenConversation(conversation)}
                         >
                           <div className="min-w-0">
-                            <p className={`line-clamp-1 text-sm transition-colors duration-200 ${isActive ? 'font-semibold text-sidebar-foreground' : 'font-medium text-sidebar-foreground/90'}`}>
+                            <p className={`line-clamp-1 text-[15px] transition-colors duration-200 ${isActive ? 'font-semibold text-sidebar-foreground' : 'font-medium text-sidebar-foreground/90'}`}>
                               {conversation.title}
                             </p>
                             <p className="text-xs text-sidebar-foreground/50 mt-0.5">
@@ -218,9 +217,9 @@ export function ChatSidebar({
                               variant="ghost"
                               size="icon"
                               className="absolute top-2 cursor-pointer right-2 size-7 text-sidebar-foreground/50
-                                         opacity-0 group-hover/item:opacity-100 transition-all duration-200
+                                         opacity-0 group-hover/item:opacity-100 transition-[background-color,color,opacity] duration-150
                                          hover:bg-sidebar-accent/80 hover:text-sidebar-foreground
-                                         rounded-lg"
+                                         rounded-md"
                               onClick={(event) => {
                                 event.stopPropagation()
                               }}
@@ -302,7 +301,7 @@ export function ChatSidebar({
                 onClick={onSwitchUser}
               >
                 <div className="flex size-6 items-center justify-center rounded-full bg-muted text-xs shrink-0">
-                  {currentUser?.avatar || (currentUser?.gender === "female" ? "👩" : "👨")}
+                  {currentUser?.avatar || currentUser?.name?.slice(0, 1).toUpperCase() || "U"}
                 </div>
                 {!isCollapsed && (
                   <span className="truncate">{currentUser?.name ?? t("user.switchUser")}</span>

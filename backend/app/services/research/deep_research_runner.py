@@ -26,6 +26,10 @@ from app.services.research.loop import (
 from app.services.research.source_extraction import (
     extract_research_source_records,
 )
+from app.services.execution_progress import (
+    current_execution_progress,
+    report_completed_step,
+)
 
 
 DEEP_RESEARCH_RECEIPT_VERSION = "deep-research-receipt-v1"
@@ -222,6 +226,13 @@ async def run_deep_research(
     run_id = started.run.id
     if run_id is None:
         raise RuntimeError("deep research run was not created")
+    await report_completed_step(
+        kind="research",
+        status="completed",
+        title="\u7814\u7a76\u4efb\u52a1\u5df2\u521b\u5efa",
+        detail="\u5df2\u5efa\u7acb\u7814\u7a76\u7a7a\u95f4\u5e76\u786e\u8ba4\u68c0\u7d22\u9884\u7b97",
+        step_id=f"research:{run_id}:created",
+    )
 
     previous_assessment: ResearchGapAssessment | None = None
     rounds: list[ResearchRoundSources] = []
@@ -322,6 +333,16 @@ async def run_deep_research(
                     },
                 )
             last_review = review
+            await report_completed_step(
+                kind="research",
+                status=("completed" if round_sources.status == "completed" else "failed"),
+                title=f"\u7b2c {round_index} \u8f6e\u7814\u7a76\u5b8c\u6210",
+                detail=(
+                    f"\u83b7\u5f97 {round_sources.source_count} \u4e2a\u6765\u6e90\uff1b\u5ba1\u67e5\u7ed3\u8bba\uff1a{review.verdict}"
+                ),
+                step_id=f"research:{run_id}:round:{round_index}",
+                error=round_sources.error or None,
+            )
             if review.verdict in {"sufficient", "budget_exhausted"}:
                 break
 
@@ -359,6 +380,14 @@ async def run_deep_research(
         )
         content = str(written.report_markdown or "").strip()
         status = "completed" if evidence_count else "failed"
+        await report_completed_step(
+            kind="research",
+            status=status,
+            title="\u7814\u7a76\u62a5\u544a\u5df2\u751f\u6210",
+            detail=f"\u7eb3\u5165 {evidence_count} \u6761\u8bc1\u636e\uff0c\u6765\u81ea {source_count} \u4e2a\u6765\u6e90",
+            step_id=f"research:{run_id}:report",
+            error=written.error or None,
+        )
         finished = await orchestrator.finish_research(
             user_id=user_id,
             run_id=run_id,
@@ -378,6 +407,7 @@ async def run_deep_research(
                 "report_writer_attempts": written.metadata.get(
                     "attempts", []
                 )[-8:],
+                "token_usage": _current_research_usage(),
                 "deep_research_contract": DEEP_RESEARCH_RECEIPT_VERSION,
             },
         )
@@ -402,7 +432,10 @@ async def run_deep_research(
                 run_id=run_id,
                 conclusion=FAILED,
                 status="failed",
-                metadata={"error": str(exc)[:500]},
+                metadata={
+                    "error": str(exc)[:500],
+                    "token_usage": _current_research_usage(),
+                },
             )
         except Exception:
             pass
@@ -587,6 +620,13 @@ async def _admit_round_evidence(
             known_facts=[record.claim],
             next_actions=["evaluate_research_gaps"],
         )
+
+
+def _current_research_usage() -> dict[str, int]:
+    collector = current_execution_progress()
+    if collector is None:
+        return {}
+    return collector.usage_summary().model_dump(mode="json")
 
 
 __all__ = [

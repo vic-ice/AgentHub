@@ -5,6 +5,8 @@ from typing import Any
 from uuid import UUID
 
 from app.infra.database import get_database
+from app.services.memory.classification import derive_domain_kind
+from app.services.memory.clarification_gate import ClarificationGate
 from app.services.memory.admission import MemoryAdmissionEngine
 from app.services.memory.conflicts import MemoryConflictResolver
 from app.services.memory.contracts import MemoryCandidate, MemoryEvent
@@ -25,11 +27,12 @@ class _PreparedCommit:
 
 
 class MemoryCommitter:
-    """The sole v2 component that may create or revise durable memory."""
+    """DEPRECATED adapter (legacy precommit). Production writes go through MemoryWriteGateway; kept only for legacy routing compatibility."""
 
     def __init__(self) -> None:
         self._admission = MemoryAdmissionEngine()
         self._conflicts = MemoryConflictResolver()
+        self._clarification_gate = ClarificationGate()
 
     async def commit(
         self,
@@ -57,6 +60,15 @@ class MemoryCommitter:
             )
             for fact in _dedupe_facts(command.facts)
         ]
+
+        gate = await self._clarification_gate.evaluate(command.facts, candidates)
+        if gate.blocked:
+            return MemoryWriteOutcome(
+                status="clarification_required",
+                clarification_question=gate.clarification_question,
+                reason_codes=[*gate.reason_codes, "clarification_gate"],
+            )
+
         db = get_database()
         async with db.session() as session:
             provider = PostgresMemoryProvider(session)
@@ -200,6 +212,17 @@ def _candidate_from_fact(
     if profile_key:
         metadata["profile_key"] = profile_key
     return MemoryCandidate(
+        domain=fact.domain or derive_domain_kind(
+            fact.legacy_type,
+            fact.legacy_subject,
+            fact.state_key,
+        )[0],
+        kind=fact.kind or derive_domain_kind(
+            fact.legacy_type,
+            fact.legacy_subject,
+            fact.state_key,
+        )[1],
+        entity_id=fact.entity_id,
         type=fact.legacy_type,
         subject=fact.legacy_subject,
         value=fact.legacy_value,

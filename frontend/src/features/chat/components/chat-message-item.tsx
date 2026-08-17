@@ -2374,38 +2374,38 @@ function ResearchSourceCollectionPanel({
   const writesEvidence = asBoolean(result.metadata.writes_evidence)
 
   return (
-    <section className="mt-3 rounded-xl border border-indigo-500/30 bg-indigo-50/70 p-3 text-sm text-indigo-950 dark:bg-indigo-950/20 dark:text-indigo-100">
+    <section className="mt-3 rounded-xl bg-muted/45 p-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
       <div className="flex flex-wrap items-center gap-2">
-        <BrainIcon className="size-4 text-indigo-700 dark:text-indigo-300" />
+        <BrainIcon className="size-4 text-primary" />
         <span className="font-semibold">Research source collection</span>
-        <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-medium text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-100">
+        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
           {researchStatusLabel(result.status)}
         </span>
-        <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.contract_version}
         </span>
         {batch ? (
-          <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+          <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
             {batch.observation_count}/{batch.source_count} observations
           </span>
         ) : null}
       </div>
 
       {result.query ? (
-        <p className="mt-2 text-xs leading-5 text-indigo-900/90 dark:text-indigo-100/85">
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
           {result.query}
         </p>
       ) : null}
 
       <div className="mt-3 flex flex-wrap gap-1.5">
-        <span className="rounded-md border border-indigo-400/40 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+        <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           writes research state: {writesResearchState ? "yes" : "no"}
         </span>
-        <span className="rounded-md border border-indigo-400/40 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+        <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           writes evidence: {writesEvidence ? "yes" : "no"}
         </span>
         {state ? (
-          <span className="rounded-md border border-indigo-400/40 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
             state steps: {state.steps.length}
           </span>
         ) : null}
@@ -3214,32 +3214,32 @@ function RecommendationResearchWorkflowPanel({
   )
 
   return (
-    <section className="mt-3 rounded-xl border border-indigo-500/30 bg-indigo-50/70 p-3 text-sm text-indigo-950 dark:bg-indigo-950/20 dark:text-indigo-100">
+    <section className="mt-3 rounded-xl bg-muted/45 p-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
       <div className="flex flex-wrap items-center gap-2">
-        <BrainIcon className="size-4 text-indigo-700 dark:text-indigo-300" />
+        <BrainIcon className="size-4 text-primary" />
         <span className="font-semibold">Recommendation research workflow</span>
-        <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-medium text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-100">
+        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
           {researchStatusLabel(result.status)}
         </span>
-        <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.ready_to_fuse ? "ready to fuse" : "not ready"}
         </span>
-        <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.fresh_candidate_count}/{result.candidate_count} fresh
         </span>
-        <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.verified_claim_count} verified claims
         </span>
       </div>
 
       {result.query ? (
-        <p className="mt-2 text-xs leading-5 text-indigo-900/90 dark:text-indigo-100/85">
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
           {result.query}
         </p>
       ) : null}
 
       {result.next_action_hint ? (
-        <p className="mt-2 rounded-lg border border-indigo-400/30 bg-background/70 p-2 text-xs leading-5 text-muted-foreground">
+        <p className="mt-2 rounded-lg bg-background p-2 text-xs leading-5 text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.next_action_hint}
         </p>
       ) : null}
@@ -3254,7 +3254,7 @@ function RecommendationResearchWorkflowPanel({
               {result.recommended_next_tools.slice(0, 6).map((tool) => (
                 <span
                   key={tool}
-                  className="rounded-md border border-indigo-400/40 px-1.5 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200"
+                  className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]"
                 >
                   {tool}
                 </span>
@@ -3382,26 +3382,26 @@ function RecommendationResearchRunnerPanel({
   const candidateCount = Number(result.metadata.candidate_count ?? result.workflow_after.candidate_count)
 
   return (
-    <section className="mt-3 rounded-xl border border-violet-500/30 bg-violet-50/70 p-3 text-sm text-violet-950 dark:bg-violet-950/20 dark:text-violet-100">
+    <section className="mt-3 rounded-xl bg-muted/45 p-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
       <div className="flex flex-wrap items-center gap-2">
-        <BrainIcon className="size-4 text-violet-700 dark:text-violet-300" />
+        <BrainIcon className="size-4 text-primary" />
         <span className="font-semibold">Recommendation research runner</span>
-        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-800 dark:bg-violet-900/60 dark:text-violet-100">
+        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
           {researchStatusLabel(result.status)}
         </span>
-        <span className="rounded-full border border-violet-400/50 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {runtimeExecuted ? "runtime executed" : "runtime skipped"}
         </span>
-        <span className="rounded-full border border-violet-400/50 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {fusionExecuted ? "fusion executed" : "fusion pending"}
         </span>
-        <span className="rounded-full border border-violet-400/50 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.contract_version}
         </span>
       </div>
 
       {result.query ? (
-        <p className="mt-2 text-xs leading-5 text-violet-900/90 dark:text-violet-100/85">
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
           {result.query}
         </p>
       ) : null}
@@ -3446,10 +3446,10 @@ function RecommendationResearchRunnerPanel({
             Before
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <span className="rounded-md border border-violet-400/40 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+            <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
               {researchStatusLabel(result.workflow_before.status)}
             </span>
-            <span className="rounded-md border border-violet-400/40 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+            <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
               {result.workflow_before.ready_to_fuse ? "ready" : "not ready"}
             </span>
           </div>
@@ -3465,10 +3465,10 @@ function RecommendationResearchRunnerPanel({
             After
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <span className="rounded-md border border-violet-400/40 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+            <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
               {researchStatusLabel(result.workflow_after.status)}
             </span>
-            <span className="rounded-md border border-violet-400/40 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+            <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
               {result.workflow_after.ready_to_fuse ? "ready" : "not ready"}
             </span>
           </div>
@@ -3481,7 +3481,7 @@ function RecommendationResearchRunnerPanel({
       </div>
 
       {result.runtime ? (
-        <p className="mt-3 rounded-lg border border-violet-400/30 bg-background/70 p-2 text-xs text-muted-foreground">
+        <p className="mt-3 rounded-lg bg-background p-2 text-xs text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           Local research runtime: {researchStatusLabel(result.runtime.status)}
           {result.runtime.run_id ? ` (${result.runtime.run_id})` : null}
         </p>
@@ -4000,29 +4000,26 @@ export function ChatMessageItem({
       <Message
         from={isUser ? "user" : "assistant"}
         className={cn(
-          "min-w-0 shrink-0 transition-all duration-300",
+          "min-w-0 shrink-0 transition-opacity duration-150",
           isUser
-            ? "w-auto max-w-[72%] items-end ml-0"
-            : "w-full max-w-[85%]",
-          isAI && isSelected && "scale-[1.01]"
+            ? "w-auto max-w-[76%] items-end ml-0"
+            : "w-full max-w-[90%]",
+          isAI && isSelected && "opacity-100"
         )}
       >
         <MessageContent
           className={cn(
-            "max-w-full overflow-visible rounded-3xl px-5 py-3.5 text-[15px] leading-relaxed transition-all duration-300",
+            "max-w-full overflow-visible px-5 py-4 text-[16px] leading-7 transition-[background-color,border-color] duration-150",
             isUser
-              ? "w-fit mr-3 bg-user-bubble text-user-bubble-foreground"
-              : "w-full bg-ai-bubble text-foreground border border-border/50",
+              ? "mr-3 w-fit rounded-[20px] rounded-br-md border border-border/65 bg-user-bubble text-user-bubble-foreground"
+              : "w-full rounded-none border border-transparent bg-transparent text-foreground",
             // Add selected highlight for AI messages
-            isAI && isSelected && [
-              "border-primary/40 shadow-[0_0_0_1px_rgba(var(--primary),0.2),0_0_20px_rgba(var(--primary),0.15)]",
-              "dark:shadow-[0_0_0_1px_rgba(var(--primary),0.3),0_0_30px_rgba(var(--primary),0.2)]"
-            ],
+            isAI && isSelected && "bg-muted/35",
           )}
         >
           {/* Sources */}
           {sources.length > 0 ? (
-            <details className="rounded-lg border border-border/80 bg-background/70 p-2 text-xs mb-2">
+            <details className="border-l-2 border-border bg-muted/30 p-3 text-xs mb-3">
               <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-muted-foreground">
                 <ChevronDown className="size-3" />
                 {t("message.sources", { count: sources.length })}
@@ -4046,7 +4043,7 @@ export function ChatMessageItem({
 
           {/* Thinking content display - show live reasoning and preserved history. */}
           {isAI && hasThinkingContent ? (
-            <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs mb-2">
+            <div className="border-l-2 border-border bg-muted/35 p-3 text-xs mb-3">
               <div className="flex items-center gap-2 mb-2">
                 <BrainIcon className={cn("size-3.5 text-primary", isStreaming && "animate-pulse")} />
                 <span className="font-medium text-muted-foreground">
@@ -4061,7 +4058,7 @@ export function ChatMessageItem({
 
           {/* Tool calls display - ChatGPT style scrolling list */}
           {isAI && allTools.length > 0 && (isStreaming || !message.content.trim()) ? (
-            <div className="rounded-lg border border-border/60 bg-background/50 p-2 text-xs mb-2 max-h-32 overflow-y-auto">
+            <div className="border-l-2 border-border bg-background/50 p-3 text-xs mb-3 max-h-32 overflow-y-auto">
               <div className="space-y-1.5">
                 {allTools.map((tool, toolIndex) => {
                   const isCalling = tool.status === "calling"
@@ -4125,12 +4122,12 @@ export function ChatMessageItem({
               {/* Separator line */}
               <Separator className="bg-user-bubble-foreground/30" />
               {/* User content - use user_content from custom_data */}
-              <p className="whitespace-pre-wrap break-words text-sm leading-6">
+              <p className="whitespace-pre-wrap break-words text-[15px] leading-7">
                 {userContent}
               </p>
             </div>
           ) : (
-            <p className="whitespace-pre-wrap break-words text-sm leading-6">
+            <p className="whitespace-pre-wrap break-words text-[15px] leading-7">
               {message.content}
             </p>
           )}

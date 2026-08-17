@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -20,6 +21,7 @@ from app.services.conversation.summary_contracts import (
     ConversationSummaryDraft,
     StructuredConversationSummary,
 )
+from app.services.execution_progress import report_model_completion
 
 
 SUMMARY_TOOL_NAME = "submit_conversation_summary"
@@ -64,9 +66,30 @@ class LLMSummaryProvider:
         if not callable(bind_tools):
             raise SummaryBuildError("summary model does not expose bind_tools")
         runnable = bind_tools([_summary_tool_schema()], tool_choice=SUMMARY_TOOL_NAME)
-        response = await asyncio.wait_for(
-            runnable.ainvoke(_messages(previous, events)),
-            timeout=self._timeout_seconds,
+        started = time.perf_counter()
+        response = None
+        try:
+            response = await asyncio.wait_for(
+                runnable.ainvoke(_messages(previous, events)),
+                timeout=self._timeout_seconds,
+            )
+        except Exception as exc:
+            await report_model_completion(
+                response,
+                title="\u4f1a\u8bdd\u6458\u8981\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+                detail="\u4f1a\u8bdd\u6458\u8981\u751f\u6210\u5931\u8d25",
+                model_name=self._model_name,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                status="failed",
+                error=str(exc) or exc.__class__.__name__,
+            )
+            raise
+        await report_model_completion(
+            response,
+            title="\u4f1a\u8bdd\u6458\u8981\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+            detail="\u5df2\u751f\u6210\u7d2f\u79ef\u4f1a\u8bdd\u6458\u8981",
+            model_name=self._model_name,
+            duration_ms=int((time.perf_counter() - started) * 1000),
         )
         if not isinstance(response, AIMessage):
             raise SummaryBuildError(
@@ -84,7 +107,6 @@ class LLMSummaryProvider:
                 calls[0]["args"]
             ),
         )
-
 
 def _default_model_factory(model_name: str):
     return get_llm(model_name, thinking_mode=False)

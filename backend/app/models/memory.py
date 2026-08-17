@@ -32,6 +32,11 @@ class MemoryEventRecord(Base):
     )
     type: Mapped[str] = mapped_column(String(32), nullable=False)
     subject: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("memory_entities.id", ondelete="SET NULL"), nullable=True
+    )
+    domain: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     polarity: Mapped[str] = mapped_column(String(32), nullable=False, default="neutral")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
@@ -75,6 +80,31 @@ class MemoryEventRecord(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+class MemoryEntityRecord(Base):
+    """Stable per-user entity registry; entity facts bind entity_id to this."""
+
+    __tablename__ = "memory_entities"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    domain: Mapped[str] = mapped_column(String(32), nullable=False, default="general")
+    external_ref: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
