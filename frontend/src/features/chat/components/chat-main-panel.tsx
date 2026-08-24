@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, SearchCheck, XIcon } from "lucide-react"
 
-import type { LocalChatMessage, ToolCallInfo, ModelInfo } from "@/types"
+import type { CompletedExecutionStep, LocalChatMessage, ToolCallInfo, ModelInfo } from "@/types"
 import { ModelSelector } from "@/features/chat/components/model-selector"
 import {
   Alert,
@@ -18,6 +18,7 @@ import {
   PromptInputTextarea,
 } from "@/components/ai/prompt-input"
 import { ChatMessageItem } from "@/features/chat/components/chat-message-item"
+import { ExecutionProgressCard } from "@/features/chat/components/execution-progress-card"
 import { SciFiLoader } from "@/components/ai/neural-network-loader"
 import { useI18n } from "@/i18n"
 import { cn } from "@/lib/utils"
@@ -29,12 +30,14 @@ import type {
 
 type ChatMainPanelProps = {
   appError: string | null
+  onDismissError: () => void
   isStreaming: boolean
   isInitializing: boolean
   isLoadingConversation: boolean
   isProcessing: boolean // Processing, no content received yet
   isAgentThinking: boolean
   calledTools: ToolCallInfo[]
+  liveExecutionSteps: CompletedExecutionStep[]
   thinkingContent: string // Accumulated thinking content
   messages: LocalChatMessage[]
   selectedRequestId?: string | null // Currently selected request_id for DAG viewing
@@ -66,12 +69,14 @@ const USER_SCROLL_INTERRUPT_DELTA = -2
 
 export function ChatMainPanel({
   appError,
+  onDismissError,
   isStreaming,
   isInitializing,
   isLoadingConversation,
   isProcessing,
   isAgentThinking,
   calledTools,
+  liveExecutionSteps,
   thinkingContent,
   messages,
   selectedRequestId,
@@ -294,6 +299,14 @@ export function ChatMainPanel({
     : !inputValue.trim() || status !== "ready" || isComposerDisabled
   const shouldShowScrollButton =
     showScrollButton && !isLoadingConversation
+  const retryText = useMemo(() => {
+    const latestUserMessage = [...messages].reverse().find((message) => message.type === "human")
+    if (!latestUserMessage) return ""
+    const userContent = latestUserMessage.custom_data?.user_content
+    return typeof userContent === "string" && userContent.trim()
+      ? userContent.trim()
+      : latestUserMessage.content.trim()
+  }, [messages])
 
   // Clear quoted content
   const clearQuote = useCallback(() => {
@@ -314,8 +327,25 @@ export function ChatMainPanel({
       >
         {appError ? (
           <Alert variant="destructive" className="mt-4">
-            <AlertTitle>{t("chat.requestFailed")}</AlertTitle>
-            <AlertDescription>{appError}</AlertDescription>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <AlertTitle>{t("chat.requestFailed")}</AlertTitle>
+                <AlertDescription className="mt-1 whitespace-pre-line">{appError}</AlertDescription>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {retryText && !isStreaming ? (
+                    <Button type="button" size="sm" variant="outline" onClick={() => submitMessage(retryText)}>
+                      重新发送
+                    </Button>
+                  ) : null}
+                  <Button type="button" size="sm" variant="ghost" onClick={onDismissError}>
+                    暂时关闭
+                  </Button>
+                </div>
+              </div>
+              <Button type="button" size="icon" variant="ghost" className="size-8 shrink-0" onClick={onDismissError} aria-label="关闭错误提示">
+                <XIcon className="size-4" />
+              </Button>
+            </div>
           </Alert>
         ) : null}
 
@@ -360,6 +390,7 @@ export function ChatMainPanel({
                         key={`msg-${index}`}
                         message={{ ...message, local_id: `msg-${index}` }}
                         calledTools={isLastAIMessage ? calledTools : []}
+                        executionSteps={isLastAIMessage ? liveExecutionSteps : []}
                         isAgentThinking={isLastAIMessage ? isAgentThinking : false}
                         thinkingContent={isLastAIMessage ? thinkingContent : ""}
                         isProcessing={isLastAIMessage && isProcessing}
@@ -374,12 +405,14 @@ export function ChatMainPanel({
                   })
                 )}
 
-                {/* Neural network loading indicator - shown when processing and no AI content yet */}
-                {isProcessing && messages.length > 0 && (
-                  <div className="flex items-center justify-center py-8">
-                    <SciFiLoader className="w-24 h-24" showText={false} />
-                  </div>
-                )}
+                <ExecutionProgressCard
+                  isStreaming={isStreaming}
+                  isProcessing={isProcessing}
+                  isAgentThinking={isAgentThinking}
+                  steps={liveExecutionSteps}
+                  tools={calledTools}
+                  onStop={onStopStreaming}
+                />
 
                 <div ref={endOfMessagesRef} />
               </div>

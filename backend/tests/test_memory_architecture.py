@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from uuid import uuid4
@@ -26,15 +28,42 @@ def _rel(path: Path) -> str:
 
 
 class MemoryArchitectureGuardTests(unittest.TestCase):
+    def test_all_non_conversation_provenance_kinds_are_store_admitted(self):
+        from app.services.memory.version_contracts import PROVENANCE_SOURCE_KINDS
+        from app.services.memory.version_store import _PROVENANCE_KINDS
+
+        self.assertEqual(
+            _PROVENANCE_KINDS,
+            PROVENANCE_SOURCE_KINDS - {"user_message"},
+        )
+
     def test_version_runtime_uses_gateway_not_old_chain(self):
         src = (BACKEND / "services" / "memory" / "version_runtime.py").read_text(
             encoding="utf-8-sig"
         )
         self.assertIn("MemoryWriteGateway", src)
         self.assertIn("compiled_turn_from_assertions", src)
+        self.assertIn("forget_targets", src)
         self.assertNotIn("TurnFactCompiler", src)
         self.assertNotIn("MemoryCanonicalizer().canonicalize(", src)
+        self.assertNotIn("MemoryCanonicalizer().resolve_targets(", src)
         self.assertNotIn("MemoryVersionStore(session).commit(", src)
+
+    def test_management_and_chat_forward_explicit_provenance(self):
+        admin = (BACKEND / "api" / "v1" / "memory.py").read_text(
+            encoding="utf-8-sig"
+        )
+        runtime = (
+            BACKEND / "services" / "memory" / "version_runtime.py"
+        ).read_text(encoding="utf-8-sig")
+        gateway = (
+            BACKEND / "services" / "memory" / "write_gateway.py"
+        ).read_text(encoding="utf-8-sig")
+        self.assertGreaterEqual(admin.count('source_kind="admin_action"'), 2)
+        self.assertIn("gateway.forget_targets", admin)
+        self.assertNotIn("gateway.forget(\n", admin)
+        self.assertIn('source_kind="user_message"', runtime)
+        self.assertIn("source_kind=source_kind", gateway)
 
     def test_version_store_commit_only_from_gateway(self):
         offenders: list[str] = []
@@ -107,6 +136,34 @@ class MemoryArchitectureGuardTests(unittest.TestCase):
         self.assertNotIn("write_coordinator", src)
         self.assertNotIn("MemoryCommitter", src)
         self.assertNotIn("provider.remember", src)
+
+    def test_importing_current_runtime_does_not_load_legacy_memory_owners(self):
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "import app.services.memory.version_runtime; "
+                    "blocked={'app.services.memory.orchestrator',"
+                    "'app.services.memory.write_coordinator',"
+                    "'app.services.memory.committer'}; "
+                    "print(sorted(blocked & set(sys.modules)))"
+                ),
+            ],
+            cwd=BACKEND.parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(probe.stdout.strip(), "[]")
+
+    def test_full_production_import_graph_cannot_reach_legacy_baselines(self):
+        from scripts.verify_r8_legacy_exit import verify_structure
+
+        result = verify_structure()
+        self.assertEqual(result["status"], "passed")
+        self.assertGreaterEqual(result["reachable_files"], 1)
 
     def test_single_gateway_per_domain(self):
         gateways: list[str] = []

@@ -177,6 +177,8 @@ async def search_external_research_documents(
             query=search_query,
             max_results=max(1, min(limit, 10)),
             detail="deep",
+            strategy="federated",
+            provider_budget=3,
         )
     )
     documents = _documents_from_search_results(

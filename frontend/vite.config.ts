@@ -24,11 +24,46 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
-      rollupOptions: {
+      rolldownOptions: {
         input: {
           index: path.resolve(__dirname, "index.html"),
         },
+        output: {
+          codeSplitting: {
+            minSize: 20 * 1024,
+            maxSize: 420 * 1024,
+            groups: [
+              {
+                name: "react-core",
+                test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+                priority: 40,
+              },
+              {
+                name: "markdown",
+                test: /node_modules[\\/](marked|react-markdown|remark-|rehype-|unified|shiki|@shikijs)[\\/]/,
+                priority: 30,
+                maxSize: 420 * 1024,
+              },
+              {
+                name: "ui-vendor",
+                test: /node_modules[\\/](radix-ui|@radix-ui|lucide-react)[\\/]/,
+                priority: 20,
+                maxSize: 380 * 1024,
+              },
+              {
+                name: "vendor",
+                test: /node_modules[\\/]/,
+                priority: 1,
+                maxSize: 420 * 1024,
+              },
+            ],
+          },
+        },
       },
+      // A few Shiki grammar modules are individually large but lazy-loaded
+      // only when their language appears. Keep warnings focused on eagerly
+      // loaded application chunks, which are split below this threshold.
+      chunkSizeWarningLimit: 800,
     },
     server: {
       // Keep the local entry deterministic. If another frontend already owns

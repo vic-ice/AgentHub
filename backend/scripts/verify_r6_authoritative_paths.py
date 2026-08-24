@@ -123,11 +123,14 @@ def _assert_versioned_memory_path() -> None:
     assert 'operation="forget_memory_v2"' in compiler
 
     runtime = _source("app/services/memory/version_runtime.py")
-    assert "MemoryCanonicalizer().canonicalize" in runtime
-    assert "canonical.status != \"ready\"" in runtime
-    assert "MemoryVersionStore(session).commit" in runtime
-    assert "MemoryVersionStore(session).forget" in runtime
-    assert "store.list_current" in runtime
+    assert "compiled_turn_from_assertions" in runtime
+    assert "MemoryWriteGateway" in runtime
+    assert "commit_compiled" in runtime
+    assert "forget_targets" in runtime
+    assert "MemoryReadGateway" in runtime
+    assert "MemoryCanonicalizer" not in runtime
+    assert "MemoryVersionStore" not in runtime
+    assert "reader.current_versions" in runtime
     assert "_source_event_id(context)" in runtime
 
     imports = _imported_modules(
@@ -181,8 +184,8 @@ def _main() -> int:
                 ],
                 "legacy_model_memory_tools_exposed": False,
                 "memory_write_path": [
-                    "canonicalizer",
-                    "precommit",
+                    "controller_assertions",
+                    "memory_write_gateway",
                     "version_store",
                 ],
                 "schema_change_required": False,

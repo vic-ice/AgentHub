@@ -8,7 +8,6 @@ from app.infra.database import get_database
 from app.schemas.chat import UserInput
 from app.services.agent_runtime.contracts import ExecutionContext
 from app.services.conversation import ConversationEventRepository
-from app.services.memory.canonicalizer import MemoryCanonicalizer
 from app.services.memory.version_contracts import (
     ForgetMemoryRequest,
     RememberMemoryRequest,
@@ -113,27 +112,23 @@ async def execute_forget_memory(
     ok, reason = validate_forget_write(source_text)
     if not ok:
         return {"status": "rejected", "reason": reason}
-    resolution = MemoryCanonicalizer().resolve_targets(
-        request.targets,
-        source_text=source_text,
-    )
-    if resolution.status != "ready":
-        return resolution.model_dump(mode="json")
     source_event_id, database = await _source_event_id(context)
     if source_event_id is None:
         return _missing_source_result()
     from app.services.memory.write_gateway import MemoryWriteGateway
 
     async with database.session() as session:
-        outcome = await MemoryWriteGateway(session).forget(
+        outcome = await MemoryWriteGateway(session).forget_targets(
             user_id=context.user_id,
             thread_id=context.thread_id,
-            memory_keys=[item.memory_key for item in resolution.targets],
+            targets=request.targets,
+            source_text=source_text,
             source_event_id=source_event_id,
             receipt_id=_receipt_id(context, action_id),
-            evidence_quote=source_text,
+            source_kind="user_message",
         )
-    return dict(outcome["receipt"])
+    receipt = outcome.get("receipt")
+    return dict(receipt) if isinstance(receipt, dict) else outcome
 
 
 async def _source_event_id(

@@ -86,11 +86,17 @@ class ControllerClient:
         response: AIMessage | None = None
         try:
             model = self._model_factory(request.model_name)
-            bind_tools = getattr(model, "bind_tools", None)
-            if not callable(bind_tools):
-                raise ControllerClientError("model does not expose bind_tools")
-            schemas = controller_tool_schemas(self._registry)
-            runnable = bind_tools(list(schemas), tool_choice="auto")
+            if request.phase == "synthesis":
+                # Synthesis is deliberately tool-free: semantic routing has
+                # already happened and the signed receipts are the complete
+                # evidence boundary for the final answer.
+                runnable = model
+            else:
+                bind_tools = getattr(model, "bind_tools", None)
+                if not callable(bind_tools):
+                    raise ControllerClientError("model does not expose bind_tools")
+                schemas = controller_tool_schemas(self._registry)
+                runnable = bind_tools(list(schemas), tool_choice="auto")
             messages = model_history_projector.project(
                 self._prompt_composer.compose(request)
             )
@@ -103,6 +109,10 @@ class ControllerClient:
                     f"expected AIMessage, got {type(response).__name__}"
                 )
             output = self.parse(response)
+            if request.phase == "synthesis" and output.mode != "direct_answer":
+                raise ControllerClientError(
+                    "synthesis phase must return one direct answer"
+                )
         except Exception as exc:
             await report_model_completion(
                 response,

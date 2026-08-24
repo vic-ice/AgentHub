@@ -46,11 +46,13 @@ class BookSearchRuntimeAdapter:
             return result.model_dump(mode="json")
         database = get_database()
         async with database.session() as session:
-            result = await RecommendationService(session).search(
+            result = await RecommendationService(
+                session,
+                enable_external_enrichment=True,
+            ).search(
                 request, user_id=context.user_id
             )
             return result.model_dump(mode="json")
 
 
 __all__ = ["BookSearchRuntimeAdapter", "RecommendationGateway"]
-

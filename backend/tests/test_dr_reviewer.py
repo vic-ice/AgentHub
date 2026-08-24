@@ -171,6 +171,60 @@ class ReviewerTests(unittest.TestCase):
         self.assertEqual(review.provider, "deterministic")
         self.assertEqual(review.verdict, "sufficient")
 
+    def test_model_cannot_mark_sufficient_while_evidence_gaps_remain(self):
+        state = _state(
+            "推荐一些可靠候选",
+            [("某候选被一个来源列入书单。", "low")],
+            gaps=["insufficient_evidence_quality"],
+        )
+        review = self._review(
+            state,
+            {
+                "verdict": "sufficient",
+                "known_summary": "已有一个候选",
+                "missing_questions": [],
+                "next_subquestions": [],
+                "conflicts": [],
+                "stop_reason": "已有结果",
+                "reasons": [],
+            },
+        )
+        self.assertEqual(review.provider, "deterministic")
+        self.assertEqual(review.verdict, "insufficient")
+        self.assertEqual(
+            review.missing_questions,
+            ["insufficient_evidence_quality"],
+        )
+
+    def test_invalid_review_output_is_not_retried_four_times(self):
+        state = _state("x", [("足够长的可核验候选事实。", "medium")], gaps=[])
+        calls = 0
+
+        class InvalidModel:
+            async def ainvoke(self, prompt):
+                nonlocal calls
+                del prompt
+                calls += 1
+                return type("Resp", (), {"content": "not json"})()
+
+        with mock.patch(
+            "app.infra.llm.get_llm",
+            return_value=InvalidModel(),
+        ), mock.patch(
+            "app.services.research.reviewer._resolve_model_id",
+            return_value="m",
+        ):
+            review = asyncio.run(
+                review_research_state(
+                    state,
+                    round_index=1,
+                    budget=BUDGET,
+                    model_id="m",
+                )
+            )
+        self.assertEqual(calls, 1)
+        self.assertEqual(review.provider, "deterministic")
+
     def test_no_evidence_short_circuits_without_model(self):
         state = _state("x", [])
 
@@ -234,7 +288,11 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(task.purpose, "reviewer_gap")
         self.assertEqual(
             task.query,
-            self._normalize("《机器学习》难度分级 初学者"),
+            "site:book.douban.com/subject/ 《机器学习》难度分级 初学者",
+        )
+        self.assertEqual(
+            task.include_url_prefixes,
+            ["https://book.douban.com/subject/"],
         )
 
     def test_used_subquestion_is_skipped(self):
@@ -373,6 +431,103 @@ class FreeformRenderTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertEqual(rendered, "")
+
+    def test_evidence_report_without_any_citation_is_rejected(self):
+        from app.services.research.publication.report_writer import (
+            _render_final_deliverable,
+        )
+
+        rendered, cited, ok = _render_final_deliverable(
+            "# 结论\n\n这是一个长度足够但完全没有引用支持的研究结论。" * 4,
+            evidence=[
+                {
+                    "source_id": "s1",
+                    "source_title": "来源",
+                    "source_url": "https://example.com",
+                }
+            ],
+            language="zh-CN",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(cited, [])
+        self.assertTrue(rendered)
+
+    def test_model_authored_sources_are_replaced_by_canonical_sources(self):
+        from app.services.research.publication.report_writer import (
+            _render_final_deliverable,
+        )
+
+        rendered, cited, ok = _render_final_deliverable(
+            (
+                "# 报告\n\n这是有证据支持的事实结论，并且正文长度足以通过最终交付门禁。 [1]\n\n"
+                "## 说明\n这部分只用于说明报告正文仍由证据约束，不包含第二套来源编号。 [1]\n\n"
+                "**来源：**\n1. 模型伪造来源"
+            ),
+            evidence=[
+                {
+                    "source_id": "s1",
+                    "source_title": "权威来源",
+                    "source_url": "https://example.com/source",
+                }
+            ],
+            language="zh-CN",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(cited, ["s1"])
+        self.assertNotIn("模型伪造来源", rendered)
+        self.assertEqual(rendered.count("### 🔗 参考来源"), 1)
+        self.assertNotIn("## 研究结论", rendered)
+
+    def test_malformed_source_url_and_its_citation_are_not_published(self):
+        from app.services.research.publication.report_writer import (
+            _render_final_deliverable,
+        )
+
+        rendered, cited, ok = _render_final_deliverable(
+            (
+                "# 推荐结果 📚\n\n"
+                "有效资料支持这条建议 [1]，畸形链接对应的内容不应发布 [2]。"
+                "这段正文长度足够用于验证最终发布前的 URL 完整性过滤，"
+                "并确保一条坏链接不会让已有可靠内容整体失败。"
+            ),
+            evidence=[
+                {
+                    "source_id": "valid",
+                    "source_title": "有效来源",
+                    "source_url": "https://example.com/source",
+                },
+                {
+                    "source_id": "broken",
+                    "source_title": "截断来源",
+                    "source_url": "https://example.com/%E5%85%B3%E",
+                },
+            ],
+            language="zh-CN",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(cited, ["valid"])
+        self.assertIn("https://example.com/source", rendered)
+        self.assertNotIn("%E5%85%B3%E", rendered)
+        self.assertNotIn("[2]", rendered)
+
+
+class ResearchDeliveryStatusTests(unittest.TestCase):
+    def test_partial_source_backed_answer_is_a_successful_delivery(self):
+        from app.services.research.deep_research_runner import (
+            _research_delivery_status,
+        )
+
+        self.assertEqual(
+            _research_delivery_status(
+                content="有来源支持的部分回答，并诚实说明剩余限制。",
+                evidence_count=2,
+            ),
+            "completed",
+        )
+        self.assertEqual(
+            _research_delivery_status(content="", evidence_count=2),
+            "failed",
+        )
 
 
 class ReportFailureClassificationTests(unittest.TestCase):

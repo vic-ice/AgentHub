@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -29,12 +30,16 @@ RESEARCH_REPORT_WRITE_CONTRACT_VERSION = "research-report-write-v1"
 # P95 of observed report-model calls ~17.9s (n=4, 11.6-18.0s); 45s keeps
 # 2.5x headroom while bounding worst-case waits before deterministic fallback.
 REPORT_TIMEOUT_SECONDS = 90
-MAX_EVIDENCE = 12
+MAX_EVIDENCE = 18
 
 _URL_RE = re.compile(r"https?://[^\s)\]>]+\S*", re.IGNORECASE)
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 _FENCE_RE = re.compile(r"^```(?:markdown)?\s*|\s*```$", re.MULTILINE)
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+_MODEL_SOURCES_SECTION_RE = re.compile(
+    r"(?ims)^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:来源|sources)\s*[:：]?\s*(?:\*\*)?\s*$.*\Z"
+)
+_INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 class ResearchReportWriteResult(BaseModel):
@@ -71,8 +76,8 @@ async def write_research_report(
     validated = ResearchReport.model_validate(report)
     language = "zh-CN" if re.search(r"[\u4e00-\u9fff]", validated.objective) else "en"
     evidence = _evidence_list(validated, limit=MAX_EVIDENCE)
-    all_sources = _all_sources(validated)
     limitations = _limitations(validated)
+    presentation_style = _presentation_style(review)
 
     selected_model_id = ""
     attempts: list[dict[str, Any]] = []
@@ -94,8 +99,11 @@ async def write_research_report(
                         prompt=prompt,
                         objective=validated.objective,
                         evidence=evidence,
-                        sources=all_sources,
+                        # Citation numbers and the rendered source list must
+                        # share the exact same admitted-evidence sequence.
+                        sources=evidence,
                         language=language,
+                        presentation_style=presentation_style,
                     )
                 )
                 attempts.append(attempt)
@@ -119,6 +127,7 @@ async def write_research_report(
                             "sections": _sections(rendered),
                             "attempts": attempts,
                             "failure_cause": "success",
+                            "presentation_style": presentation_style,
                         },
                     )
             except Exception as exc:
@@ -147,7 +156,11 @@ async def write_research_report(
         error = "no admitted evidence to synthesize"
 
     cause = classify_report_failure(attempts, error=error)
-    fallback = _fallback_markdown(validated, language=language)
+    fallback = _fallback_markdown(
+        validated,
+        language=language,
+        presentation_style=presentation_style,
+    )
     return ResearchReportWriteResult(
         run_id=validated.run_id,
         objective=validated.objective,
@@ -164,6 +177,7 @@ async def write_research_report(
             "external_call": False,
             "attempts": attempts,
             "failure_cause": cause,
+            "presentation_style": presentation_style,
         },
     )
 
@@ -175,6 +189,7 @@ async def _generate_report_once(
     objective: str,
     evidence: list[dict[str, Any]],
     language: str,
+    presentation_style: str = "conversational",
     sources: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[str], Any, str, dict[str, Any]]:
     """One model call; take the final answer directly, keep an attempt log.
@@ -209,6 +224,7 @@ async def _generate_report_once(
                     evidence=evidence,
                     sources=sources,
                     language=language,
+                    presentation_style=presentation_style,
                 )
             else:
                 rendered, cited_ids, ok = _render_freeform(
@@ -217,6 +233,7 @@ async def _generate_report_once(
                     evidence=evidence,
                     sources=sources,
                     language=language,
+                    presentation_style=presentation_style,
                 )
             attempt = {
                 "model_id": model_id,
@@ -263,6 +280,7 @@ def _render_freeform(
     objective: str,
     evidence: list[dict[str, Any]],
     language: str,
+    presentation_style: str = "conversational",
     sources: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[str], bool]:
     """Freeform narrative path: extract the report with a minimal usability gate.
@@ -279,8 +297,11 @@ def _render_freeform(
         evidence=evidence,
         sources=sources,
         language=language,
+        presentation_style=presentation_style,
     )
-    return rendered, cited_ids, bool(rendered.strip())
+    return rendered, cited_ids, bool(
+        rendered.strip() and (not evidence or cited_ids)
+    )
 
 
 def _render_final_deliverable(
@@ -288,6 +309,7 @@ def _render_final_deliverable(
     *,
     evidence: list[dict[str, Any]],
     language: str,
+    presentation_style: str = "conversational",
     sources: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[str], bool]:
     """Clean the model's final answer directly (no thinking extraction)."""
@@ -299,8 +321,11 @@ def _render_final_deliverable(
         evidence=evidence,
         sources=sources,
         language=language,
+        presentation_style=presentation_style,
     )
-    return rendered, cited_ids, bool(rendered.strip())
+    return rendered, cited_ids, bool(
+        rendered.strip() and (not evidence or cited_ids)
+    )
 
 
 MIN_USABLE_BODY_CHARS = 80
@@ -544,6 +569,46 @@ _FINAL_REPORT_INSTRUCTIONS_ZH = '研究已经完成。下面是已筛选、核�
 
 _FINAL_REPORT_INSTRUCTIONS_EN = 'The research is complete. Below is the screened, verified, and organized research material.\n\nNow you are a senior research editor delivering this final piece yourself: write it into a final report that directly serves the user, so that after reading it they know how to choose and how to use it.\n\nEditorial principles:\n1. Be opinionated: state your judgment and recommendation stance directly — dare to say "the most worthwhile" or "not recommended"; put the claim first, facts as support, do not neutrally list information.\n2. Do not cram information: one point per paragraph; expand important content fully and pass over minor content in one sentence; prefer fewer, better items and dare to cut what does not help the user.\n3. Do not force even structure: let depth follow importance, no mechanical alignment; what to cover first and how to organize is decided by the content and the user\'s question, not by a fixed template.\n4. Dare to make trade-offs without crude cuts: present by priority tiers - a few items in depth, most items briefly, and when needed explain why something is not the first choice; keep as much valuable material as the input contains, do not cut 10 books down to 3 for brevity.\n5. Stay professional: do not fabricate or overstate what the evidence supports; present conflicts and uncertainty honestly; no raw URLs in the body; keep [n] citations from the input; keep valuable specifics such as names, authors, and data.\n6. Write the final body directly; do not output analysis process, planning, checking, revision notes, or restate the task.\n7. Use Markdown formatting well (bold, lists, tables, blockquotes) and emoji (e.g. 📗 top picks, 📘 hands-on, ⭐ recommended, ⚠️ avoid, 🗺️ learning path, ✅ conclusion) to make the output scannable; when comparing multiple items, prefer a comparison table (e.g. columns for title / author / positioning / who it suits / trade-offs / boundaries) so differences are obvious at a glance; formatting serves readability, never use it just for its own sake.\n\nOutput like an expert delivering finished work, not research notes, digests, or a search result listing.'
 
+_EVIDENCE_LOCKED_INSTRUCTIONS_ZH = '''你是深度研究报告编辑。直接回答用户的原始问题，只能使用“已整理研究成果”中明确写出的事实。
+
+要求：
+1. 不补写材料没有明确支持的作者、日期、版本、销量、评分、因果关系、比较结论或推荐立场。
+2. 每个可核验事实都在句末使用支持它的 [n]；引用必须与该条材料直接对应。
+3. 用户没有要求推荐或评价时，不主动增加“最值得”“不建议”“适合人群”等判断。
+4. 证据不足时明确说明缺口，不用常识或猜测补齐。
+5. 正文不写 URL；保留输入中的名称和数据；最后由系统生成来源列表。
+6. 直接输出结构清晰的 Markdown 成品，不输出思考、规划、检查过程或任务复述。'''
+
+_EVIDENCE_LOCKED_INSTRUCTIONS_EN = '''You are the editor of a deep-research report. Answer the user's original question directly and use only facts explicitly present in the organized research material.
+
+Requirements:
+1. Do not add unsupported authors, dates, editions, sales, ratings, causal relationships, comparisons, or recommendations.
+2. Put the supporting [n] citation at the end of every verifiable factual statement, and ensure that source directly supports it.
+3. Do not add recommendations or evaluative judgments unless the user asked for them.
+4. State evidence gaps honestly instead of filling them with background knowledge or guesses.
+5. Do not put URLs in the body; preserve useful names and figures; the system appends the source list.
+6. Output only a clear Markdown deliverable, never analysis, planning, checking notes, or a restatement of the task.'''
+
+_CONVERSATIONAL_INSTRUCTIONS_ZH = '''你是一个真诚、有判断力、懂阅读体验的助手。研究过程已经结束，你只负责把已核验结果说得自然、清楚、好读。
+
+要求：
+1. 直接回应用户，开头先给自然判断，不写“研究结论”“证据限制”“研究报告”，也不提回执、校验、流程或系统。
+2. 只能使用“已整理研究成果”明确支持的事实；不补写材料没有支持的作者、日期、版本、评分或因果关系。
+3. 每个可核验事实在句末使用对应 [n]，引用必须与材料直接对应。
+4. 推荐类回答要说明“为什么适合”，并把用户给出的示例当作参照而不是再次推荐；可用少量贴合内容的 emoji 和简短 Markdown 分组增强阅读体验。
+5. 资料不足时用一两句日常语言说明，不输出技术原因、错误码、请求 ID 或内部证据术语。
+6. 正文不写裸 URL；直接输出面向用户的最终回答，不输出思考、规划、检查过程或任务复述。'''
+
+_CONVERSATIONAL_INSTRUCTIONS_EN = '''You are a warm, opinionated assistant presenting completed research in a clear, natural way.
+
+Requirements:
+1. Answer the user directly with a natural opening. Do not label the response as a research conclusion, evidence limitations, or research report, and never mention receipts, validation, runtime, or system internals.
+2. Use only facts explicitly supported by the organized material. Do not add unsupported authors, dates, editions, ratings, or causal claims.
+3. Put the matching [n] citation after every verifiable factual statement.
+4. For recommendations, explain why each choice fits and treat the user's examples as anchors, not candidates. Use a few meaningful emoji and short Markdown sections when they improve readability.
+5. If material is insufficient, explain it in one or two ordinary sentences without technical error details.
+6. Do not put raw URLs in the body. Output only the final user-facing answer, never analysis, planning, checking notes, or a task restatement.'''
+
 
 def _prompt_freeform(
     *,
@@ -556,6 +621,27 @@ def _prompt_freeform(
     """Final deliverable prompt: organize verified research into a report."""
 
     zh = language == "zh-CN"
+    objective_plan = (
+        review.get("objective_plan")
+        if isinstance(review, dict)
+        and isinstance(review.get("objective_plan"), dict)
+        else {}
+    )
+    plan_context = {
+        "task_type": str(objective_plan.get("task_type") or ""),
+        "themes": list(objective_plan.get("themes") or [])[:8],
+        "seed_entities": list(objective_plan.get("seed_entities") or [])[:8],
+        "publication_recency_required": bool(
+            objective_plan.get("publication_recency_required")
+        ),
+        "response_style": str(
+            objective_plan.get("response_style") or "conversational"
+        ),
+        "answer_depth": str(objective_plan.get("answer_depth") or "deep"),
+        "interpretation_note": str(
+            objective_plan.get("interpretation_note") or ""
+        )[:300],
+    }
     material_lines = [
         f"- [{index}] {_bounded(item.get('claim'), 220)}"
         f"（来源：{_bounded(item.get('source_title'), 80)}）"
@@ -570,20 +656,39 @@ def _prompt_freeform(
         f"{index}. {_bounded(item.get('source_title'), 80)} — {item.get('source_url')}"
         for index, item in enumerate(evidence, start=1)
     ]
+    formal_report = plan_context["response_style"] == "formal_report"
     if zh:
         return (
-            _FINAL_REPORT_INSTRUCTIONS_ZH
+            (
+                _EVIDENCE_LOCKED_INSTRUCTIONS_ZH
+                if formal_report
+                else _CONVERSATIONAL_INSTRUCTIONS_ZH
+            )
+            + "\n7. 若任务类型是图书推荐，可依据已核验图书简介与语义主题做选择和分组；这是有引用支撑的综合判断，不要求来源逐字写出‘与示例相似’。\n"
+            + "8. 当 publication_recency_required=false 时，年份表示阅读计划时间，不得擅自要求所有候选必须在该年新出版。\n"
+            + "9. 遵守 answer_depth：deep 必须覆盖用户问题的每个维度，充分解释重点结论、比较取舍，并在适用时给出可执行顺序；balanced 保留核心比较；quick 才允许极简。不能因为材料多就任意压缩成几句。\n"
             + "\n\n用户原始问题：\n"
             + objective
+            + "\n\n用户意图的单次语义计划（仅用于理解约束，不是事实证据）：\n"
+            + json.dumps(plan_context, ensure_ascii=False)
             + "\n\n已整理研究成果：\n"
             + "\n".join(material_lines)
             + "\n\n来源：\n"
             + "\n".join(source_lines)
         )
     return (
-        _FINAL_REPORT_INSTRUCTIONS_EN
+        (
+            _EVIDENCE_LOCKED_INSTRUCTIONS_EN
+            if formal_report
+            else _CONVERSATIONAL_INSTRUCTIONS_EN
+        )
+        + "\n7. For a book-recommendation task, you may select and group candidates by comparing verified descriptions with the semantic themes; this is a cited synthesis and does not require a source to literally say ‘similar to the examples’.\n"
+        + "8. When publication_recency_required=false, a year is the reading-plan horizon; do not require every candidate to have been newly published that year.\n"
+        + "9. Obey answer_depth: deep covers every requested dimension, explains major conclusions and trade-offs, and gives a practical sequence when useful; balanced preserves the core comparison; only quick may be minimal. Do not arbitrarily compress rich evidence into a few sentences.\n"
         + "\n\nUser's original question:\n"
         + objective
+        + "\n\nSingle semantic plan for interpreting constraints (not factual evidence):\n"
+        + json.dumps(plan_context, ensure_ascii=False)
         + "\n\nOrganized research material:\n"
         + "\n".join(material_lines)
         + "\n\nSources:\n"
@@ -597,7 +702,7 @@ def _all_sources(report: ResearchReport) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     seen: set[str] = set()
     for source in report.sources:
-        url = str(source.source_url or "").strip()
+        url = _safe_public_source_url(source.source_url)
         if not url or url.lower() in seen:
             continue
         seen.add(url.lower())
@@ -624,6 +729,7 @@ def _evidence_list(
     }
     evidence: list[dict[str, Any]] = []
     seen: set[str] = set()
+    evidence_by_url: dict[str, dict[str, Any]] = {}
     for decision in report.verified_claims:
         if not decision.publishable:
             continue
@@ -631,21 +737,59 @@ def _evidence_list(
             source = sources_by_id.get(str(evidence_id))
             if source is None or str(evidence_id) in seen:
                 continue
+            safe_url = _safe_public_source_url(source.source_url)
+            if not safe_url:
+                continue
             seen.add(str(evidence_id))
-            evidence.append(
-                {
+            url_key = _canonical_source_url(safe_url)
+            existing = evidence_by_url.get(url_key) if url_key else None
+            if existing is not None:
+                claim = str(decision.claim or "").strip()
+                current = str(existing.get("claim") or "").strip()
+                if claim and claim not in current:
+                    existing["claim"] = f"{current}；{claim}"[:600]
+                continue
+            item = {
                     "source_id": str(evidence_id),
                     "source_title": source.source_title,
-                    "source_url": source.source_url,
+                    "source_url": safe_url,
                     "claim": decision.claim,
                     "quality": decision.quality,
                     "corroborated": decision.corroborated,
                     "published_date": source.published_date,
                 }
-            )
+            evidence.append(item)
+            if url_key:
+                evidence_by_url[url_key] = item
             if len(evidence) >= limit:
                 return evidence
     return evidence
+
+
+def _canonical_source_url(value: str) -> str:
+    try:
+        parsed = urlsplit(str(value or "").strip())
+    except ValueError:
+        return str(value or "").strip().casefold()
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme.casefold(), parsed.netloc.casefold(), path, "", ""))
+
+
+def _safe_public_source_url(value: object) -> str:
+    url = str(value or "").strip()
+    if (
+        not url
+        or any(char.isspace() or ord(char) < 32 for char in url)
+        or _INVALID_PERCENT_ESCAPE_RE.search(url)
+    ):
+        return ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return url
 
 
 def _limitations(report: ResearchReport) -> list[str]:
@@ -659,7 +803,7 @@ def _limitations(report: ResearchReport) -> list[str]:
             f"{len(report.rejected_claims)} 条\u5019\u9009\u8bc1\u636e\u672a\u901a\u8fc7\u53d1\u5e03\u8d28\u91cf\u68c0\u67e5\u3002"
         )
     values.extend(f"\u5f85\u8865\u8bc1\u636e\uff1a{gap}" for gap in report.gaps[:3])
-    if not values:
+    if not values and not report.verified_claims:
         values.append(
             "\u73b0\u6709\u6765\u6e90\u672a\u901a\u8fc7\u76f8\u5173\u6027\u548c\u53ef\u53d1\u5e03\u6027\u68c0\u67e5\u3002"
         )
@@ -671,20 +815,37 @@ def _sanitize_body(
     *,
     evidence: list[dict[str, Any]],
     language: str,
+    presentation_style: str = "conversational",
     sources: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[str]]:
     text = _FENCE_RE.sub("", body).strip()
+    # The source list is system-owned because citation numbering is bound to
+    # the admitted evidence sequence. Discard any model-authored Sources block
+    # before appending the canonical list below.
+    text = _MODEL_SOURCES_SECTION_RE.sub("", text).rstrip("- \n")
+    safe_evidence = [
+        item
+        for item in evidence
+        if not str(item.get("source_url") or "").strip()
+        or _safe_public_source_url(item.get("source_url"))
+    ]
     allowed = {
         item["source_id"]: index + 1
         for index, item in enumerate(evidence)
+        if not str(item.get("source_url") or "").strip()
+        or _safe_public_source_url(item.get("source_url"))
     }
     allowed_by_number = {index: source_id for source_id, index in allowed.items()}
     text = _URL_RE.sub("", text)
     cited_ids: list[str] = []
-    for match in _CITATION_RE.finditer(text):
+
+    def keep_admitted_citation(match: re.Match[str]) -> str:
         source_id = allowed_by_number.get(int(match.group(1)))
         if source_id is not None and source_id not in cited_ids:
             cited_ids.append(source_id)
+        return match.group(0) if source_id is not None else ""
+
+    text = _CITATION_RE.sub(keep_admitted_citation, text)
     lines = text.splitlines()
     cleaned_lines: list[str] = []
     for line in lines:
@@ -693,17 +854,26 @@ def _sanitize_body(
         cleaned_lines.append(line)
     body_text = "\n".join(cleaned_lines).strip()
     body_text = re.sub(r"\n{3,}", "\n\n", body_text)
-    source_items = sources if sources is not None else evidence
+    source_items = sources if sources is not None else safe_evidence
     if body_text and source_items:
         zh = language == "zh-CN"
         source_lines: list[str] = []
         for index, item in enumerate(source_items, start=1):
             title = str(item.get("source_title") or item.get("source_url") or f"Source {index}")
-            url = str(item.get("source_url") or "")
+            raw_url = str(item.get("source_url") or "").strip()
+            url = _safe_public_source_url(raw_url)
+            if raw_url and not url:
+                continue
             line = f"{index}. [{title}]({url})" if url else f"{index}. {title}"
             source_lines.append(line)
-        sources_label = "\u6765\u6e90" if zh else "Sources"
-        body_text += f"\n\n## {sources_label}\n" + "\n".join(source_lines)
+        if presentation_style == "formal_report":
+            sources_label = "\u6765\u6e90" if zh else "Sources"
+            source_heading = f"## {sources_label}"
+        else:
+            sources_label = "\u53c2\u8003\u6765\u6e90" if zh else "Sources"
+            source_heading = f"### \U0001F517 {sources_label}"
+        if source_lines:
+            body_text += f"\n\n{source_heading}\n" + "\n".join(source_lines)
     return body_text, cited_ids
 
 
@@ -711,10 +881,32 @@ def _fallback_markdown(
     report: ResearchReport,
     *,
     language: str,
+    presentation_style: str = "conversational",
 ) -> str:
     synthesis = synthesize_research_report_deterministic(report)
-    published = publish_research_answer(report, synthesis)
+    published = publish_research_answer(
+        report,
+        synthesis,
+        presentation_style=(
+            "formal_report"
+            if presentation_style == "formal_report"
+            else "conversational"
+        ),
+    )
     return str(published.answer or "").strip()
+
+
+def _presentation_style(review: dict[str, Any] | None) -> str:
+    if not isinstance(review, dict):
+        return "conversational"
+    plan = review.get("objective_plan")
+    if not isinstance(plan, dict):
+        return "conversational"
+    return (
+        "formal_report"
+        if str(plan.get("response_style") or "") == "formal_report"
+        else "conversational"
+    )
 
 
 def _sections(markdown: str) -> list[str]:

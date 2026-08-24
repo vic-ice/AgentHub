@@ -13,6 +13,9 @@ from app.services.agent_core.prompt_contracts import ControllerModelRequest
 from app.services.agent_core.publication.contracts import (
     ReceiptEvidenceBundle,
 )
+from app.services.agent_core.publication.response_view import (
+    project_external_answer_view,
+)
 from app.services.agent_core.publication.service import TrustedPublisher
 from app.services.agent_core.receipt_projector import (
     ReceiptContextProjector,
@@ -104,11 +107,88 @@ class TurnControllerLoop:
                     "Controller decision failed for request %s",
                     context.request_id,
                 )
+                fallback = (
+                    self._publisher.publish_evidence_fallback(evidence=evidence)
+                    if request.phase == "synthesis" and evidence
+                    else None
+                )
+                if fallback is not None:
+                    return TurnReceipt(
+                        status="completed",
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=fallback,
+                    )
                 return _failed_turn(
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
                     content=_controller_failure_message(exc),
+                )
+            if request.phase == "synthesis" and output.mode != "direct_answer":
+                fallback = self._publisher.publish_evidence_fallback(
+                    evidence=evidence
+                )
+                if fallback is not None:
+                    return TurnReceipt(
+                        status="completed",
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=fallback,
+                    )
+                return _failed_turn(
+                    request_id=context.request_id,
+                    rounds=rounds,
+                    plan_receipts=plan_receipts,
+                    content="这次查到的内容还没能整理成完整回答，请稍后重试。",
+                )
+            if request.phase == "synthesis":
+                try:
+                    answer = self._publisher.publish_synthesis(
+                        output,
+                        evidence=evidence,
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "Controller synthesis rejected for request %s: %s",
+                        context.request_id,
+                        exc,
+                    )
+                    answer = self._publisher.publish_evidence_fallback(
+                        evidence=evidence
+                    )
+                except Exception:
+                    logger.exception(
+                        "Trusted synthesis publication failed for request %s",
+                        context.request_id,
+                    )
+                    answer = self._publisher.publish_evidence_fallback(
+                        evidence=evidence
+                    )
+                rounds.append(
+                    ControllerRoundReceipt(
+                        round_no=round_no,
+                        output=output,
+                        answer=answer,
+                    )
+                )
+                if answer is not None:
+                    return TurnReceipt(
+                        status=_answer_status(answer),
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=answer,
+                    )
+                return _failed_turn(
+                    request_id=context.request_id,
+                    rounds=rounds,
+                    plan_receipts=plan_receipts,
+                    content=(
+                        "这次找到的内容还不够可靠，我先不贸然给出结论。"
+                    ),
                 )
             try:
                 result = await self._harness.run(
@@ -122,6 +202,19 @@ class TurnControllerLoop:
                     "Agent harness execution failed for request %s",
                     context.request_id,
                 )
+                fallback = (
+                    self._publisher.publish_evidence_fallback(evidence=evidence)
+                    if request.phase == "synthesis" and evidence
+                    else None
+                )
+                if fallback is not None:
+                    return TurnReceipt(
+                        status="completed",
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=fallback,
+                    )
                 rounds.append(
                     ControllerRoundReceipt(
                         round_no=round_no,
@@ -132,7 +225,7 @@ class TurnControllerLoop:
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
-                    content="本轮执行未能形成可信回执。",
+                    content="这次处理没有顺利完成，请稍后重试。",
                 )
 
             if result.receipt is not None:
@@ -167,6 +260,25 @@ class TurnControllerLoop:
                         "Trusted synthesis publication failed for request %s",
                         context.request_id,
                     )
+                    fallback = self._publisher.publish_evidence_fallback(
+                        evidence=evidence
+                    )
+                    if fallback is not None:
+                        rounds.append(
+                            ControllerRoundReceipt(
+                                round_no=round_no,
+                                output=result.output,
+                                plan=result.plan,
+                                receipt=result.receipt,
+                            )
+                        )
+                        return TurnReceipt(
+                            status="completed",
+                            request_id=context.request_id,
+                            rounds=rounds,
+                            plan_receipts=plan_receipts,
+                            final_answer=fallback,
+                        )
                     rounds.append(
                         ControllerRoundReceipt(
                             round_no=round_no,
@@ -180,8 +292,7 @@ class TurnControllerLoop:
                         rounds=rounds,
                         plan_receipts=plan_receipts,
                         content=(
-                            "本轮综合结果未通过可信发布校验，"
-                            "因此没有发布未经验证的内容。"
+                            "这次找到的内容还不够可靠，我先不贸然给出结论。"
                         ),
                     )
 
@@ -207,14 +318,14 @@ class TurnControllerLoop:
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
-                    content="本轮没有形成可继续处理的计划回执。",
+                    content="这次处理没有得到可继续使用的结果，请稍后重试。",
                 )
             if result.plan.response_mode != "model":
                 return _failed_turn(
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
-                    content="本轮回执缺少确定性的发布结果。",
+                    content="这次处理没有形成完整回答，请稍后重试。",
                 )
             has_completed = any(
                 action.status == "completed"
@@ -258,15 +369,30 @@ class TurnControllerLoop:
             )
             request = request.model_copy(
                 update={
+                    "phase": (
+                        "synthesis"
+                        if _has_external_evidence(projected)
+                        else request.phase
+                    ),
                     "context": request.context.model_copy(
                         update={
                             "receipts": receipts,
+                            "response_view": project_external_answer_view(evidence),
                             "trusted_research_state": research_state,
                         }
                     )
                 }
             )
 
+        fallback = self._publisher.publish_evidence_fallback(evidence=evidence)
+        if fallback is not None:
+            return TurnReceipt(
+                status="completed",
+                request_id=context.request_id,
+                rounds=rounds,
+                plan_receipts=plan_receipts,
+                final_answer=fallback,
+            )
         return TurnReceipt(
             status="limit_exceeded",
             request_id=context.request_id,
@@ -274,10 +400,18 @@ class TurnControllerLoop:
             plan_receipts=plan_receipts,
             final_answer=PublishedAnswer(
                 status="failed",
-                content="本轮已达到安全控制轮数上限，未继续执行。",
+                content="这次处理没有顺利形成可用回答，请稍后重试。",
                 receipt_backed=False,
             ),
         )
+
+
+def _has_external_evidence(projected) -> bool:
+    return any(
+        item.result_mode
+        in {"book_evidence", "web_evidence", "weather_evidence"}
+        for item in projected
+    )
 
 
 def _answer_status(answer: PublishedAnswer) -> str:

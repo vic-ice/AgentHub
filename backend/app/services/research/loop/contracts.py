@@ -17,6 +17,8 @@ ResearchGapCode = Literal[
     "missing_book_evidence",
     "insufficient_independent_sources",
     "no_publishable_evidence",
+    "insufficient_evidence_quality",
+    "insufficient_recommendation_candidates",
 ]
 ResearchLoopStopReason = Literal[
     "continue",
@@ -31,6 +33,9 @@ class ResearchLoopBudget(BaseModel):
     max_results_per_round: int = Field(default=5, ge=1, le=10)
     max_records_per_round: int = Field(default=8, ge=1, le=12)
     min_independent_sources: int = Field(default=1, ge=1, le=5)
+    required_evidence_quality: Literal["low", "medium", "high"] = "medium"
+    min_recommendation_candidates: int = Field(default=0, ge=0, le=10)
+    recommendation_candidate_titles: list[str] = Field(default_factory=list)
 
 
 class ResearchSearchTask(BaseModel):

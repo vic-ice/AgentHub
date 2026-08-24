@@ -38,28 +38,22 @@ import type {
   ResearchRunStatus,
   ResearchStateResult,
 } from "@/types"
+import { ApiError, createClientRequestId, throwApiError } from "@/lib/errors"
 
 const rawBaseUrl = import.meta.env.VITE_API_BASE_URL || "/api/v1"
 const apiBaseUrl = rawBaseUrl.replace(/\/$/, "")
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json")
+  if (!headers.has("X-Request-ID")) headers.set("X-Request-ID", createClientRequestId())
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers,
   })
 
   if (!response.ok) {
-    let details = ""
-    try {
-      const payload = (await response.json()) as { detail?: string }
-      details = payload.detail ? `: ${payload.detail}` : ""
-    } catch {
-      details = ""
-    }
-    throw new Error(`HTTP ${response.status}${details}`)
+    await throwApiError(response)
   }
 
   if (response.status === 204) {
@@ -99,9 +93,10 @@ export async function listConversations(
 ): Promise<{ conversations: ConversationInDB[]; total: number }> {
   const response = await fetch(
     `${apiBaseUrl}/chat/conversations?${userIdQuery()}&limit=${limit}&offset=${offset}`,
+    { headers: { "X-Request-ID": createClientRequestId() } },
   )
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+    await throwApiError(response)
   }
   const conversations = (await response.json()) as ConversationInDB[]
   // Get total from X-Total-Count header if available, otherwise estimate
@@ -133,8 +128,8 @@ export async function createConversation(input: {
 export async function deleteConversation(
   threadId: string,
 ): Promise<void> {
-  await fetch(
-    `${apiBaseUrl}/chat/conversations/${encodeURIComponent(threadId)}?${userIdQuery()}`,
+  await requestJson<void>(
+    `/chat/conversations/${encodeURIComponent(threadId)}?${userIdQuery()}`,
     { method: "DELETE" },
   )
 }
@@ -323,22 +318,9 @@ export async function updateShelfBook(
 export async function removeShelfBook(
   entryId: string,
 ): Promise<void> {
-  // Contract: DELETE returns 204 with no body; handle by response.ok,
-  // never parse JSON.
-  const response = await fetch(`${apiBaseUrl}/books/shelf/${encodeURIComponent(entryId)}`, {
+  await requestJson<void>(`/books/shelf/${encodeURIComponent(entryId)}`, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json" },
   })
-  if (!response.ok) {
-    let details = ""
-    try {
-      const payload = (await response.json()) as { detail?: string }
-      details = payload.detail ? `: ${payload.detail}` : ""
-    } catch {
-      details = ""
-    }
-    throw new Error(`HTTP ${response.status}${details}`)
-  }
 }
 
 export async function listResearchRuns(input: {
@@ -435,6 +417,7 @@ export async function invoke(input: UserInput): Promise<ChatMessage> {
 function parseStreamChunk(
   chunk: string,
   onEvent: (event: StreamEvent) => void,
+  requestId: string,
 ): boolean {
   const lines = chunk.split("\n")
   for (const line of lines) {
@@ -451,7 +434,18 @@ function parseStreamChunk(
       return true
     }
 
-    const parsed = JSON.parse(raw) as StreamEvent
+    let parsed: StreamEvent
+    try {
+      parsed = JSON.parse(raw) as StreamEvent
+    } catch {
+      throw new ApiError({
+        message: "响应流数据格式异常，请重试本次请求",
+        code: "stream_protocol_invalid",
+        requestId,
+        stage: "stream_decode",
+        retryable: true,
+      })
+    }
     onEvent(parsed)
   }
   return false
@@ -466,24 +460,24 @@ export async function streamChat(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "X-Request-ID": input.request_id,
     },
     body: JSON.stringify(input),
     signal,
   })
 
   if (!response.ok) {
-    let details = ""
-    try {
-      const payload = (await response.json()) as { detail?: string }
-      details = payload.detail ? `: ${payload.detail}` : ""
-    } catch {
-      details = ""
-    }
-    throw new Error(`HTTP ${response.status}${details}`)
+    await throwApiError(response)
   }
 
   if (!response.body) {
-    throw new Error("Stream response body is empty")
+    throw new ApiError({
+      message: "服务未返回响应流，请重试本次请求",
+      code: "stream_body_missing",
+      requestId: input.request_id,
+      stage: "stream_open",
+      retryable: true,
+    })
   }
 
   const reader = response.body.getReader()
@@ -494,7 +488,7 @@ export async function streamChat(
     const { value, done } = await reader.read()
     if (done) {
       if (buffer.trim()) {
-        parseStreamChunk(buffer, onEvent)
+        parseStreamChunk(buffer, onEvent, input.request_id)
       }
       break
     }
@@ -505,7 +499,7 @@ export async function streamChat(
     while (separatorIndex >= 0) {
       const chunk = buffer.slice(0, separatorIndex)
       buffer = buffer.slice(separatorIndex + 2)
-      const isDone = parseStreamChunk(chunk, onEvent)
+      const isDone = parseStreamChunk(chunk, onEvent, input.request_id)
       if (isDone) {
         return
       }

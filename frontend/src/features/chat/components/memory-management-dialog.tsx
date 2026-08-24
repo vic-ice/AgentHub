@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { editMemory, forgetMemory, getMemoryCurrent, getMemoryHistory } from "@/lib/api"
+import { formatErrorForDisplay } from "@/lib/errors"
 import type { MemoryAdminFact } from "@/types"
 
 type MemoryManagementDialogProps = {
@@ -251,7 +252,7 @@ export function MemoryManagementDialog({
       const result = await getMemoryCurrent(userId)
       setFacts(result.facts)
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "无法读取当前记忆")
+      setError(formatErrorForDisplay(loadError, "无法读取当前记忆"))
     } finally {
       setIsLoading(false)
     }
@@ -292,7 +293,7 @@ export function MemoryManagementDialog({
       setEditingKey(null)
       await loadFacts()
     } catch (editError) {
-      setError(editError instanceof Error ? editError.message : "保存记忆失败")
+      setError(formatErrorForDisplay(editError, "保存记忆失败"))
     } finally {
       setBusyKey(null)
     }
@@ -314,7 +315,7 @@ export function MemoryManagementDialog({
         const result = await getMemoryHistory(userId, fact.memory_key)
         setHistoryData((current) => ({ ...current, [fact.memory_key]: result.versions }))
       } catch (historyError) {
-        setError(historyError instanceof Error ? historyError.message : "无法读取版本历史")
+        setError(formatErrorForDisplay(historyError, "无法读取版本历史"))
       }
     }
   }
@@ -333,7 +334,7 @@ export function MemoryManagementDialog({
       setNotice("该条记忆已标记为遗忘。")
       await loadFacts()
     } catch (forgetError) {
-      setError(forgetError instanceof Error ? forgetError.message : "遗忘记忆失败")
+      setError(formatErrorForDisplay(forgetError, "遗忘记忆失败"))
     } finally {
       setBusyKey(null)
     }

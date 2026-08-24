@@ -25,6 +25,7 @@ from app.services.memory.version_contracts import (
     MemoryVersionCommitCommand,
 )
 from app.services.memory.version_store import MemoryVersionStore
+from app.services.memory.versioned_schema_registry import VersionedMemorySchemaRegistry
 
 
 class MemoryWriteGateway:
@@ -263,6 +264,7 @@ class MemoryWriteGateway:
         source_event_id: UUID,
         receipt_id: str,
         evidence_quote: str = "",
+        source_kind: str = "admin_action",
     ) -> dict[str, Any]:
         """Admin / correction adapter: canonical facts are enriched (domain/kind/
         entity binding) and committed ONLY through VersionStore."""
@@ -306,6 +308,7 @@ class MemoryWriteGateway:
             MemoryVersionCommitCommand(
                 facts=enriched,
                 source_event_id=source_event_id,
+                source_kind=source_kind,
                 receipt_id=receipt_id,
             ),
             user_id=user_id,
@@ -327,6 +330,7 @@ class MemoryWriteGateway:
         source_event_id: UUID,
         receipt_id: str,
         evidence_quote: str,
+        source_kind: str,
     ) -> dict[str, Any]:
         from app.services.memory.version_contracts import MemoryVersionForgetCommand
 
@@ -334,6 +338,7 @@ class MemoryWriteGateway:
             MemoryVersionForgetCommand(
                 memory_keys=memory_keys,
                 source_event_id=source_event_id,
+                source_kind=source_kind,
                 receipt_id=receipt_id,
                 evidence_quote=evidence_quote,
             ),
@@ -341,6 +346,55 @@ class MemoryWriteGateway:
             thread_id=thread_id,
         )
         return {"status": "forgotten", "receipt": receipt.model_dump(mode="json")}
+
+    async def forget_targets(
+        self,
+        *,
+        user_id: UUID,
+        thread_id: UUID | None,
+        targets: list[Any],
+        source_text: str,
+        source_event_id: UUID,
+        receipt_id: str,
+        source_kind: str = "user_message",
+    ) -> dict[str, Any]:
+        """Resolve structured forget targets against the authoritative heads.
+
+        The Controller has already understood the user's language.  This method
+        only matches its structured predicate/identity fields to persisted
+        records, so current Gateway rows and legacy canonical rows share one
+        forget path without another semantic pass.
+        """
+        current = await MemoryVersionStore(self.session).list_current(
+            user_id=user_id,
+            limit=500,
+        )
+        memory_keys: list[str] = []
+        for target in targets:
+            evidence = str(getattr(target, "evidence_quote", "") or "").strip()
+            if not evidence or evidence.casefold() not in source_text.casefold():
+                return {"status": "rejected", "reason": "evidence_not_found_in_user_source"}
+            matches = [record for record in current if _forget_target_matches(record, target)]
+            if not matches:
+                return {
+                    "status": "clarification_required",
+                    "clarification_question": "我没有找到与这次遗忘目标对应的当前长期记忆。",
+                }
+            if len(matches) > 1:
+                return {
+                    "status": "clarification_required",
+                    "clarification_question": "这次遗忘目标对应多条长期记忆，请补充更具体的对象。",
+                }
+            memory_keys.append(matches[0].memory_key)
+        return await self.forget(
+            user_id=user_id,
+            thread_id=thread_id,
+            memory_keys=list(dict.fromkeys(memory_keys)),
+            source_event_id=source_event_id,
+            receipt_id=receipt_id,
+            evidence_quote=source_text,
+            source_kind=source_kind,
+        )
 
     async def _commit_reading(
         self,
@@ -443,6 +497,62 @@ def _predicate(fact: Any) -> str:
 def _hash(value: dict[str, Any]) -> str:
     raw = json.dumps(value, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _forget_target_matches(record: Any, target: Any) -> bool:
+    if not _predicate_equivalent(
+        str(getattr(record, "predicate", "") or ""),
+        str(getattr(target, "predicate", "") or ""),
+        stored_schema=str(getattr(record, "schema_key", "") or ""),
+    ):
+        return False
+    subject = _token(getattr(target, "subject", ""))
+    stored_subject = _token(getattr(record, "subject", ""))
+    self_subjects = {"self", "user", "me", "myself", "我", "本人"}
+    if subject and subject not in self_subjects and subject != stored_subject:
+        return False
+    if not _mapping_contains(
+        getattr(record, "value", {}) or {},
+        getattr(target, "identity", {}) or {},
+    ):
+        return False
+    return _mapping_contains(
+        getattr(record, "qualifiers", {}) or {},
+        getattr(target, "qualifiers", {}) or {},
+    )
+
+
+def _predicate_equivalent(stored: str, requested: str, *, stored_schema: str) -> bool:
+    if _token(stored) == _token(requested):
+        return True
+    registry = VersionedMemorySchemaRegistry()
+    requested_schema = registry.resolve_predicate(requested)
+    if requested_schema is None:
+        return False
+    if stored_schema == requested_schema.schema_key:
+        return True
+    stored_resolved = registry.resolve_predicate(stored)
+    return (
+        stored_resolved is not None
+        and stored_resolved.schema_key == requested_schema.schema_key
+    )
+
+
+def _mapping_contains(container: dict[str, Any], expected: dict[str, Any]) -> bool:
+    for key, expected_value in expected.items():
+        if key not in container:
+            return False
+        actual_value = container[key]
+        if isinstance(expected_value, dict):
+            if not isinstance(actual_value, dict) or not _mapping_contains(actual_value, expected_value):
+                return False
+        elif _token(actual_value) != _token(expected_value):
+            return False
+    return True
+
+
+def _token(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip().casefold().replace("-", "_")
 
 
 __all__ = ["MemoryWriteGateway"]

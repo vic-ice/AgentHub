@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, cast, func, or_, select, text
 # (JSONB imported from sqlalchemy.dialects.postgresql when needed)
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,6 +54,10 @@ from app.services.recommendation_signals import (
     recommendation_signal_from_record,
 )
 from app.services.books.book_metadata import BookMetadata, resolve_book_metadata
+from app.services.books.book_identity import (
+    normalize_book_title,
+    normalize_book_work_title,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -141,14 +145,6 @@ class ReadingServiceResult:
     events: list[RecommendationSignal] = field(default_factory=list)
 
 
-def normalize_book_title(value: Any) -> str:
-    """Normalize a book title for shelf-level identity matching."""
-    text = normalize_recommendation_text(value)
-    text = re.sub(r"[《》「」『』“”‘’\"']", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip().lower()
-
-
 def _validate_status(value: Any) -> str:
     token = normalize_recommendation_token(value)
     if token not in READING_STATUSES:
@@ -198,6 +194,13 @@ class ReadingService:
 
     async def ensure_backfilled(self, user_id: UUID) -> bool:
         """Backfill the shelf from historical audit once per user (idempotent)."""
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(:lock_key, 0))"
+            ),
+            {"lock_key": f"bookshelf-init:{user_id}"},
+        )
         state = await self.session.get(UserBookshelfState, user_id)
         if state is not None:
             return False
@@ -421,6 +424,11 @@ class ReadingService:
         evaluation_value = _validate_evaluation(evaluation) if evaluation is not _UNSET else _UNSET
         note_value = _clean_note(note) if note is not _UNSET else _UNSET
         rating_value = rating if rating is not _UNSET else _UNSET
+
+        # A write can be the user's first Shelf access. Initialize/backfill
+        # before appending new events, otherwise the following GET would replay
+        # those same events and attempt to insert a duplicate Shelf row.
+        await self.ensure_backfilled(user_id)
 
         book, resolved_title = await self._resolve_book(
             book_id=book_id,

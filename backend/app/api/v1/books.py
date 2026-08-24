@@ -7,15 +7,6 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_db
-from app.crud.book import (
-    create_book_interaction,
-    create_recommendation_event,
-    get_book,
-    get_or_create_preference_profile,
-    list_books,
-    list_recommendation_events,
-    update_preference_profile,
-)
 from app.schemas.book import (
     BookInDB,
     BookInteractionCreate,
@@ -24,7 +15,8 @@ from app.schemas.book import (
     UserPreferenceProfileInDB,
     UserPreferenceProfileUpdate,
 )
-from app.services.book_search import search_and_cache_books_with_status
+from app.services.books.recommendation_service import RecommendationService
+from app.services.external_capabilities.contracts import BookSearchInput
 from app.services.recommendation_signals import (
     RecommendationSignal,
     RecommendationSignalCreate,
@@ -55,7 +47,11 @@ async def get_books(
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> list[BookInDB]:
-    books = await list_books(db=db, query=query, limit=limit, offset=offset)
+    books = await RecommendationService(db).list_catalog(
+        query=query,
+        limit=limit,
+        offset=offset,
+    )
     return [BookInDB.model_validate(book) for book in books]
 
 
@@ -65,7 +61,9 @@ async def search_books(
     limit: int = Query(default=5, ge=1, le=10),
     db: AsyncSession = Depends(get_db),
 ) -> BookSearchResponse:
-    result = await search_and_cache_books_with_status(db=db, query=query, limit=limit)
+    result = await RecommendationService(db).search_catalog(
+        BookSearchInput(query=query, mode="lookup", limit=limit)
+    )
     return BookSearchResponse(
         query=query,
         status=result.status,
@@ -85,7 +83,7 @@ async def save_book_interaction(
     interaction: BookInteractionCreate,
     db: AsyncSession = Depends(get_db),
 ) -> BookInteractionInDB:
-    saved = await create_book_interaction(db=db, interaction=interaction)
+    saved = await RecommendationService(db).record_interaction(interaction)
     return BookInteractionInDB.model_validate(saved)
 
 
@@ -94,7 +92,7 @@ async def save_recommendation_event(
     signal: RecommendationSignalCreate,
     db: AsyncSession = Depends(get_db),
 ) -> RecommendationSignal:
-    saved = await create_recommendation_event(db=db, signal=signal)
+    saved = await RecommendationService(db).record_signal(signal)
     return recommendation_signal_from_record(saved)
 
 
@@ -107,8 +105,7 @@ async def get_recommendation_events(
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> list[RecommendationSignal]:
-    events = await list_recommendation_events(
-        db=db,
+    events = await RecommendationService(db).list_signals(
         user_id=user_id,
         book_title=book_title,
         event_types=event_type,
@@ -123,7 +120,7 @@ async def get_reading_preferences(
     user_id: UUID,
     db: AsyncSession = Depends(get_db),
 ) -> UserPreferenceProfileInDB:
-    profile = await get_or_create_preference_profile(db=db, user_id=user_id)
+    profile = await RecommendationService(db).get_preference_profile(user_id)
     return UserPreferenceProfileInDB.model_validate(profile)
 
 
@@ -133,7 +130,10 @@ async def update_reading_preferences(
     update: UserPreferenceProfileUpdate,
     db: AsyncSession = Depends(get_db),
 ) -> UserPreferenceProfileInDB:
-    profile = await update_preference_profile(db=db, user_id=user_id, update=update)
+    profile = await RecommendationService(db).update_preference_profile(
+        user_id,
+        update,
+    )
     return UserPreferenceProfileInDB.model_validate(profile)
 
 
@@ -254,5 +254,5 @@ async def read_book(
     book_id: UUID,
     db: AsyncSession = Depends(get_db),
 ) -> BookInDB | None:
-    book = await get_book(db=db, book_id=book_id)
+    book = await RecommendationService(db).get_catalog_book(book_id)
     return BookInDB.model_validate(book) if book else None

@@ -86,7 +86,17 @@ class ExecutionProgressCollector:
     ) -> CompletedExecutionStep:
         order = len(self.steps) + 1
         resolved_id = str(step_id or f"{kind}-{order}").strip()
-        if any(item.step_id == resolved_id for item in self.steps):
+        replace_index = next(
+            (
+                index
+                for index, item in enumerate(self.steps)
+                if item.step_id == resolved_id and item.status == "waiting"
+            ),
+            None,
+        )
+        if replace_index is not None:
+            order = self.steps[replace_index].order
+        elif any(item.step_id == resolved_id for item in self.steps):
             resolved_id = f"{resolved_id}-{order}"
         step = CompletedExecutionStep(
             step_id=resolved_id,
@@ -103,7 +113,10 @@ class ExecutionProgressCollector:
             error=_optional_text(error, 500),
             usage=usage,
         )
-        self.steps.append(step)
+        if replace_index is None:
+            self.steps.append(step)
+        else:
+            self.steps[replace_index] = step
         if self.callback is not None:
             try:
                 result = self.callback(step)
@@ -262,17 +275,146 @@ def summarize_step_result(value: Any) -> str:
     if isinstance(value, str):
         return " ".join(value.split())[:500]
     if isinstance(value, dict):
-        parts: list[str] = []
-        for key in ("status", "message", "summary", "conclusion", "count"):
+        if value.get("result_mode") == "book_evidence":
+            summary = _summarize_book_evidence(value)
+            if summary:
+                return summary[:500]
+
+        for key in ("message", "summary", "conclusion", "answer", "reason"):
             item = value.get(key)
             if item not in (None, "", [], {}):
-                parts.append(f"{key}: {item}")
-        if parts:
-            return "; ".join(parts)[:500]
+                return " ".join(str(item).split())[:500]
+
+        for key, label in (
+            ("items", "项结果"),
+            ("results", "项结果"),
+            ("records", "条记录"),
+            ("mutations", "项更新"),
+            ("sources", "个来源"),
+            ("evidence", "条证据"),
+        ):
+            collection = value.get(key)
+            if not isinstance(collection, list):
+                continue
+            titles = _result_titles(collection)
+            if titles:
+                suffix = (
+                    f"等 {len(collection)} 项"
+                    if len(collection) > len(titles)
+                    else f"共 {len(collection)} 项"
+                )
+                return f"已返回：{'、'.join(titles)}（{suffix}）"[:500]
+            return f"已完成 {len(collection)} {label}"
+
+        for key, label in (
+            ("total", "项结果"),
+            ("result_count", "项结果"),
+            ("evidence_count", "条证据"),
+            ("source_count", "个来源"),
+            ("count", "项结果"),
+        ):
+            item = value.get(key)
+            if isinstance(item, (int, float)) and not isinstance(item, bool):
+                return f"已返回 {int(item)} {label}"
+
+        status = str(value.get("status") or "").strip().lower()
+        if status:
+            labels = {
+                "completed": "步骤已完成",
+                "success": "步骤已完成",
+                "ok": "步骤已完成",
+                "empty": "未找到匹配结果",
+                "empty_result": "未找到匹配结果",
+                "failed": "步骤执行失败",
+                "blocked": "步骤已被安全检查暂停",
+            }
+            return labels.get(status, f"状态：{status}")[:500]
         return f"\u8fd4\u56de {len(value)} \u4e2a\u5b57\u6bb5"
     if isinstance(value, (list, tuple, set)):
         return f"\u8fd4\u56de {len(value)} \u9879\u7ed3\u679c"
     return " ".join(str(value).split())[:500]
+
+
+def _summarize_book_evidence(value: dict[str, Any]) -> str:
+    items = value.get("items")
+    if not isinstance(items, list):
+        items = []
+    coverage = value.get("coverage")
+    if not isinstance(coverage, list):
+        coverage = []
+
+    theme_parts: list[str] = []
+    for entry in coverage:
+        if not isinstance(entry, dict):
+            continue
+        theme = " ".join(str(entry.get("theme") or "").split()).strip()
+        count = entry.get("candidate_count")
+        status = str(entry.get("status") or "").strip().lower()
+        if not theme:
+            continue
+        if isinstance(count, int) and count > 0:
+            theme_parts.append(f"{theme} {count} 本")
+        elif status == "missing":
+            theme_parts.append(f"{theme} 暂无合适候选")
+
+    provider_names: set[str] = set()
+    public_urls: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for source in item.get("evidence_sources") or []:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").strip()
+            if url:
+                public_urls.add(url)
+    metadata = value.get("metadata")
+    enrichment = metadata.get("enrichment") if isinstance(metadata, dict) else []
+    for entry in enrichment if isinstance(enrichment, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        for provider in entry.get("providers") or []:
+            name = str(provider or "").strip()
+            if name:
+                provider_names.add(name)
+
+    candidate_count = value.get("candidate_count")
+    count = candidate_count if isinstance(candidate_count, int) else len(items)
+    if count <= 0:
+        return "没有找到符合当前条件、且能通过书架排除校验的新候选"
+
+    parts = [f"已筛选 {count} 本候选"]
+    if provider_names or public_urls:
+        source_detail = f"核对 {len(public_urls)} 个公开页面"
+        if provider_names:
+            source_detail += f"（来自 {len(provider_names)} 个检索来源）"
+        parts.append(source_detail)
+    if theme_parts:
+        parts.append(f"主题覆盖：{'、'.join(theme_parts)}")
+    return "；".join(parts)
+
+
+def _result_titles(items: list[Any]) -> list[str]:
+    titles: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            title = " ".join(item.split())
+        elif isinstance(item, dict):
+            title = " ".join(
+                str(
+                    item.get("book_title")
+                    or item.get("title")
+                    or item.get("name")
+                    or ""
+                ).split()
+            )
+        else:
+            title = ""
+        if title and title not in titles:
+            titles.append(title[:80])
+        if len(titles) >= 3:
+            break
+    return titles
 
 
 def _mapping_value(value: dict[str, Any], *keys: str) -> dict[str, Any]:

@@ -107,6 +107,10 @@ class ControllerRequestBuilder:
             model_name=model_name,
             current_user_message=user_input.content,
             context=assembled.snapshot,
+            timeout_seconds=max(
+                1.0,
+                min(float(settings.AGENT_INVOKE_TIMEOUT or 120.0), 180.0),
+            ),
         )
 
     async def _research_context(

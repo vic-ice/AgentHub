@@ -34,6 +34,7 @@ import {
   getAppProviderConfigs,
   updateAppProviderConfig,
 } from "@/lib/api"
+import { formatErrorForDisplay } from "@/lib/errors"
 import type {
   AppProviderCapability,
   AppProviderConfig,
@@ -179,7 +180,7 @@ export function AppProviderConfigDialog({ open, onOpenChange }: AppProviderConfi
       if (first) applyProvider(first)
       else setSelectedKey("")
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "无法读取应用服务")
+      setError(formatErrorForDisplay(loadError, "无法读取应用服务"))
     } finally {
       setIsLoading(false)
     }
@@ -214,7 +215,7 @@ export function AppProviderConfigDialog({ open, onOpenChange }: AppProviderConfi
       setApiKey("")
       setNotice("服务配置已保存。")
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "保存服务配置失败")
+      setError(formatErrorForDisplay(saveError, "保存服务配置失败"))
     } finally {
       setBusyAction(null)
     }
@@ -230,7 +231,7 @@ export function AppProviderConfigDialog({ open, onOpenChange }: AppProviderConfi
       setProviders((current) => current.map((provider) => provider.provider_key === updated.provider_key ? updated : provider))
       setNotice(updated.health.status === "ok" ? "连接检查通过。" : `检查完成：${healthLabel(updated.health.status)}`)
     } catch (healthError) {
-      setError(healthError instanceof Error ? healthError.message : "连接检查失败")
+      setError(formatErrorForDisplay(healthError, "连接检查失败"))
     } finally {
       setBusyAction(null)
     }

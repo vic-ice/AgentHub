@@ -15,6 +15,7 @@ import type {
   BookTurnOrchestrationResult,
   BookTurnOrchestrationStep,
   BookTurnPolicy,
+  CompletedExecutionStep,
   LocalChatMessage,
   ResearchClaimAdmissionDecision,
   ResearchEvidence,
@@ -56,10 +57,17 @@ import {
   extractFollowUpQuestions,
   type FollowUpQuestionOption,
 } from "@/features/chat/recommendation-followups"
+import {
+  friendlyStepDetail,
+  friendlyStepTitle,
+  technicalToolDetails,
+  toolDisplay,
+} from "@/features/chat/execution-display"
 
 type ChatMessageItemProps = {
   message: LocalChatMessage
   calledTools?: ToolCallInfo[]
+  executionSteps?: CompletedExecutionStep[]
   isAgentThinking?: boolean
   thinkingContent?: string // Accumulated thinking content (streaming)
   isProcessing?: boolean // Processing, no content received yet (kept for backward compatibility, not used)
@@ -243,6 +251,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function cleanString(value: unknown): string {
   return String(value ?? "").trim()
+}
+
+function parseExecutionProgress(message: LocalChatMessage): CompletedExecutionStep[] {
+  const progress = asRecord(message.custom_data?.execution_progress)
+  if (!progress || !Array.isArray(progress.steps)) return []
+  return progress.steps.filter((item): item is CompletedExecutionStep => {
+    const step = asRecord(item)
+    return Boolean(
+      step
+      && typeof step.step_id === "string"
+      && typeof step.order === "number"
+      && typeof step.title === "string"
+      && typeof step.status === "string"
+    )
+  })
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> | null {
@@ -3866,6 +3889,7 @@ function ResearchReportPanel({
 export function ChatMessageItem({
   message,
   calledTools = [],
+  executionSteps = [],
   thinkingContent = "",
   isStreaming = false,
   isSelected = false,
@@ -3898,6 +3922,9 @@ export function ChatMessageItem({
   // Merge calledTools from streaming with stored tool_info from history
   // For streaming messages, use calledTools; for history messages, use stored tool_info
   const allTools = calledTools.length > 0 ? calledTools : parseStoredToolInfo(message)
+  const visibleExecutionSteps = executionSteps.length > 0
+    ? executionSteps
+    : parseExecutionProgress(message)
   const hasToolCalls = allTools.length > 0
   const researchFinalAnswerResults =
     isAI && !isStreaming ? parseResearchFinalAnswerResults(allTools) : []
@@ -4015,6 +4042,7 @@ export function ChatMessageItem({
               : "w-full rounded-none border border-transparent bg-transparent text-foreground",
             // Add selected highlight for AI messages
             isAI && isSelected && "bg-muted/35",
+            isAI && isStreaming && "rounded-2xl border-primary/10 bg-gradient-to-br from-primary/[0.035] to-transparent",
           )}
         >
           {/* Sources */}
@@ -4056,37 +4084,48 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {/* Tool calls display - ChatGPT style scrolling list */}
+          {/* Tool calls are presented as user-facing activities; raw payloads stay in optional diagnostics. */}
           {isAI && allTools.length > 0 && (isStreaming || !message.content.trim()) ? (
-            <div className="border-l-2 border-border bg-background/50 p-3 text-xs mb-3 max-h-32 overflow-y-auto">
-              <div className="space-y-1.5">
+            <div className="mb-3 max-h-64 overflow-y-auto rounded-xl border border-border/70 bg-background/65 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="font-medium text-foreground">本轮执行</span>
+                <span className="text-[11px] text-muted-foreground">{allTools.length} 个步骤</span>
+              </div>
+              <div className="space-y-2">
                 {allTools.map((tool, toolIndex) => {
                   const isCalling = tool.status === "calling"
                   const isCompleted = tool.status === "completed"
+                  const display = toolDisplay(tool)
                   return (
                     <div
                       key={tool.id || `tool-${toolIndex}`}
                       className={cn(
-                        "flex items-center gap-2 animate-in slide-in-from-left-2 duration-200",
-                        toolIndex === allTools.length - 1 && isCalling && "bg-primary/5 -mx-1 px-1 rounded"
+                        "rounded-lg border px-3 py-2.5 animate-in slide-in-from-left-2 duration-200",
+                        isCalling ? "border-primary/20 bg-primary/5" : "border-border/60 bg-card/70",
                       )}
                     >
-                      {isCalling ? (
-                        <Loader2 className="size-3 animate-spin text-primary" />
-                      ) : isCompleted ? (
-                        <CheckIcon className="size-3 text-green-500" />
-                      ) : null}
-                      <span className={cn(
-                        "font-medium",
-                        isCalling ? "text-foreground" : "text-muted-foreground"
-                      )}>
-                        {tool.name}
-                      </span>
-                      {isCalling && (
-                        <span className="text-muted-foreground text-[10px] animate-pulse">
-                          {t("message.toolRunning")}
+                      <div className="flex items-center gap-2">
+                        {isCalling ? (
+                          <Loader2 className="size-3.5 animate-spin text-primary" />
+                        ) : isCompleted ? (
+                          <CheckIcon className="size-3.5 text-emerald-600" />
+                        ) : null}
+                        <span className="font-medium text-foreground">{display.title}</span>
+                        <span className="ml-auto text-[10px] text-muted-foreground">
+                          {isCalling ? t("message.toolRunning") : "已完成"}
                         </span>
-                      )}
+                      </div>
+                      <p className="mt-1.5 leading-5 text-muted-foreground">
+                        {isCalling ? `正在处理：${display.input}` : display.result}
+                      </p>
+                      {isCompleted ? (
+                        <details className="mt-1.5 text-[10px] text-muted-foreground/80">
+                          <summary className="w-fit cursor-pointer select-none hover:text-foreground">查看技术详情</summary>
+                          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-2 font-mono leading-4">
+                            {technicalToolDetails(tool)}
+                          </pre>
+                        </details>
+                      ) : null}
                     </div>
                   )
                 })}
@@ -4097,7 +4136,16 @@ export function ChatMessageItem({
           {/* Main message content */}
           {isAI ? (
             message.content ? (
-              <MarkdownContent content={message.content} isStreaming={isStreaming} />
+              <div className={cn("relative", isStreaming && "streaming-answer") }>
+                {isStreaming && (
+                  <div className="mb-2 flex items-center gap-2 text-[11px] font-medium tracking-wide text-primary/80" role="status">
+                    <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+                    正在生成
+                  </div>
+                )}
+                <MarkdownContent content={message.content} isStreaming={isStreaming} />
+                {isStreaming && <span className="streaming-caret" aria-hidden="true" />}
+              </div>
             ) : null
           ) : isQuotedMessage ? (
             // Render quoted message with separator - use user_content for display
@@ -4131,6 +4179,25 @@ export function ChatMessageItem({
               {message.content}
             </p>
           )}
+
+          {isAI && !isStreaming && visibleExecutionSteps.length > 0 ? (
+            <details className="mt-4 rounded-xl border border-border/70 bg-muted/25 p-3 md:hidden">
+              <summary className="cursor-pointer list-none text-sm font-medium text-foreground">
+                查看本轮 {visibleExecutionSteps.length} 个执行步骤
+              </summary>
+              <ol className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                {visibleExecutionSteps.map((step, index) => (
+                  <li key={step.step_id} className="flex gap-2 text-xs">
+                    <CheckIcon className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
+                    <div className="min-w-0">
+                      <p className="font-medium text-foreground">{index + 1}. {friendlyStepTitle(step)}</p>
+                      <p className="mt-0.5 leading-5 text-muted-foreground">{friendlyStepDetail(step)}</p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          ) : null}
 
           {isAI && bookTurnOrchestrationResults.length > 0 ? (
             <div className="space-y-3">

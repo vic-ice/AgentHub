@@ -579,6 +579,8 @@ class TurnControllerLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(controller.requests), 2)
         self.assertEqual(harness.calls, 2)
         self.assertEqual(receipt.final_answer.status, "failed")
+        self.assertNotIn("轮数", receipt.final_answer.content)
+        self.assertNotIn("控制", receipt.final_answer.content)
 
     async def test_research_merges_all_confirmed_reports(self) -> None:
         controller = _QueuedController(

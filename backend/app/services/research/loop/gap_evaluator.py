@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.research.evidence_quality import (
@@ -27,7 +28,11 @@ _GAP_DESCRIPTIONS = {
     "missing_book_evidence": "未找到可核验的具体图书信息。",
     "insufficient_independent_sources": "独立来源不足，尚不能完成交叉验证。",
     "no_publishable_evidence": "没有找到可进入研究报告的可核验证据。",
+    "insufficient_evidence_quality": "现有候选只有低质量来源，需要机构、出版社或编辑来源补强。",
+    "insufficient_recommendation_candidates": "已核验的推荐候选数量不足，需要继续验证同类图书。",
 }
+
+_QUALITY_RANK = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
 
 
 def evaluate_research_gaps(
@@ -109,10 +114,17 @@ def evaluate_research_evidence_gaps(
         )
         for record in normalized_records
     ]
-    publishable_records = [
+    structurally_publishable_records = [
         record
         for record, assessment in assessments
         if assessment.publishable
+    ]
+    required_quality = loop_budget.required_evidence_quality
+    publishable_records = [
+        record
+        for record in structurally_publishable_records
+        if _QUALITY_RANK.get(str(record.quality).lower(), 0)
+        >= _QUALITY_RANK[required_quality]
     ]
     independent_records = dedup_by_content(
         publishable_records,
@@ -139,15 +151,25 @@ def evaluate_research_evidence_gaps(
 
     gaps: list[str] = []
     if not publishable_records:
-        gaps.extend(
-            reason
-            for reason in _REQUIREMENT_GAPS
-            if reason in reason_codes
-        )
+        if structurally_publishable_records:
+            gaps.append("insufficient_evidence_quality")
+        else:
+            gaps.extend(
+                reason
+                for reason in _REQUIREMENT_GAPS
+                if reason in reason_codes
+            )
         if not gaps:
             gaps.append("no_publishable_evidence")
     elif len(independent_sources) < loop_budget.min_independent_sources:
         gaps.append("insufficient_independent_sources")
+    candidate_titles = _verified_recommendation_titles(
+        publishable_records,
+        expected=loop_budget.recommendation_candidate_titles,
+    )
+    if publishable_records and loop_budget.min_recommendation_candidates:
+        if len(candidate_titles) < loop_budget.min_recommendation_candidates:
+            gaps.append("insufficient_recommendation_candidates")
 
     satisfied = not gaps
     can_continue = bool(gaps) and round_index < loop_budget.max_search_rounds
@@ -181,6 +203,11 @@ def evaluate_research_evidence_gaps(
             "rejection_reason_codes": reason_codes,
             "candidate_record_count": len(normalized_records),
             "publishable_record_count": len(publishable_records),
+            "structurally_publishable_record_count": len(
+                structurally_publishable_records
+            ),
+            "required_evidence_quality": required_quality,
+            "recommendation_candidate_count": len(candidate_titles),
             "max_search_rounds": loop_budget.max_search_rounds,
         },
     )
@@ -219,3 +246,43 @@ def _record_fingerprint_text(record: ResearchSourceRecord) -> str:
         )
         if part
     )
+
+
+def _verified_recommendation_titles(
+    records: list[ResearchSourceRecord],
+    *,
+    expected: list[str],
+) -> set[str]:
+    observed = {
+        _book_title_key(title)
+        for record in records
+        for title in re.findall(r"《([^》]{1,100})》", record.claim)
+        if _book_title_key(title)
+    }
+    observed.update(
+        key
+        for record in records
+        if (key := _source_book_title_key(record.source_title))
+    )
+    expected_keys = {_book_title_key(title) for title in expected if _book_title_key(title)}
+    if not expected_keys:
+        return observed
+    return {
+        candidate
+        for candidate in expected_keys
+        if any(candidate in title or title in candidate for title in observed)
+    }
+
+
+def _book_title_key(value: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
+
+
+def _source_book_title_key(value: str) -> str:
+    title = re.sub(
+        r"\s*[（(]\s*豆瓣\s*[）)]\s*$",
+        "",
+        str(value or "").strip(),
+        flags=re.IGNORECASE,
+    )
+    return _book_title_key(title)

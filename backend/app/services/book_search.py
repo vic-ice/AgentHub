@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from html import unescape
 from urllib.parse import urlparse
 
@@ -18,6 +19,11 @@ from app.services.book_search_contracts import (
     BookSearchStatus,
     get_book_search_hint,
 )
+from app.services.books.book_identity import (
+    canonical_book_source_url,
+    normalize_book_work_title,
+)
+from app.services.books.douban_catalog import DoubanCatalogProvider
 from app.services.external_search import SearchRequest, get_search_gateway
 
 BOOK_CACHE_CONTRACT_VERSION = "book-cache-fusion-v1"
@@ -82,6 +88,7 @@ def _normalize_book_title(raw_title: str) -> str:
     title = re.sub(r"\s*[\(_-]?豆瓣读书.*$", "", title, flags=re.IGNORECASE)
     title = re.sub(r"\s*[\(_-]?豆瓣.*$", "", title, flags=re.IGNORECASE)
     title = re.sub(r"\s*-\s*book\.douban\.com.*$", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s*[-|_]\s*图书\s*$", "", title, flags=re.IGNORECASE)
     return _compact_text(title).strip(" -_")
 
 
@@ -89,11 +96,14 @@ def _candidate_to_book_data(candidate: dict[str, str]) -> dict:
     url = candidate.get("url", "")
     raw_title = candidate.get("title", "")
     snippet = candidate.get("snippet", "")
+    author = _compact_text(candidate.get("author_name", ""))
+    cover_url = str(candidate.get("pic") or "").strip() or None
     return {
         "title": _normalize_book_title(raw_title) or raw_title,
-        "authors": [],
+        "authors": [author] if author else [],
         "tags": [],
         "summary": snippet or None,
+        "cover_url": cover_url,
         "source_name": _infer_source_name(url),
         "source_url": url,
         "external_id": _extract_external_id(url),
@@ -101,6 +111,11 @@ def _candidate_to_book_data(candidate: dict[str, str]) -> dict:
             "search_title": raw_title,
             "search_snippet": snippet,
             "search_url": url,
+            # Search-provider dates describe the source page, not necessarily
+            # the book's publication. Keep the provenance distinct so a web
+            # index timestamp can never satisfy a publication-year filter.
+            "source_published_date": candidate.get("published_date", ""),
+            "cover_source_url": cover_url or "",
         },
     }
 
@@ -108,33 +123,58 @@ def _candidate_to_book_data(candidate: dict[str, str]) -> dict:
 async def search_external_book_candidates(
     query: str,
     limit: int = 5,
+    *,
+    federated_discovery: bool = False,
 ) -> BookCandidateSearchResult:
     """Search public book pages and return structured ordinary search state."""
     started_at = time.perf_counter()
-    result = await get_search_gateway().search(
-        SearchRequest(
-            query=query,
-            max_results=max(1, min(limit, 10)),
-            detail="standard",
-            include_domains=["book.douban.com"],
-            language="zh",
-            zone="cn",
+    if federated_discovery:
+        catalog_result, result = await asyncio.gather(
+            DoubanCatalogProvider().search(query, limit=limit),
+            _search_catalog_pages(query, limit=limit),
         )
-    )
-    books = [
+    else:
+        catalog_result = await DoubanCatalogProvider().search(query, limit=limit)
+        result = None
+    catalog_books = [
+        _candidate_to_book_data(candidate)
+        for candidate in catalog_result.candidates
+    ]
+    if catalog_result.status == "ok" and not federated_discovery:
+        return replace(
+            catalog_result,
+            candidates=catalog_books,
+        )
+    # Provider-side path expressions are inconsistently honored (and Tavily
+    # already receives include_domains separately).  Ask for the catalog in
+    # ordinary provider language, then enforce the exact /subject/<id> contract
+    # below before any result becomes book evidence.
+    result = result or await _search_catalog_pages(query, limit=limit)
+    web_books = [
         _candidate_to_book_data(
             {
                 "title": hit.title,
                 "url": hit.url,
                 "snippet": hit.snippet or hit.content,
+                "published_date": hit.published_date,
             }
         )
-        for hit in result.hits[:limit]
+        for hit in [
+            item for item in result.hits if _is_specific_book_url(item.url)
+        ][:limit]
     ]
+    # The catalog is authoritative for book identity, author and cover. Search
+    # engine pages broaden recall and later enrich the selected identities, but
+    # page-title fragments must not outrank normalized catalog records merely
+    # because a provider returned first.
+    books = _merge_candidate_payloads(
+        [*catalog_books, *web_books],
+        limit=limit,
+    )
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     if books:
         status: BookSearchStatus = "ok"
-    elif result.outcome == "empty":
+    elif result.outcome in {"empty", "found"}:
         status = "empty_result"
     elif any(item.error_type == "timeout" for item in result.attempts):
         status = "timeout"
@@ -142,14 +182,66 @@ async def search_external_book_candidates(
         status = "hard_error"
     return BookCandidateSearchResult(
         query=query,
-        provider_query=result.effective_query or query,
+        provider_query=" | ".join(
+            item
+            for item in [
+                result.effective_query or "",
+                catalog_result.provider_query or "",
+            ]
+            if item
+        )[:300]
+        or query,
         status=status,
         candidates=books,
-        source=result.provider or "external_search",
+        source="+".join(
+            dict.fromkeys(
+                item
+                for item in [result.provider, catalog_result.source]
+                if item
+            )
+        )
+        or "external_search",
         next_action_hint=get_book_search_hint(status),
-        error=result.error or None,
+        error=(None if books else result.error or catalog_result.error or None),
         duration_ms=duration_ms,
     )
+
+
+async def _search_catalog_pages(query: str, *, limit: int):
+    catalog_hint = "书籍 豆瓣读书"
+    scoped_query = f"{query[: 299 - len(catalog_hint)]} {catalog_hint}".strip()
+    return await get_search_gateway().search(
+        SearchRequest(
+            query=scoped_query,
+            max_results=max(1, min(limit, 10)),
+            detail="standard",
+            strategy="federated",
+            provider_budget=3,
+            include_domains=["book.douban.com"],
+            language="zh",
+            zone="cn",
+        )
+    )
+
+
+def _merge_candidate_payloads(
+    candidates: list[dict],
+    *,
+    limit: int,
+) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        title = normalize_book_work_title(str(candidate.get("title") or ""))
+        source_url = canonical_book_source_url(candidate.get("source_url") or "")
+        keys = {key for key in (f"title:{title}" if title else "", source_url) if key}
+        if not keys or not seen.isdisjoint(keys):
+            continue
+        seen.update(keys)
+        merged.append(candidate)
+        if len(merged) >= max(1, min(int(limit), 10)):
+            break
+    return merged
 
 
 async def search_duckduckgo_book_candidates(
@@ -171,23 +263,44 @@ async def search_and_cache_books_with_status(
     db: AsyncSession,
     query: str,
     limit: int = 5,
+    *,
+    force_external: bool = False,
+    federated_discovery: bool = False,
 ) -> BookSearchCacheResult:
     started_at = time.perf_counter()
     requested_limit = max(1, limit)
-    cached_books = await search_cached_books(db, query=query, limit=requested_limit)
+    cached_books = [
+        book
+        for book in await search_cached_books(
+            db,
+            query=query,
+            limit=requested_limit,
+        )
+        if _book_public_source_url(book)
+    ]
     external_result: BookCandidateSearchResult | None = None
     external_books: list[Book] = []
-    external_limit = max(0, requested_limit - len(cached_books))
+    external_limit = (
+        requested_limit
+        if force_external
+        else max(0, requested_limit - len(cached_books))
+    )
 
     if external_limit > 0:
         external_result = await search_external_book_candidates(
             query=query,
             limit=external_limit,
+            federated_discovery=federated_discovery,
         )
         for candidate in external_result.candidates:
             external_books.append(await upsert_book(db, candidate))
 
-    books = _merge_book_candidates([*cached_books, *external_books], requested_limit)
+    ordered_candidates = (
+        [*external_books, *cached_books]
+        if force_external
+        else [*cached_books, *external_books]
+    )
+    books = _merge_book_candidates(ordered_candidates, requested_limit)
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     status = _fused_status(books, external_result)
     candidate_sources = _candidate_sources(
@@ -218,6 +331,7 @@ async def search_and_cache_books_with_status(
             ),
             "merged_result_count": len(books),
             "requested_limit": requested_limit,
+            "force_external": force_external,
         },
         candidate_sources=candidate_sources,
     )
@@ -265,10 +379,10 @@ def _merge_book_candidates(books: list[Book], limit: int) -> list[Book]:
     seen: set[str] = set()
     merged: list[Book] = []
     for book in books:
-        key = _book_identity(book)
-        if not key or key in seen:
+        keys = _book_identity_keys(book)
+        if not keys or not seen.isdisjoint(keys):
             continue
-        seen.add(key)
+        seen.update(keys)
         merged.append(book)
         if len(merged) >= limit:
             break
@@ -327,15 +441,45 @@ def _candidate_sources(
     }
 
 
-def _book_identity(book: Book) -> str:
-    source_url = str(getattr(book, "source_url", "") or "").strip().lower()
+def _book_identity_keys(book: Book) -> set[str]:
+    keys: set[str] = set()
+    title = normalize_book_work_title(
+        _normalize_book_title(str(getattr(book, "title", "") or ""))
+    )
+    if title:
+        keys.add(f"work:{title}")
+    source_url = canonical_book_source_url(getattr(book, "source_url", ""))
     if source_url:
-        return f"url:{source_url}"
+        keys.add(f"url:{source_url}")
     external_id = str(getattr(book, "external_id", "") or "").strip().lower()
     source_name = str(getattr(book, "source_name", "") or "").strip().lower()
     if external_id:
-        return f"external:{source_name}:{external_id}"
-    return f"title:{str(getattr(book, 'title', '') or '').strip().lower()}"
+        keys.add(f"external:{source_name}:{external_id}")
+    return keys
+
+
+def _book_public_source_url(book: Book) -> str:
+    raw = book.raw_data if isinstance(book.raw_data, dict) else {}
+    url = str(
+        getattr(book, "source_url", "")
+        or raw.get("url")
+        or raw.get("search_url")
+        or ""
+    ).strip()
+    if not url:
+        return ""
+    host = urlparse(url).netloc.casefold()
+    if "douban.com" in host and not _is_specific_book_url(url):
+        return ""
+    return url
+
+
+def _is_specific_book_url(url: str) -> bool:
+    parsed = urlparse(str(url or "").strip())
+    return bool(
+        parsed.netloc.casefold() == "book.douban.com"
+        and re.fullmatch(r"/subject/\d+/?", parsed.path)
+    )
 
 
 def _fused_status(

@@ -115,16 +115,10 @@ async def edit_memory(
         )
 
     fact = canonical.facts[0]
-    reader = MemoryReadGateway(db)
-    heads = await reader.current_versions(user_id=request.user_id, limit=500)
-    head = next(
-        (item for item in heads if item.memory_key == fact.memory_key),
-        None,
-    )
     event = MemoryManagementEvent(
         user_id=request.user_id,
         thread_id=request.thread_id,
-        action="correct" if head is not None else "create",
+        action="create",
         schema_key=fact.schema_key,
         memory_key=fact.memory_key,
         subject="self",
@@ -132,7 +126,7 @@ async def edit_memory(
         value=request.value,
         qualifiers=request.qualifiers,
         evidence_quote=evidence,
-        previous_value=head.value if head is not None else None,
+        previous_value=None,
     )
     db.add(event)
     await db.flush()
@@ -146,6 +140,7 @@ async def edit_memory(
         source_event_id=event.id,
         receipt_id=_admin_receipt_id(request.user_id, "edit", event.id),
         evidence_quote=evidence,
+        source_kind="admin_action",
     )
     if gateway_result.get("status") == "clarification_required":
         raise _clarification_error(
@@ -153,6 +148,14 @@ async def edit_memory(
             gateway_result.get("clarification_question", ""),
         )
     receipt = MemoryMutationReceipt.model_validate(gateway_result["receipt"])
+    if receipt.mutations:
+        mutation = receipt.mutations[0]
+        event.action = "correct" if mutation.status == "revised" else "create"
+        event.schema_key = mutation.version.schema_key
+        event.memory_key = mutation.memory_key
+        event.previous_value = (
+            mutation.previous.value if mutation.previous is not None else None
+        )
     await db.commit()
     return receipt
 
@@ -176,22 +179,12 @@ async def forget_memory(
         qualifiers=request.qualifiers,
         evidence_quote=evidence,
     )
-    resolution = MemoryCanonicalizer().resolve_targets(
-        [target],
-        source_text=evidence,
-    )
-    if resolution.status != "ready":
-        raise _clarification_error(
-            resolution.reason_codes,
-            resolution.clarification_question,
-        )
-
     event = MemoryManagementEvent(
         user_id=request.user_id,
         thread_id=request.thread_id,
         action="forget",
-        schema_key=resolution.targets[0].schema_key,
-        memory_key=resolution.targets[0].memory_key,
+        schema_key=None,
+        memory_key=None,
         subject="self",
         predicate=request.predicate,
         value={},
@@ -205,20 +198,38 @@ async def forget_memory(
 
     gateway = MemoryWriteGateway(db)
     try:
-        gateway_result = await gateway.forget(
+        gateway_result = await gateway.forget_targets(
             user_id=request.user_id,
             thread_id=request.thread_id,
-            memory_keys=[item.memory_key for item in resolution.targets],
+            targets=[target],
+            source_text=evidence,
             source_event_id=event.id,
             receipt_id=_admin_receipt_id(request.user_id, "forget", event.id),
-            evidence_quote=evidence,
+            source_kind="admin_action",
         )
     except MemoryVersionTargetNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="memory fact not found",
         ) from exc
+    if gateway_result.get("status") == "clarification_required":
+        raise _clarification_error(
+            ["gateway_target_resolution_failed"],
+            gateway_result.get("clarification_question", ""),
+        )
+    if gateway_result.get("status") == "rejected":
+        raise _clarification_error(
+            [str(gateway_result.get("reason") or "gateway_target_rejected")],
+            "",
+        )
     receipt = MemoryMutationReceipt.model_validate(gateway_result["receipt"])
+    if receipt.mutations:
+        mutation = receipt.mutations[0]
+        event.schema_key = mutation.version.schema_key
+        event.memory_key = mutation.memory_key
+        event.previous_value = (
+            mutation.previous.value if mutation.previous is not None else None
+        )
     await db.commit()
     return receipt
 
@@ -237,6 +248,9 @@ def _admin_receipt_id(user_id: UUID, action: str, event_id: UUID) -> str:
 
 
 def _to_admin_fact(record: MemoryVersionRecord) -> MemoryAdminFact:
+    fallback_domain, fallback_kind = derive_domain_kind(
+        "", record.subject, record.schema_key
+    )
     return MemoryAdminFact(
         schema_key=record.schema_key,
         memory_key=record.memory_key,
@@ -249,8 +263,8 @@ def _to_admin_fact(record: MemoryVersionRecord) -> MemoryAdminFact:
         valid_from=record.valid_from,
         valid_to=record.valid_to,
         is_tombstone=record.is_tombstone,
-        domain=derive_domain_kind("", record.subject, record.schema_key)[0],
-        kind=derive_domain_kind("", record.subject, record.schema_key)[1],
+        domain=str(record.value.get("domain") or fallback_domain),
+        kind=str(record.value.get("kind") or fallback_kind),
     )
 
 

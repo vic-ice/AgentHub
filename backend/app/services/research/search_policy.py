@@ -16,7 +16,21 @@ _BOOK_RE = re.compile(
     r"图书(?!馆)|书籍|书单|新书|旧书|童书|"
     r"这种书|这类书|此类书|风格(?:的)?书|同类型(?:的)?书|"
     r"类似.{0,12}书|像.{0,12}书|"
+    r"(?:看|读|推荐|找|选|聊|关于).{0,10}书(?:吗|呢|吧|籍|单|$)|"
+    r"书(?:吗|呢|吧|单|籍|推荐|榜单|清单|类型|风格)|"
     r"\bbooks?\b",
+    re.IGNORECASE,
+)
+_QUOTED_WORK_RE = re.compile(r"《[^》]{1,100}》")
+_BOOK_FACT_RE = re.compile(
+    r"作者|出版|出版社|版次|译者|书评|评分|阅读|读完|图书|书籍|"
+    r"\bauthor\b|\bpublisher\b|\bedition\b|\bbook\b",
+    re.IGNORECASE,
+)
+_BOOK_RECOMMENDATION_RE = re.compile(
+    r"推荐|书单|榜单|清单|值得(?:看|读)|读什么|看什么|"
+    r"类似|这种书|这种类型|这类|同类型|风格|有哪些|哪些.{0,8}书|"
+    r"\brecommend|\breading\s+list|\bbooks?\s+like",
     re.IGNORECASE,
 )
 _BOOK_MARKETPLACE_DOMAINS = [
@@ -75,10 +89,20 @@ def build_research_search_request(
     include_url_prefixes: list[str] = []
     max_results = 5
 
-    if _BOOK_RE.search(normalized):
+    is_book = bool(_BOOK_RE.search(normalized)) or bool(
+        _QUOTED_WORK_RE.search(normalized)
+        and _BOOK_FACT_RE.search(normalized)
+    )
+    is_book_recommendation = bool(
+        is_book and _BOOK_RECOMMENDATION_RE.search(normalized)
+    )
+    if is_book:
         requirements.append("book")
         query_terms.append("图书 出版 作者")
         exclude_domains.extend(_BOOK_MARKETPLACE_DOMAINS)
+    if is_book_recommendation:
+        requirements.append("book_recommendation")
+        query_terms.extend(["推荐书单", "出版社 编辑精选"])
     for constraint in constraints:
         field = str(_constraint_value(constraint, "field") or "").strip()
         value = _constraint_value(constraint, "value")
@@ -100,12 +124,21 @@ def build_research_search_request(
             except (TypeError, ValueError):
                 max_results = 5
             requirements.append("result_limit")
-    if "book" in requirements and not include_domains:
-        include_domains.extend(["book.douban.com", "douban.com"])
-    if (
+    # Exact bibliographic research benefits from subject-page constraints.
+    # Recommendation research first needs candidate discovery across editorial
+    # and institutional reading lists; constraining it to one subject host
+    # prevents the system from discovering multiple books at all.
+    exact_book_lookup = (
         "book" in requirements
-        and any(domain.endswith("douban.com") for domain in include_domains)
-    ):
+        and "book_recommendation" not in requirements
+        and bool(_QUOTED_WORK_RE.search(normalized))
+    )
+    if exact_book_lookup and not include_domains:
+        include_domains.extend(["book.douban.com", "douban.com"])
+    explicit_douban_scope = any(
+        domain.endswith("douban.com") for domain in include_domains
+    )
+    if (exact_book_lookup or explicit_douban_scope) and explicit_douban_scope:
         query_terms = [
             "site:book.douban.com/subject/",
             normalized,

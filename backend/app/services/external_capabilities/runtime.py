@@ -68,6 +68,10 @@ class ExternalCapabilityRuntime:
             return {"status": "blocked", "error": reason}
         adapter = self._adapters[operation]
         policy = self._policies.require(operation)
+        timeout_seconds = self._policies.timeout_seconds(
+            operation,
+            arguments,
+        )
         for attempt in range(1, policy.max_attempts + 1):
             try:
                 return await asyncio.wait_for(
@@ -76,7 +80,7 @@ class ExternalCapabilityRuntime:
                         context=context,
                         previous=previous,
                     ),
-                    timeout=policy.timeout_seconds,
+                    timeout=timeout_seconds,
                 )
             except TimeoutError:
                 if attempt == policy.max_attempts:

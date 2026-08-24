@@ -79,10 +79,53 @@ class BookSearchInput(ExternalCapabilityInput):
         ),
     )
     limit: int = Field(default=5, ge=1, le=10)
+    response_depth: Literal["quick", "balanced", "deep"] = Field(
+        default="balanced",
+        description=(
+            "Presentation depth understood in the same semantic pass. Use deep "
+            "when the user explicitly asks for a thorough comparison, detailed "
+            "reasons, or an in-depth answer; balanced is the normal default."
+        ),
+    )
     language: str = Field(default="", max_length=24)
+    themes: list[str] = Field(
+        default_factory=list,
+        max_length=6,
+        description=(
+            "Independent catalog-discovery themes already understood from the "
+            "user's request. Each item is the shortest useful catalog subject "
+            "noun phrase, not prose and not a combined multi-theme query. "
+            "RecommendationService may retrieve each theme "
+            "inside the same owner call; lookup mode leaves this empty."
+        ),
+    )
     genres: list[str] = Field(default_factory=list, max_length=10)
     authors: list[str] = Field(default_factory=list, max_length=10)
-    audience: str = Field(default="", max_length=120)
+    audience: str = Field(
+        default="",
+        max_length=120,
+        description=(
+            "Target reader already understood from the user's request. For "
+            "recommendations always populate it: preserve any stated age, life "
+            "stage or profession, otherwise use a neutral general-reader value."
+        ),
+    )
+    reference_titles: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "Books supplied by the user as comparison anchors. They shape "
+            "discovery but are never recommendation candidates."
+        ),
+    )
+    excluded_titles: list[str] = Field(
+        default_factory=list,
+        max_length=40,
+        description=(
+            "Books that must not be returned as new recommendations. "
+            "Reference titles are automatically included here."
+        ),
+    )
     publication_year_from: int | None = Field(
         default=None,
         ge=1000,
@@ -99,7 +142,14 @@ class BookSearchInput(ExternalCapabilityInput):
     def normalize_text(cls, value: Any) -> str:
         return " ".join(str(value or "").split())
 
-    @field_validator("genres", "authors", mode="before")
+    @field_validator(
+        "genres",
+        "themes",
+        "authors",
+        "reference_titles",
+        "excluded_titles",
+        mode="before",
+    )
     @classmethod
     def normalize_lists(cls, value: Any) -> list[str]:
         values = value if isinstance(value, list) else [value] if value else []
@@ -114,6 +164,12 @@ class BookSearchInput(ExternalCapabilityInput):
             and self.publication_year_from > self.publication_year_to
         ):
             raise ValueError("publication year range is reversed")
+        references = list(dict.fromkeys(self.reference_titles))
+        exclusions = list(
+            dict.fromkeys([*references, *self.excluded_titles])
+        )[:40]
+        self.reference_titles = references
+        self.excluded_titles = exclusions
         return self
 
 
@@ -144,9 +200,36 @@ class ExternalEvidenceSource(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(default="", max_length=300)
-    url: str = Field(max_length=2_000)
+    url: str = Field(min_length=1, max_length=2_000)
     snippet: str = Field(default="", max_length=1_000)
     published_date: str = Field(default="", max_length=64)
+
+
+class BookThemeCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    theme: str = Field(min_length=1, max_length=120)
+    candidate_count: int = Field(default=0, ge=0, le=10)
+    status: Literal["complete", "partial", "missing"] = "missing"
+
+
+class BookRecommendationItem(BaseModel):
+    """One recommendation candidate enriched with source-backed context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=300)
+    authors: list[str] = Field(default_factory=list, max_length=10)
+    theme: str = Field(default="", max_length=120)
+    summary: str = Field(default="", max_length=2_000)
+    catalog_url: str = Field(default="", max_length=2_000)
+    cover_url: str = Field(default="", max_length=2_000)
+    published_date: str = Field(default="", max_length=64)
+    evidence_sources: list[ExternalEvidenceSource] = Field(
+        default_factory=list,
+        max_length=5,
+    )
+    evidence_provider_count: int = Field(default=0, ge=0, le=3)
 
 
 class WeatherEvidence(BaseModel):
@@ -188,6 +271,18 @@ class BookEvidence(BaseModel):
         max_length=10,
     )
     error: str = Field(default="", max_length=120)
+    candidate_count: int = Field(default=0, ge=0, le=10)
+    response_depth: Literal["quick", "balanced", "deep"] = "balanced"
+    items: list[BookRecommendationItem] = Field(
+        default_factory=list,
+        max_length=10,
+    )
+    coverage: list[BookThemeCoverage] = Field(
+        default_factory=list,
+        max_length=6,
+    )
+    filters_applied: list[str] = Field(default_factory=list, max_length=20)
+    limitations: list[str] = Field(default_factory=list, max_length=10)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -210,7 +305,9 @@ class ResearchReportEvidence(BaseModel):
 
 __all__ = [
     "BookEvidence",
+    "BookRecommendationItem",
     "BookSearchInput",
+    "BookThemeCoverage",
     "ExternalCapabilityInput",
     "ExternalEvidenceSource",
     "ResearchReportEvidence",

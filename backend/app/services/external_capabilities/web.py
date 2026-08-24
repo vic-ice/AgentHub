@@ -50,6 +50,8 @@ class WebSearchRuntimeAdapter:
                 query=request.query,
                 max_results=request.max_results,
                 detail=request.detail,
+                strategy="federated",
+                provider_budget=3,
                 time_range=request.time_range,
                 include_domains=request.include_domains,
                 exclude_domains=request.exclude_domains,

@@ -49,14 +49,20 @@ class WorkflowCompiler:
         response_modes: list[ResponseMode] = []
         for proposal in batch.proposals:
             compiled = compile_capability(proposal.capability)
-            response_modes.append(compiled.response_mode)
+            response_mode = (
+                "receipt"
+                if proposal.capability == "book_search"
+                and proposal.arguments.get("mode") == "lookup"
+                else compiled.response_mode
+            )
+            response_modes.append(response_mode)
             dependencies = list(dict.fromkeys(
                 terminal_ids[item] for item in proposal.depends_on
             ))
             # A mixed turn is understood once by the Controller. Read-only
             # evidence actions consume the newly committed state, so they wait
             # for every state mutation from the same semantic batch.
-            if not proposal.side_effect and compiled.response_mode == "model":
+            if not proposal.side_effect and response_mode == "model":
                 dependencies = list(dict.fromkeys([
                     *dependencies,
                     *side_effect_terminals,

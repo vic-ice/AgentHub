@@ -100,6 +100,41 @@ class MemoryAssertionProposal(VersionedMemoryModel):
     needs_clarification: bool = False
     clarification_question: str = Field(default="", max_length=1000)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_misplaced_classification_fields(cls, value: Any) -> Any:
+        """Move a model-proposed fact kind out of the domain field.
+
+        This is typed contract normalization, not another interpretation of
+        the user's text. The fallback domain comes only from the entity type
+        that the model already proposed.
+        """
+
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        domain = str(payload.get("domain") or "").strip().lower()
+        memory_kinds = {
+            "preference",
+            "state",
+            "feedback",
+            "fact",
+            "agreement",
+            "correction",
+        }
+        if domain not in memory_kinds:
+            return payload
+        if not payload.get("kind") or payload.get("kind") == "fact":
+            payload["kind"] = domain
+        from app.services.memory.classification import (
+            derive_domain_from_entity_type,
+        )
+
+        payload["domain"] = derive_domain_from_entity_type(
+            payload.get("entity_type")
+        )
+        return payload
+
     @field_validator(
         "subject",
         "predicate",

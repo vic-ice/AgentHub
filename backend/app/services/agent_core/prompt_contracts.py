@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from app.services.agent_core.contracts import AgentCoreModel
+from app.services.agent_core.publication.response_view import ExternalAnswerView
 
 
 class ConversationContextTurn(AgentCoreModel):
@@ -137,6 +138,7 @@ class ControllerContextSnapshot(AgentCoreModel):
         default_factory=list,
         max_length=32,
     )
+    response_view: ExternalAnswerView | None = None
     working_state: TrustedWorkingStateContext | None = None
     research_runs: list[TrustedResearchRunContext] = Field(
         default_factory=list,
@@ -156,6 +158,7 @@ class ControllerContextSnapshot(AgentCoreModel):
 
 
 class ControllerModelRequest(AgentCoreModel):
+    phase: Literal["decision", "synthesis"] = "decision"
     model_name: str = Field(min_length=1, max_length=256)
     current_user_message: str = Field(min_length=1, max_length=32_000)
     context: ControllerContextSnapshot = Field(

@@ -41,6 +41,20 @@ _SCHEMA_QUERY_HINTS = {
     "instruction.behavior": "规则 指令 希望 不要 始终 记住 instruction always behavior",
     "feedback.outcome": "反馈 结果 效果 outcome feedback",
     "temporary.state": "状态 当前 暂时 临时 state status current temporary",
+    # Read-side compatibility aliases. They do not own a second model; they
+    # only make already-persisted Gateway rows searchable through the same
+    # canonical concepts.
+    "general.preference": "喜欢 不喜欢 讨厌 想要 避免 偏好 喜好 preference like dislike want avoid",
+    "reading.preference": "喜欢 不喜欢 讨厌 偏好 喜好 阅读 图书 preference like dislike",
+    "reading.feedback": "评价 喜欢 不喜欢 一般 反馈 阅读 图书 evaluation feedback",
+    "reading.state": "想读 在读 已读 弃读 阅读状态 reading status",
+    "general.feedback": "反馈 评价 结果 outcome feedback evaluation",
+    "general.state": "状态 当前 暂时 state status current",
+}
+_SCHEMA_COMPATIBILITY_ALIASES = {
+    "preference.entity": {"general.preference", "reading.preference"},
+    "feedback.outcome": {"general.feedback", "reading.feedback"},
+    "temporary.state": {"general.state", "reading.state"},
 }
 _HISTORY_SCOPE_QUERY_RE = re.compile(
     r"(?:之前|以前|原来|先前|最早|一开始|最开始|后来|改过|变过|"
@@ -68,17 +82,19 @@ class VersionedMemorySearch:
         schema_key = ""
         if request.predicate:
             schema = self._registry.resolve_predicate(request.predicate)
-            if schema is None:
-                return MemorySearchReceipt(
-                    status="empty",
-                    scope=request.scope,
-                )
-            schema_key = schema.schema_key
+            schema_key = schema.schema_key if schema is not None else ""
 
         scoped = records
-        if schema_key:
+        if request.predicate:
             scoped = [
-                record for record in scoped if record.schema_key == schema_key
+                record
+                for record in scoped
+                if _predicate_matches(
+                    record,
+                    request.predicate,
+                    schema_key=schema_key,
+                    registry=self._registry,
+                )
             ]
         scoped = self._select_scope(scoped, request)
 
@@ -177,6 +193,40 @@ def _overlaps_window(
         if record.valid_from > until:
             return False
     return True
+
+
+def _predicate_matches(
+    record: MemoryVersionRecord,
+    requested_predicate: str,
+    *,
+    schema_key: str,
+    registry: VersionedMemorySchemaRegistry,
+) -> bool:
+    """Match both current Gateway predicates and legacy canonical schemas.
+
+    New writes retain the Controller's structured predicate while legacy rows
+    may carry the registry schema as their predicate.  This is protocol
+    normalization only; it never infers a fact from the user's raw text.
+    """
+    requested = _predicate_token(requested_predicate)
+    stored = _predicate_token(record.predicate)
+    if requested and requested == stored:
+        return True
+    if schema_key and record.schema_key == schema_key:
+        return True
+    if schema_key and record.schema_key in _SCHEMA_COMPATIBILITY_ALIASES.get(
+        schema_key,
+        set(),
+    ):
+        return True
+    if not schema_key:
+        return False
+    stored_schema = registry.resolve_predicate(record.predicate)
+    return stored_schema is not None and stored_schema.schema_key == schema_key
+
+
+def _predicate_token(value: str) -> str:
+    return str(value or "").strip().casefold().replace(" ", "_").replace("-", "_")
 
 
 def _searchable_text(record: MemoryVersionRecord) -> str:

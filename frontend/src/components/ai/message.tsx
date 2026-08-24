@@ -1,8 +1,7 @@
 import type { FileUIPart, UIMessage } from "ai"
 import { ChevronLeftIcon, ChevronRightIcon, PaperclipIcon, XIcon } from "lucide-react"
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react"
-import { createContext, memo, useContext, useEffect, useState } from "react"
-import { Streamdown } from "streamdown"
+import { createContext, useContext, useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -157,7 +156,10 @@ export type MessageBranchContentProps = HTMLAttributes<HTMLDivElement>
 
 export const MessageBranchContent = ({ children, ...props }: MessageBranchContentProps) => {
   const { currentBranch, setBranches, branches } = useMessageBranch()
-  const childrenArray = Array.isArray(children) ? children : [children]
+  const childrenArray = useMemo(
+    () => (Array.isArray(children) ? children : [children]),
+    [children],
+  )
 
   // Use useEffect to update branches when they change
   useEffect(() => {
@@ -198,7 +200,11 @@ export const MessageBranchSelector = ({
 
   return (
     <ButtonGroup
-      className="[&>*:not(:first-child)]:rounded-l-md [&>*:not(:last-child)]:rounded-r-md"
+      className={cn(
+        "[&>*:not(:first-child)]:rounded-l-md [&>*:not(:last-child)]:rounded-r-md",
+        className,
+      )}
+      data-from={from}
       orientation="horizontal"
       {...props}
     />
@@ -207,7 +213,7 @@ export const MessageBranchSelector = ({
 
 export type MessageBranchPreviousProps = ComponentProps<typeof Button>
 
-export const MessageBranchPrevious = ({ children, ...props }: MessageBranchPreviousProps) => {
+export const MessageBranchPrevious = ({ children, className, ...props }: MessageBranchPreviousProps) => {
   const { t } = useI18n()
   const { goToPrevious, totalBranches } = useMessageBranch()
 
@@ -219,6 +225,7 @@ export const MessageBranchPrevious = ({ children, ...props }: MessageBranchPrevi
       size="icon-sm"
       type="button"
       variant="ghost"
+      className={className}
       {...props}
     >
       {children ?? <ChevronLeftIcon size={14} />}
@@ -240,6 +247,7 @@ export const MessageBranchNext = ({ children, className, ...props }: MessageBran
       size="icon-sm"
       type="button"
       variant="ghost"
+      className={className}
       {...props}
     >
       {children ?? <ChevronRightIcon size={14} />}
@@ -266,20 +274,6 @@ export const MessageBranchPage = ({ className, ...props }: MessageBranchPageProp
     </ButtonGroupText>
   )
 }
-
-export type MessageResponseProps = ComponentProps<typeof Streamdown>
-
-export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown
-      className={cn("size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", className)}
-      {...props}
-    />
-  ),
-  (prevProps, nextProps) => prevProps.children === nextProps.children,
-)
-
-MessageResponse.displayName = "MessageResponse"
 
 export type MessageAttachmentProps = HTMLAttributes<HTMLDivElement> & {
   data: FileUIPart
@@ -390,9 +384,7 @@ export default function MessageDemo() {
         </Message>
         <Message from="assistant">
           <MessageContent>
-            <MessageResponse>
-              {t("message.demo.answer1")}
-            </MessageResponse>
+            <p>{t("message.demo.answer1")}</p>
           </MessageContent>
         </Message>
         <Message from="user">

@@ -711,6 +711,7 @@ def _uuid_or_none(value: Any) -> UUID | None:
 _PROVENANCE_KINDS = frozenset({
     "reading_event",
     "tool_execution",
+    "admin_action",
     "correction",
     "system_derived",
 })

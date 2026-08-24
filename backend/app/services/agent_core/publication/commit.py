@@ -68,10 +68,14 @@ class TurnPublicationCommitter:
                 receipt_refs=list(answer.receipt_refs),
             )
         else:
+            failure_code = str(
+                (answer.custom_data or {}).get("failure_code")
+                or "trusted_publication_failed"
+            ).strip()[:80]
             event = await self._journal.record_turn_failed(
                 db,
                 user_input=user_input,
-                failure_code="trusted_publication_failed",
+                failure_code=failure_code,
             )
         await self._trace_writer(
             db,

@@ -914,6 +914,33 @@
   transform: translateY(-50%) rotate(45deg);
 }
 
+/* Bookshelf uses a modern Chinese sans stack for denser, clearer catalogue text. */
+.bookshelf-view,
+.bookshelf-view button,
+.bookshelf-view input {
+  font-family: "MiSans", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+.bookshelf-view h1,
+.bookshelf-view h2,
+.bookshelf-view h3,
+.bookshelf-view [data-slot="dialog-title"] {
+  font-family: "MiSans", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  letter-spacing: -0.012em;
+}
+
+.bookshelf-view .bookshelf-display-title,
+.bookshelf-view .bookshelf-book-title,
+.bookshelf-display-title,
+.bookshelf-book-title {
+  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", serif;
+  font-variation-settings: "wght" 620;
+  letter-spacing: 0.025em;
+  text-wrap: balance;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -922,5 +949,62 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes streaming-caret-pulse {
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0.18; }
+}
+
+.streaming-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 3px;
+  vertical-align: -0.12em;
+  border-radius: 999px;
+  background: var(--primary);
+  animation: streaming-caret-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes execution-progress-sheen {
+  0% {
+    transform: translateX(-100%);
+  }
+  55%,
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+.execution-progress-card {
+  position: relative;
+  isolation: isolate;
+}
+
+.execution-progress-sheen {
+  position: relative;
+  overflow: hidden;
+}
+
+.execution-progress-sheen::after {
+  position: absolute;
+  inset: 0;
+  width: 38%;
+  content: "";
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+  opacity: 0.75;
+  animation: execution-progress-sheen 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-caret {
+    animation: none;
+  }
+
+  .execution-progress-sheen::after {
+    animation: none;
+    transform: translateX(90%);
   }
 }

@@ -47,12 +47,13 @@ function calculateNodeSize(type: 'human' | 'ai' | 'tool', data: {
       }
       // Fixed size for AI node - just show "AI"
       return { width: AI_NODE_WIDTH, height: NODE_HEIGHT };
-    case 'tool':
+    case 'tool': {
       // Dynamic width based on tool name - no max limit, show full name
       const toolNameLength = data.toolName?.length || 8;
       const calculatedWidth = toolNameLength * CHAR_WIDTH_APPROX + PADDING_X;
       const width = Math.max(TOOL_NODE_MIN_WIDTH, calculatedWidth);
       return { width, height: TOOL_NODE_HEIGHT };
+    }
     default:
       return { width: 100, height: NODE_HEIGHT };
   }

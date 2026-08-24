@@ -18,6 +18,7 @@ import {
   getResearchState,
   listResearchRuns,
 } from "@/lib/api"
+import { formatErrorForDisplay } from "@/lib/errors"
 import type {
   ResearchEvidence,
   ResearchRun,
@@ -296,7 +297,7 @@ export function ResearchView({ userId }: ResearchViewProps) {
         return result.runs[0]?.id ?? null
       })
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "研究运行加载失败")
+      setError(formatErrorForDisplay(caught, "研究运行加载失败"))
     } finally {
       setIsLoadingRuns(false)
     }
@@ -318,7 +319,7 @@ export function ResearchView({ userId }: ResearchViewProps) {
       })
       setDetail(result)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "研究详情加载失败")
+      setError(formatErrorForDisplay(caught, "研究详情加载失败"))
       setDetail(null)
     } finally {
       setIsLoadingDetail(false)
@@ -355,7 +356,7 @@ export function ResearchView({ userId }: ResearchViewProps) {
       setDetail(result)
       await loadRuns()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "停止研究运行失败")
+      setError(formatErrorForDisplay(caught, "停止研究运行失败"))
     } finally {
       setIsCancelling(false)
     }

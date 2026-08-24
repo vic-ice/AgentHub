@@ -1,5 +1,6 @@
 import type { ChatMessage, ConversationInDB, LocalChatMessage } from "@/types"
 import type { Locale } from "@/i18n"
+import { formatErrorForDisplay } from "@/lib/errors"
 
 const FALLBACK_DEFAULT_TITLES = ["New conversation", "新会话"]
 
@@ -69,10 +70,7 @@ export function isDefaultConversationTitle(rawTitle: string): boolean {
 }
 
 export function getErrorMessage(error: unknown, fallback = "Unexpected error"): string {
-  if (error instanceof Error) {
-    return error.message
-  }
-  return fallback
+  return formatErrorForDisplay(error, fallback)
 }
 
 export function formatUpdatedAt(isoString: string, locale: Locale): string {

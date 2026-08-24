@@ -3,6 +3,7 @@ import { Eye, EyeOff, Plus, Trash2, Settings2, HelpCircle, Edit2, ChevronRight, 
 
 import type { ModelInfo, ModelType, ModelCreate, ModelUpdate, ProviderInfo, ProviderUpdate, ProviderConnectionInfo, ProviderConnectionUpdate } from "@/types"
 import { getAllModels, createModel, updateModel, deleteModel, setDefaultModel, getProviders, updateProvider, validateModel, getProviderConnections, createProviderConnection, updateProviderConnection, deleteProviderConnection } from "@/lib/api"
+import { formatErrorForDisplay } from "@/lib/errors"
 import { useI18n } from "@/i18n"
 import {
   Dialog,
@@ -239,7 +240,7 @@ export function ProviderConfigDialog({ open, onOpenChange, onConfigChanged }: Pr
         setProviders(providersResult.providers)
         await notifyConfigChanged()
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
+        const errorMessage = formatErrorForDisplay(error)
         errorAlert.showError(t("error.saveFailed", { details: errorMessage }))
       }
     }
@@ -276,7 +277,7 @@ export function ProviderConfigDialog({ open, onOpenChange, onConfigChanged }: Pr
         setConnections(connectionsResult.connections)
         await notifyConfigChanged()
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
+        const errorMessage = formatErrorForDisplay(error)
         errorAlert.showError(t("error.saveFailed", { details: errorMessage }))
       }
     }
@@ -320,7 +321,7 @@ export function ProviderConfigDialog({ open, onOpenChange, onConfigChanged }: Pr
       cancelAddingConnection()
       await notifyConfigChanged()
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = formatErrorForDisplay(error)
       errorAlert.showError(t("error.createFailed", { details: errorMessage }))
     } finally {
       setIsCreatingConnection(false)
@@ -348,7 +349,7 @@ export function ProviderConfigDialog({ open, onOpenChange, onConfigChanged }: Pr
       setSelectedConnection(remainingConnections[0]?.connection_id ?? null)
       await notifyConfigChanged()
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = formatErrorForDisplay(error)
       errorAlert.showError(`删除自定义 API 失败：${errorMessage}`)
     } finally {
       setDeletingConnectionIds(prev => {
@@ -430,7 +431,7 @@ export function ProviderConfigDialog({ open, onOpenChange, onConfigChanged }: Pr
       setConnections(connectionsResult.connections)
       await notifyConfigChanged()
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = formatErrorForDisplay(error)
       errorAlert.showError(t("error.saveFailed", { details: errorMessage }))
     }
   }
@@ -494,7 +495,7 @@ export function ProviderConfigDialog({ open, onOpenChange, onConfigChanged }: Pr
       }
       await notifyConfigChanged()
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = formatErrorForDisplay(error)
       if (errorMessage.includes("model_id_exists")) {
         errorAlert.showError(t("error.modelIdExists"))
       } else {
@@ -526,7 +527,7 @@ export function ProviderConfigDialog({ open, onOpenChange, onConfigChanged }: Pr
       setModels(prev => prev.map(m => m.id === model.id ? { ...m, is_active: active } : m))
       await notifyConfigChanged()
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = formatErrorForDisplay(error)
       errorAlert.showError(t("error.saveFailed", { details: errorMessage }))
     }
   }
@@ -537,7 +538,7 @@ export function ProviderConfigDialog({ open, onOpenChange, onConfigChanged }: Pr
       await validateModel(model.id, model.model_type !== "embedding")
       await loadData()
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = formatErrorForDisplay(error)
       errorAlert.showError(t("model.validationError", { details: errorMessage }))
     } finally {
       setValidatingModelIds(prev => { const n = new Set(prev); n.delete(model.id); return n })

@@ -23,7 +23,10 @@ from app.services.recommendation_signals import (
     normalize_recommendation_text,
     normalize_recommendation_token,
 )
-from app.services.books.reading_service import normalize_book_title
+from app.services.books.book_identity import (
+    normalize_book_title,
+    normalize_book_work_title,
+)
 
 
 import logging
@@ -791,6 +794,13 @@ def _shelf_state_for_book(
         state = shelf.get(f"title:{title}")
         if state is not None:
             return state
+        work_title = normalize_book_work_title(title)
+        if work_title:
+            for key, candidate_state in shelf.items():
+                if not key.startswith("title:"):
+                    continue
+                if normalize_book_work_title(key.removeprefix("title:")) == work_title:
+                    return candidate_state
     return (None, None)
 
 

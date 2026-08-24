@@ -28,25 +28,27 @@ from app.services.external_capabilities.book import BookSearchRuntimeAdapter
 from app.services.external_capabilities.runtime import (
     ExternalCapabilityRuntime,
 )
-from app.services.external_search.contracts import SearchHit, SearchResult
+from app.services.external_capabilities.contracts import (
+    BookEvidence,
+    ExternalEvidenceSource,
+)
 
 
-class _FixtureGateway:
-    async def search(self, request):
-        return SearchResult(
-            outcome="found",
-            provider="fixture-provider",
+class _RecommendationServiceFixture:
+    async def search(self, request, *, user_id):
+        del user_id
+        return BookEvidence(
+            status="ok",
             query=request.query,
-            hits=[
-                SearchHit(
+            candidate_count=1,
+            sources=[
+                ExternalEvidenceSource(
                     title="《天气之书》",
                     url="https://books.example/weather",
                     snippet="作者：示例作者；适合儿童阅读。",
-                    content="RAW_FIXTURE_BODY",
-                    provider="fixture-provider",
-                    metadata={"cache": "must-not-write"},
                 )
             ],
+            metadata={"owner": "RecommendationService"},
         )
 
 
@@ -58,14 +60,27 @@ async def _main() -> int:
     properties = set(spec.input_model.model_json_schema()["properties"])
     assert properties == {
         "query",
+        "mode",
         "limit",
+        "response_depth",
         "language",
+        "themes",
         "genres",
         "authors",
         "audience",
+        "reference_titles",
+        "excluded_titles",
         "publication_year_from",
         "publication_year_to",
     }
+    schema_properties = spec.input_model.model_json_schema()["properties"]
+    assert set(schema_properties["response_depth"]["enum"]) == {
+        "quick",
+        "balanced",
+        "deep",
+    }
+    for field in ("themes", "reference_titles", "excluded_titles"):
+        assert schema_properties[field]["type"] == "array"
     assert properties.isdisjoint(
         {
             "user_id",
@@ -103,7 +118,9 @@ async def _main() -> int:
         external_runtime=ExternalCapabilityRuntime(
             availability=enabled,
             adapters=[
-                BookSearchRuntimeAdapter(search_gateway=_FixtureGateway())
+                BookSearchRuntimeAdapter(
+                    recommendation_service=_RecommendationServiceFixture()
+                )
             ],
         )
     ).execute(

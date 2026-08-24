@@ -23,11 +23,6 @@ from app.services.memory.contracts import (
 )
 from app.services.memory.admission import MemoryAdmissionEngine, MemoryAdmissionError
 from app.services.memory.conflicts import MemoryConflictResolver
-from app.services.memory.orchestrator import (
-    MemoryOrchestrator,
-    get_memory_orchestrator,
-)
-from app.services.memory.providers.mem0 import Mem0MemoryProvider
 from app.services.memory.write_contracts import (
     MemoryClarificationContext,
     MemoryCommitCommand,
@@ -128,3 +123,29 @@ __all__ = [
     "VersionedMemorySchemaRegistry",
     "get_memory_orchestrator",
 ]
+
+
+def __getattr__(name: str):
+    """Load deprecated compatibility owners only for explicit legacy callers.
+
+    Importing any production ``app.services.memory.*`` module first executes
+    this package initializer.  Keeping these imports at module scope therefore
+    made the retired provider/orchestrator baseline runtime-reachable even when
+    no production route called it.
+    """
+
+    if name in {"MemoryOrchestrator", "get_memory_orchestrator"}:
+        from app.services.memory.orchestrator import (
+            MemoryOrchestrator,
+            get_memory_orchestrator,
+        )
+
+        return {
+            "MemoryOrchestrator": MemoryOrchestrator,
+            "get_memory_orchestrator": get_memory_orchestrator,
+        }[name]
+    if name == "Mem0MemoryProvider":
+        from app.services.memory.providers.mem0 import Mem0MemoryProvider
+
+        return Mem0MemoryProvider
+    raise AttributeError(name)

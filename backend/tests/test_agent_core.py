@@ -35,6 +35,7 @@ from app.services.conversation import (
     ConversationWindow,
     read_conversation,
 )
+from app.services.memory.version_contracts import SearchMemoryRequest
 from app.services.tasks.contracts import TaskPlanDraft, TaskPlanStepDraft
 
 
@@ -178,6 +179,109 @@ class ControllerContractTests(unittest.TestCase):
         self.assertEqual(plan.actions[0].operation, "remember_memory_v2")
         self.assertNotIn("user_id", plan.actions[0].arguments)
         self.assertNotIn("memory_key", plan.actions[0].arguments)
+
+    def test_remember_contract_repairs_kind_accidentally_put_in_domain(self) -> None:
+        registry = _enabled_registry()
+        output = ControllerOutput(
+            mode="capability_proposals",
+            tool_calls=[
+                ControllerToolCall(
+                    call_id="remember-preference",
+                    name="remember_memory",
+                    arguments={
+                        "assertions": [
+                            {
+                                "subject": "self",
+                                "predicate": "likes",
+                                "value": {
+                                    "entity": "电脑",
+                                    "polarity": "like",
+                                },
+                                "evidence_quote": "我喜欢看电脑",
+                                "domain": "preference",
+                                "entity_type": "other",
+                            }
+                        ]
+                    },
+                )
+            ],
+        )
+        batch = ProposalValidator(registry).validate(output)
+        assertion = batch.proposals[0].arguments["assertions"][0]
+        self.assertEqual(assertion["kind"], "preference")
+        self.assertEqual(assertion["domain"], "general")
+
+    def test_equivalent_memory_reads_collapse_to_one_owner_call(self) -> None:
+        registry = _enabled_registry()
+        output = ControllerOutput(
+            mode="capability_proposals",
+            tool_calls=[
+                ControllerToolCall(
+                    call_id="likes",
+                    name="search_memory",
+                    arguments={
+                        "query": "喜好",
+                        "predicate": "likes",
+                        "scope": "current",
+                    },
+                ),
+                ControllerToolCall(
+                    call_id="preference",
+                    name="search_memory",
+                    arguments={
+                        "query": "喜好",
+                        "predicate": "preference",
+                        "scope": "current",
+                    },
+                ),
+            ],
+        )
+        batch = ProposalValidator(registry).validate(output)
+        self.assertEqual(len(batch.proposals), 1)
+        self.assertEqual(batch.proposals[0].capability, "search_memory")
+        self.assertEqual(batch.proposals[0].arguments["predicate"], "likes")
+
+    def test_predicate_only_equivalent_memory_reads_remain_valid(self) -> None:
+        registry = _enabled_registry()
+        output = ControllerOutput(
+            mode="capability_proposals",
+            tool_calls=[
+                ControllerToolCall(
+                    call_id="likes",
+                    name="search_memory",
+                    arguments={"predicate": "likes", "scope": "current"},
+                ),
+                ControllerToolCall(
+                    call_id="preference",
+                    name="search_memory",
+                    arguments={"predicate": "preference", "scope": "current"},
+                ),
+            ],
+        )
+        batch = ProposalValidator(registry).validate(output)
+        self.assertEqual(len(batch.proposals), 1)
+        self.assertEqual(batch.proposals[0].arguments["predicate"], "likes")
+        SearchMemoryRequest.model_validate(batch.proposals[0].arguments)
+
+    def test_memory_read_recovers_missing_predicate_from_structured_query(self) -> None:
+        output = ControllerOutput(
+            mode="capability_proposals",
+            tool_calls=[
+                ControllerToolCall(
+                    call_id="preference-query",
+                    name="search_memory",
+                    arguments={
+                        "query": "我的长期偏好里记了哪些喜欢的东西",
+                        "scope": "current",
+                    },
+                )
+            ],
+        )
+        batch = ProposalValidator(_enabled_registry()).validate(output)
+        self.assertEqual(
+            batch.proposals[0].arguments["predicate"],
+            "preference.entity",
+        )
 
     def test_task_plan_proposal_is_mutually_exclusive(self) -> None:
         draft = TaskPlanDraft(

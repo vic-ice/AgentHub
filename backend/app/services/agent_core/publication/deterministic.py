@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from app.services.agent_core.contracts import PublishedAnswer
 from app.services.agent_core.publication.bookshelf_renderer import render_bookshelf_read
+from app.services.agent_core.publication.evidence_fallback import (
+    render_book_evidence,
+)
 from app.services.agent_core.publication.memory_renderer import (
     render_memory_forget,
     render_memory_mutation,
@@ -82,7 +85,7 @@ class DeterministicReceiptRenderer:
         ]
         return PublishedAnswer(
             status="failed",
-            content="本轮操作没有形成可发布的完整结果。",
+            content="这次操作没有顺利完成，原有状态不会被当作已经更新。",
             receipt_backed=True,
             receipt_refs=refs,
             publication_mode="deterministic_receipt",
@@ -112,6 +115,8 @@ def _render_action(action: ActionReceipt) -> str:
         return ""
     if action.operation == "bookshelf_read_v1":
         return render_bookshelf_read(output)
+    if action.operation == "book_search_v1":
+        return render_book_evidence(output)
     if action.operation == "conversation_read":
         return str(output.get("answer") or "").strip()
     if action.operation == "remember_memory_v2":

@@ -15,24 +15,21 @@ from app.crud.book import (
 )
 from app.infra.database import get_database
 from app.schemas.book import BookInteractionCreate
-from app.services.book_search import search_and_cache_books_with_status
 from app.services.book_search_contracts import get_book_search_hint
 from app.services.book_turn_orchestration import (
     BOOK_TURN_ORCHESTRATION_CONTRACT_VERSION,
     plan_book_assistant_turn as plan_book_assistant_turn_result,
 )
 from app.services.memory import MemoryCandidate, get_memory_orchestrator
-from app.services.recommendation_projection import (
-    RecommendationCandidateProjection,
-    RecommendationProjector,
-)
+from app.services.recommendation_projection import RecommendationCandidateProjection
 from app.services.recommendation_history import (
     RECOMMENDATION_HISTORY_MODES,
     get_recommendation_history as get_recommendation_history_result,
     normalize_recommendation_history_mode,
 )
-from app.services.recommendation_constraints import (
-    build_personalized_recommendation_constraints,
+from app.services.books.recommendation_service import RecommendationService
+from app.services.external_capabilities.contracts import (
+    BookSearchInput as RecommendationSearchRequest,
 )
 from app.services.recommendation_signals import (
     normalize_recommendation_token,
@@ -108,6 +105,10 @@ class BookSearchInput(BaseModel):
         description="Book recommendation/search query, including genre, mood, author, or constraints."
     )
     limit: int = Field(default=5, ge=1, le=10, description="Maximum books to return.")
+    response_depth: str = Field(
+        default="balanced",
+        description="quick, balanced, or deep presentation depth.",
+    )
     user_id: UUID | None = Field(
         default=None,
         description=(
@@ -122,6 +123,18 @@ class BookSearchInput(BaseModel):
             "a refined search, or a separate search in the same turn. Keep false "
             "for ordinary recommendations."
         ),
+    )
+    themes: list[str] = Field(
+        default_factory=list,
+        description="Independent discovery themes understood from the request.",
+    )
+    reference_titles: list[str] = Field(
+        default_factory=list,
+        description="User-supplied comparison books; never return them as candidates.",
+    )
+    excluded_titles: list[str] = Field(
+        default_factory=list,
+        description="Explicit titles that must not be returned as new recommendations.",
     )
 
 
@@ -540,6 +553,10 @@ async def _search_books_impl(
     limit: int = 5,
     user_id: UUID | None = None,
     allow_additional_search: bool = False,
+    themes: list[str] | None = None,
+    reference_titles: list[str] | None = None,
+    excluded_titles: list[str] | None = None,
+    response_depth: str = "balanced",
 ) -> str:
     user_message = get_current_user_message()
     admission = get_tool_admission_gate().admit_current_turn(
@@ -558,69 +575,52 @@ async def _search_books_impl(
         )
 
     db = get_database()
-    effective_query = query
-    constraints_payload: dict = {}
-    constraints_error: str | None = None
     async with db.session() as session:
-        if user_id is not None:
-            try:
-                constraints = await build_personalized_recommendation_constraints(
-                    session,
-                    user_id=user_id,
-                    query=query,
-                )
-                effective_query = constraints.effective_query or query
-                constraints_payload = constraints.model_dump(mode="json")
-            except Exception as exc:
-                constraints_error = str(exc)
-
-        result = await search_and_cache_books_with_status(
+        evidence = await RecommendationService(
             session,
-            query=effective_query,
-            limit=limit,
-        )
-        books_for_answer = list(result.books)
-        projection_payload: dict = {}
-        projections_by_book_id: dict[str, RecommendationCandidateProjection] = {}
-        if user_id is not None and books_for_answer:
-            projection = await RecommendationProjector(session).project_books(
-                user_id=user_id,
+            enable_external_enrichment=True,
+        ).search(
+            RecommendationSearchRequest(
                 query=query,
-                books=books_for_answer,
-                candidate_sources=result.candidate_sources,
-            )
-            projection_payload = projection.model_dump(mode="json")
-            projections_by_book_id = {
-                str(candidate.book_id): candidate
-                for candidate in projection.candidates
-                if candidate.book_id is not None
-            }
-            book_by_id = {str(book.id): book for book in books_for_answer}
-            books_for_answer = [
-                book_by_id[str(candidate.book_id)]
-                for candidate in projection.candidates
-                if candidate.book_id is not None and str(candidate.book_id) in book_by_id
-            ]
+                mode="recommendation",
+                limit=limit,
+                response_depth=response_depth,
+                themes=themes or [],
+                reference_titles=reference_titles or [],
+                excluded_titles=excluded_titles or [],
+            ),
+            user_id=user_id,
+        )
 
     book_payloads = [
-        _book_to_dict(
-            book,
-            projections_by_book_id.get(str(book.id)),
-            result.candidate_sources.get(str(book.id)),
-        )
-        for book in books_for_answer
+        {
+            "id": None,
+            "title": source.title,
+            "authors": [],
+            "summary": source.snippet,
+            "rating": None,
+            "source_name": "recommendation_service",
+            "source_url": source.url,
+            "external_id": None,
+            "published_date": source.published_date,
+        }
+        for source in evidence.sources
     ]
+    effective_query = str(evidence.metadata.get("effective_query") or query)
+    personalization = evidence.metadata.get("personalization") or {}
     payload = {
-        "status": result.status,
+        "status": evidence.status,
         "result_mode": "ordinary_recommendation",
         "query": query,
         "effective_query": effective_query,
         "books": book_payloads,
         "result_count": len(book_payloads),
-        "source": result.source,
-        "next_action_hint": result.next_action_hint,
-        "error": result.error,
-        "duration_ms": result.duration_ms,
+        "source": "RecommendationService",
+        "next_action_hint": get_book_search_hint(
+            "ok" if evidence.status == "ok" else "empty_result"
+        ),
+        "error": evidence.error or None,
+        "duration_ms": 0,
         "requested_limit": limit,
         "follow_up_questions": [
             question.model_dump(mode="json")
@@ -631,20 +631,16 @@ async def _search_books_impl(
             "search": {
                 "requested_query": query,
                 "effective_query": effective_query,
-                "provider_result_query": result.query,
-                "cache": result.metadata,
-                "candidate_sources": result.candidate_sources,
+                "provider_result_query": evidence.query,
+                "cache": evidence.metadata,
+                "candidate_sources": [],
             },
             "personalization": {
                 "user_id": str(user_id) if user_id else None,
-                "constraints": constraints_payload,
-                "constraints_error": constraints_error,
-                "projection": projection_payload,
-                "suppressed_books": (
-                    projection_payload.get("suppressed_candidates", [])
-                    if projection_payload
-                    else []
-                ),
+                "constraints": personalization.get("constraints", {}),
+                "constraints_error": None,
+                "projection": personalization.get("projection", {}),
+                "suppressed_books": personalization.get("suppressed_books", []),
             },
         },
     }
@@ -657,6 +653,10 @@ async def search_books(
     limit: int = 5,
     user_id: UUID | None = None,
     allow_additional_search: bool = False,
+    themes: list[str] | None = None,
+    reference_titles: list[str] | None = None,
+    excluded_titles: list[str] | None = None,
+    response_depth: str = "balanced",
 ) -> str:
     """Search public web results for books and cache them locally."""
     return await _search_books_impl(
@@ -664,6 +664,10 @@ async def search_books(
         limit=limit,
         user_id=user_id,
         allow_additional_search=allow_additional_search,
+        themes=themes,
+        reference_titles=reference_titles,
+        excluded_titles=excluded_titles,
+        response_depth=response_depth,
     )
 
 

@@ -5,6 +5,8 @@
  */
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { requestJson } from '@/lib/api';
+import { formatErrorForDisplay } from '@/lib/errors';
 
 // User type
 export interface User {
@@ -30,8 +32,7 @@ interface AuthContextType extends AuthState {
 // Create context
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// API base URL
-const API_BASE = '/api/v1';
+type AuthStatusResponse = { authenticated: boolean; user?: User | null };
 
 interface AuthProviderProps {
   children: ReactNode;
@@ -47,15 +48,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // Fetch current user from API
   const fetchUser = useCallback(async (): Promise<User | null> => {
     try {
-      const response = await fetch(`${API_BASE}/auth/status`, {
+      const data = await requestJson<AuthStatusResponse>('/auth/status', {
         credentials: 'include', // Include cookies
       });
-
-      if (!response.ok) {
-        return null;
-      }
-
-      const data = await response.json();
 
       if (data.authenticated && data.user) {
         return data.user;
@@ -63,7 +58,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       return null;
     } catch (error) {
-      console.error('[Auth] Failed to fetch user:', error);
+      console.error('[Auth] Failed to fetch user:', formatErrorForDisplay(error));
       return null;
     }
   }, []);
@@ -88,12 +83,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // Logout
   const logout = useCallback(async () => {
     try {
-      await fetch(`${API_BASE}/auth/logout`, {
+      await requestJson<void>('/auth/logout', {
         method: 'POST',
         credentials: 'include',
       });
     } catch (error) {
-      console.error('[Auth] Logout failed:', error);
+      console.error('[Auth] Logout failed:', formatErrorForDisplay(error));
     }
 
     // Clear state

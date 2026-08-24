@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import re
 import time
 from typing import Any
 from uuid import UUID
@@ -26,6 +28,7 @@ from app.services.research.loop import (
 from app.services.research.source_extraction import (
     extract_research_source_records,
 )
+from app.services.research.source_visit import fetch_research_source_document
 from app.services.execution_progress import (
     current_execution_progress,
     report_completed_step,
@@ -53,7 +56,7 @@ class DeepResearchReceipt(BaseModel):
     created_at: str = ""
 
     def to_published_answer(self) -> PublishedAnswer:
-        """Publish the complete report as the chat message body.
+        """Publish the complete user-facing answer as the chat message body.
 
         The full report is stored and rendered in the conversation; the
         Request Builder later swaps it for a compact pointer so the model
@@ -73,6 +76,11 @@ class DeepResearchReceipt(BaseModel):
                 "research_status": self.status,
                 "research_conclusion": conclusion[:300],
                 "research_evidence_count": self.evidence_count,
+                **(
+                    {"failure_code": "research_evidence_insufficient"}
+                    if self.status != "completed"
+                    else {}
+                ),
             },
         )
 
@@ -105,6 +113,7 @@ def _plan_next_task(
     previous_assessment: ResearchGapAssessment | None,
     pending_subquestions: list[str],
     used_queries: set[str],
+    candidate_hints: dict[str, str] | None = None,
 ) -> ResearchSearchTask | None:
     """Pop the next reviewer subquestion, falling back to the planner.
 
@@ -122,23 +131,51 @@ def _plan_next_task(
         if not normalized or normalized in used_queries:
             continue
         base = build_research_search_request(objective)
+        candidate_titles = re.findall(r"《([^》]{1,100})》", candidate)
+        candidate_verification = bool(
+            candidate_titles
+            and "book_recommendation" in base.requirements
+        )
         return ResearchSearchTask(
             round_index=round_index,
             objective=objective,
             purpose="reviewer_gap",
-            query=normalized[:300],
+            query=(
+                "site:book.douban.com/subject/ " + candidate
+                if candidate_verification
+                else normalized
+            )[:300],
             should_search=True,
             target_gaps=[],
             exhausted_queries=sorted(used_queries)[-8:],
             max_results=budget.max_results_per_round,
             detail=base.detail,
             time_range=base.time_range,
-            include_domains=base.include_domains,
+            include_domains=(
+                ["book.douban.com"]
+                if candidate_verification
+                else base.include_domains
+            ),
             exclude_domains=base.exclude_domains,
-            include_url_prefixes=base.include_url_prefixes,
+            include_url_prefixes=(
+                ["https://book.douban.com/subject/"]
+                if candidate_verification
+                else base.include_url_prefixes
+            ),
             language=base.language,
             category=base.category,
-            metadata={"source": "reviewer_subquestion"},
+            metadata={
+                "source": (
+                    "objective_plan_candidate_verification"
+                    if candidate_verification
+                    else "reviewer_subquestion"
+                ),
+                "candidate_titles": candidate_titles,
+                "candidate_search_hints": {
+                    title: str((candidate_hints or {}).get(title) or title)
+                    for title in candidate_titles
+                },
+            },
         )
     return plan_research_search_task(
         objective=objective,
@@ -199,12 +236,29 @@ async def run_deep_research(
         get_research_orchestrator,
     )
     from app.services.research.report import build_research_report
+    from app.services.research.objective_planner import (
+        candidate_search_hints,
+        candidate_verification_queries,
+        plan_research_objective,
+    )
+
+    objective_plan = await plan_research_objective(
+        objective,
+        model_id=model_name,
+    )
+    planned_candidate_queries = candidate_verification_queries(objective_plan)
+    planned_candidate_hints = candidate_search_hints(objective_plan)
 
     budget = ResearchLoopBudget(
         max_search_rounds=3,
         max_results_per_round=8,
         max_records_per_round=8,
         min_independent_sources=1,
+        required_evidence_quality="medium",
+        min_recommendation_candidates=(
+            4 if objective_plan.task_type == "book_recommendation" else 0
+        ),
+        recommendation_candidate_titles=list(objective_plan.candidate_titles),
     )
     orchestrator = get_research_orchestrator()
     started = await orchestrator.start_research(
@@ -221,7 +275,10 @@ async def run_deep_research(
         ],
         budget=budget.model_dump(mode="json"),
         stop_criteria=["evidence_satisfied", "search_budget_exhausted"],
-        metadata={"capture_source": "deep_research_toggle"},
+        metadata={
+            "capture_source": "deep_research_toggle",
+            "objective_plan": objective_plan.model_dump(mode="json"),
+        },
     )
     run_id = started.run.id
     if run_id is None:
@@ -234,9 +291,63 @@ async def run_deep_research(
         step_id=f"research:{run_id}:created",
     )
 
+    # Recommendation candidate discovery is the one semantic planning step.
+    # If it is unavailable (timeout, quota, provider failure), a broad year or
+    # keyword search cannot preserve the user's requested similarity themes.
+    # Fail transparently instead of publishing an unrelated booklist.
+    if (
+        objective_plan.task_type == "book_recommendation"
+        and not objective_plan.candidate_titles
+    ):
+        planning_error = objective_plan.error or "semantic planner unavailable"
+        content = (
+            "## 本次研究未完成\n\n"
+            "用于理解推荐方向的模型本次不可用，因此没有继续生成可能偏题的书单。"
+            "请检查当前模型配额或稍后重试。\n\n"
+            f"错误阶段：research_objective_planning · {planning_error}"
+        )
+        finished = await orchestrator.finish_research(
+            user_id=user_id,
+            run_id=run_id,
+            conclusion="研究目标语义规划不可用，已阻止无关检索结果发布。",
+            status="failed",
+            gaps=["research_objective_planning_unavailable"],
+            metadata={
+                "planning_error": planning_error[:300],
+                "evidence_count": 0,
+                "source_count": 0,
+                "token_usage": _current_research_usage(),
+                "deep_research_contract": DEEP_RESEARCH_RECEIPT_VERSION,
+            },
+        )
+        return DeepResearchReceipt(
+            run_id=run_id,
+            objective=objective,
+            status="failed",
+            content=content,
+            conclusion="研究目标语义规划不可用，已阻止无关检索结果发布。",
+            evidence_count=0,
+            source_count=0,
+            created_at=(
+                finished.run.created_at.isoformat()
+                if finished.run.created_at is not None
+                else ""
+            ),
+        )
+
     previous_assessment: ResearchGapAssessment | None = None
     rounds: list[ResearchRoundSources] = []
-    pending_subquestions: list[str] = []
+    from app.services.research.search_policy import build_research_search_request
+
+    # Real discovery gets the first research round. Model-proposed candidate
+    # titles are leads for later verification, never a substitute for searching
+    # the requested topic. This is still the same one-shot semantic plan.
+    broad_discovery_query = build_research_search_request(objective).query
+    pending_subquestions: list[str] = list(
+        dict.fromkeys(
+            [broad_discovery_query, *planned_candidate_queries]
+        )
+    )
     used_queries: set[str] = set()
     last_review = None
     try:
@@ -248,6 +359,7 @@ async def run_deep_research(
                 previous_assessment=previous_assessment,
                 pending_subquestions=pending_subquestions,
                 used_queries=used_queries,
+                candidate_hints=planned_candidate_hints,
             )
             if task is None or not task.should_search:
                 break
@@ -338,7 +450,8 @@ async def run_deep_research(
                 status=("completed" if round_sources.status == "completed" else "failed"),
                 title=f"\u7b2c {round_index} \u8f6e\u7814\u7a76\u5b8c\u6210",
                 detail=(
-                    f"\u83b7\u5f97 {round_sources.source_count} \u4e2a\u6765\u6e90\uff1b\u5ba1\u67e5\u7ed3\u8bba\uff1a{review.verdict}"
+                    f"\u83b7\u5f97 {round_sources.source_count} \u4e2a\u6765\u6e90\uff1b"
+                    f"{_review_verdict_label(review.verdict)}"
                 ),
                 step_id=f"research:{run_id}:round:{round_index}",
                 error=round_sources.error or None,
@@ -352,8 +465,17 @@ async def run_deep_research(
             limit_steps=100,
             limit_evidence=100,
         )
+        verified_evidence_ids = {
+            evidence_id
+            for claim in report.verified_claims
+            if claim.publishable
+            for evidence_id in claim.evidence_ids
+        }
         sources = [
-            item for item in report.sources if str(item.source_url or "").strip()
+            item
+            for item in report.sources
+            if item.evidence_id in verified_evidence_ids
+            and str(item.source_url or "").strip()
         ]
         evidence_count = len(sources)
         source_count = len(
@@ -369,22 +491,43 @@ async def run_deep_research(
             write_research_report,
         )
 
+        review_context = (
+            last_review.model_dump(mode="json")
+            if last_review is not None
+            else {}
+        )
+        review_context["objective_plan"] = objective_plan.model_dump(mode="json")
         written = await write_research_report(
             report,
             model_id=model_name,
-            review=(
-                last_review.model_dump(mode="json")
-                if last_review is not None
-                else None
-            ),
+            review=review_context,
         )
         content = str(written.report_markdown or "").strip()
-        status = "completed" if evidence_count else "failed"
+        objective_satisfied = bool(
+            evidence_count
+            and (
+                objective_plan.task_type != "book_recommendation"
+                or (
+                    previous_assessment is not None
+                    and previous_assessment.satisfied
+                )
+            )
+        )
+        # Coverage quality and execution success are different axes. A
+        # source-backed partial answer with an honest limitation is a valid
+        # completed delivery; only the absence of publishable content is a
+        # failed turn. Keep objective_satisfied in metadata for Trace/ResearchRun
+        # quality analysis instead of surfacing a technical failure to Chat.
+        status = _research_delivery_status(
+            content=content,
+            evidence_count=evidence_count,
+        )
+        publishable_answer = status == "completed"
         await report_completed_step(
             kind="research",
             status=status,
-            title="\u7814\u7a76\u62a5\u544a\u5df2\u751f\u6210",
-            detail=f"\u7eb3\u5165 {evidence_count} \u6761\u8bc1\u636e\uff0c\u6765\u81ea {source_count} \u4e2a\u6765\u6e90",
+            title="最终回答已整理",
+            detail=f"整理了 {evidence_count} 条可靠资料，来自 {source_count} 个来源",
             step_id=f"research:{run_id}:report",
             error=written.error or None,
         )
@@ -407,6 +550,8 @@ async def run_deep_research(
                 "report_writer_attempts": written.metadata.get(
                     "attempts", []
                 )[-8:],
+                "objective_satisfied": objective_satisfied,
+                "publishable_answer": publishable_answer,
                 "token_usage": _current_research_usage(),
                 "deep_research_contract": DEEP_RESEARCH_RECEIPT_VERSION,
             },
@@ -442,6 +587,12 @@ async def run_deep_research(
         raise
 
 
+def _research_delivery_status(*, content: str, evidence_count: int) -> str:
+    """Separate answer delivery success from research coverage quality."""
+
+    return "completed" if str(content or "").strip() and evidence_count > 0 else "failed"
+
+
 async def _search_round(
     *,
     orchestrator,
@@ -456,6 +607,8 @@ async def _search_round(
         query=task.query,
         max_results=task.max_results,
         detail=task.detail,
+        strategy="federated",
+        provider_budget=3,
         time_range=task.time_range,
         include_domains=task.include_domains,
         exclude_domains=task.exclude_domains,
@@ -464,7 +617,11 @@ async def _search_round(
         zone=("cn" if task.language.lower().startswith("zh") else None),
         category=task.category,
     )
-    result = await get_search_gateway().search(search_request)
+    result = await _execute_search_task(
+        gateway=get_search_gateway(),
+        request=search_request,
+        task=task,
+    )
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     log_status = {
         "found": "completed",
@@ -481,11 +638,138 @@ async def _search_round(
         duration_ms=duration_ms,
         error=result.error or None,
     )
-    documents, garbage_reasons = _documents_from_hits(
-        result,
-        check_content_garbage=check_content_garbage,
-        limit=task.max_results,
+    documents: list[dict[str, Any]] = []
+    garbage_reasons: list[str] = []
+    candidate_verification_mode = bool(task.metadata.get("candidate_titles"))
+    book_subject_mode = any(
+        "book.douban.com/subject/" in str(prefix or "")
+        for prefix in task.include_url_prefixes
     )
+    if book_subject_mode:
+        eligible_hits = (
+            list(result.hits)
+            if candidate_verification_mode
+            else _book_entity_hits(result.hits, objective=task.query)
+        )
+        visit_limit = (
+            task.max_results
+            if task.metadata.get("candidate_titles")
+            else min(task.max_results, 5)
+        )
+        visits = await asyncio.gather(
+            *(
+                fetch_research_source_document(
+                    url=str(hit.url or ""),
+                    query=task.query,
+                    subquestion=task.objective,
+                    provider_source="deep_research_source_visit",
+                    include_extraction=False,
+                    timeout_seconds=12,
+                    metadata={"research_round": task.round_index},
+                )
+                for hit in eligible_hits[:visit_limit]
+                if str(hit.url or "").strip()
+            )
+        )
+        for visit in visits:
+            await orchestrator.visit_source(
+                user_id=user_id,
+                run_id=run_id,
+                url=visit.url,
+                title=(
+                    visit.source_document.source_title
+                    if visit.source_document is not None
+                    else visit.url
+                ),
+                status=_research_visit_step_status(
+                    visit.status,
+                    has_document=visit.source_document is not None,
+                ),
+                summary=(
+                    "Fetched page body for evidence extraction."
+                    if visit.source_document is not None
+                    else "Source body was unavailable."
+                ),
+                rationale="Verify book facts from the subject page, not the search snippet.",
+                duration_ms=visit.duration_ms,
+                error=visit.error,
+            )
+            if visit.source_document is not None:
+                documents.append(
+                    visit.source_document.model_dump(mode="json")
+                )
+        if candidate_verification_mode:
+            snippet_documents, snippet_garbage = _documents_from_hits(
+                result,
+                check_content_garbage=check_content_garbage,
+                limit=task.max_results,
+            )
+            # A successful HTTP visit can still be a login/chrome shell with
+            # no book facts.  Keep the independently returned search snippet
+            # even for the same URL; claim-level deduplication happens after
+            # extraction and prevents duplicate evidence.
+            documents.extend(snippet_documents)
+            garbage_reasons.extend(snippet_garbage)
+    if not book_subject_mode and result.hits:
+        visits = await asyncio.gather(
+            *(
+                fetch_research_source_document(
+                    url=str(hit.url or ""),
+                    query=task.query,
+                    subquestion=task.objective,
+                    provider_source="deep_research_source_visit",
+                    include_extraction=False,
+                    timeout_seconds=12,
+                    metadata={"research_round": task.round_index},
+                )
+                for hit in result.hits[: min(task.max_results, 5)]
+                if str(hit.url or "").strip()
+            ),
+            return_exceptions=True,
+        )
+        visited_urls: set[str] = set()
+        for visit in visits:
+            if isinstance(visit, Exception):
+                continue
+            await orchestrator.visit_source(
+                user_id=user_id,
+                run_id=run_id,
+                url=visit.url,
+                title=(
+                    visit.source_document.source_title
+                    if visit.source_document is not None
+                    else visit.url
+                ),
+                status=_research_visit_step_status(
+                    visit.status,
+                    has_document=visit.source_document is not None,
+                ),
+                summary=(
+                    "Fetched page body for evidence extraction."
+                    if visit.source_document is not None
+                    else "Source body was unavailable."
+                ),
+                rationale="Read the discovered source before extracting research evidence.",
+                duration_ms=visit.duration_ms,
+                error=visit.error,
+            )
+            if visit.source_document is not None:
+                documents.append(visit.source_document.model_dump(mode="json"))
+                visited_urls.add(str(visit.url or "").strip().casefold())
+
+        snippet_documents, snippet_garbage = _documents_from_hits(
+            result,
+            check_content_garbage=check_content_garbage,
+            limit=task.max_results,
+        )
+        documents.extend(
+            document
+            for document in snippet_documents
+            if str(document.get("source_url") or "").strip().casefold()
+            not in visited_urls
+        )
+        documents = documents[: task.max_results]
+        garbage_reasons.extend(snippet_garbage)
     extraction = extract_research_source_records(
         query=task.query,
         subquestion=task.objective,
@@ -510,7 +794,7 @@ async def _search_round(
         task=task,
         provider=result.provider or "web_search",
         provider_status=result.outcome,
-        error=result.error or "",
+        error=_public_research_search_error(result),
         source_records=extraction.source_records,
         source_count=extraction.document_count,
         publishable_source_count=extraction.extracted_count,
@@ -576,6 +860,373 @@ def _documents_from_hits(
         if len(documents) >= limit:
             break
     return documents, garbage_reasons
+
+
+async def _execute_search_task(
+    *,
+    gateway,
+    request: SearchRequest,
+    task: ResearchSearchTask,
+) -> SearchResult:
+    """Search recommendation candidates independently, then merge one hit each."""
+
+    candidate_titles = [
+        str(item or "").strip()
+        for item in task.metadata.get("candidate_titles", [])
+        if str(item or "").strip()
+    ]
+    if not candidate_titles:
+        return await gateway.search(request)
+
+    raw_hints = task.metadata.get("candidate_search_hints") or {}
+    candidate_hints = {
+        title: " ".join(str(raw_hints.get(title) or title).split()).strip()
+        for title in candidate_titles
+    }
+
+    requests = [
+        request.model_copy(
+            update={
+                "query": (
+                    f"{title} site:book.douban.com/subject"
+                )[:300],
+                "max_results": min(8, request.max_results),
+                "detail": "standard",
+                "language": "zh",
+                "zone": "cn",
+            }
+        )
+        for title in candidate_titles
+    ]
+    raw_results = await asyncio.gather(
+        *(gateway.search(item) for item in requests),
+        return_exceptions=True,
+    )
+    hits: list[SearchHit] = []
+    attempts = []
+    providers: list[str] = []
+    errors: list[str] = []
+    unmatched_titles: list[str] = []
+    subject_retry_requests: list[SearchRequest] = []
+    for title, raw in zip(candidate_titles, raw_results, strict=True):
+        if isinstance(raw, Exception):
+            errors.append(str(raw) or raw.__class__.__name__)
+            continue
+        attempts.extend(raw.attempts)
+        if raw.provider and raw.provider not in providers:
+            providers.append(raw.provider)
+        selected = _best_candidate_subject_hit(
+            raw.hits,
+            title=title,
+            search_hint=candidate_hints[title],
+        )
+        if selected is not None and _candidate_hint_is_supported(
+            selected,
+            title=title,
+            search_hint=candidate_hints[title],
+        ):
+            hits.append(selected)
+        else:
+            unmatched_titles.append(title)
+            if raw.error:
+                errors.append(raw.error)
+    if unmatched_titles:
+        subject_retry_requests = [
+            request.model_copy(
+                update={
+                    "query": (
+                        f"《{title}》 {candidate_hints[title]} 豆瓣读书"
+                    )[:300],
+                    "max_results": min(8, request.max_results),
+                    "detail": "standard",
+                    "language": "zh",
+                    "zone": "cn",
+                }
+            )
+            for title in unmatched_titles
+        ]
+        subject_retry_results = await asyncio.gather(
+            *(gateway.search(item) for item in subject_retry_requests),
+            return_exceptions=True,
+        )
+        still_unmatched: list[str] = []
+        for title, raw in zip(
+            unmatched_titles,
+            subject_retry_results,
+            strict=True,
+        ):
+            if isinstance(raw, Exception):
+                errors.append(str(raw) or raw.__class__.__name__)
+                still_unmatched.append(title)
+                continue
+            attempts.extend(raw.attempts)
+            if raw.provider and raw.provider not in providers:
+                providers.append(raw.provider)
+            selected = _best_candidate_subject_hit(
+                raw.hits,
+                title=title,
+                search_hint=candidate_hints[title],
+            )
+            if selected is not None and _candidate_hint_is_supported(
+                selected,
+                title=title,
+                search_hint=candidate_hints[title],
+            ):
+                hits.append(selected)
+            else:
+                still_unmatched.append(title)
+                if raw.error:
+                    errors.append(raw.error)
+        unmatched_titles = still_unmatched
+
+    if unmatched_titles:
+        fallback_requests = [
+            request.model_copy(
+                update={
+                    "query": (
+                        f"{title} 作者 出版社 内容简介"
+                    )[:300],
+                    "max_results": min(8, request.max_results),
+                    "include_domains": [],
+                    "include_url_prefixes": [],
+                }
+            )
+            for title in unmatched_titles
+        ]
+        fallback_results = await asyncio.gather(
+            *(gateway.search(item) for item in fallback_requests),
+            return_exceptions=True,
+        )
+        for title, raw in zip(unmatched_titles, fallback_results, strict=True):
+            if isinstance(raw, Exception):
+                errors.append(str(raw) or raw.__class__.__name__)
+                continue
+            attempts.extend(raw.attempts)
+            if raw.provider and raw.provider not in providers:
+                providers.append(raw.provider)
+            selected = _best_candidate_evidence_hit(
+                raw.hits,
+                title=title,
+                search_hint=candidate_hints[title],
+            )
+            if selected is not None and _candidate_hint_is_supported(
+                selected,
+                title=title,
+                search_hint=candidate_hints[title],
+            ):
+                hits.append(selected)
+            elif raw.error:
+                errors.append(raw.error)
+    effective_queries = [item.query for item in requests]
+    if subject_retry_requests:
+        effective_queries.extend(item.query for item in subject_retry_requests)
+    if unmatched_titles:
+        effective_queries.extend(item.query for item in fallback_requests)
+    return SearchResult(
+        outcome="found" if hits else ("unavailable" if errors else "empty"),
+        provider=",".join(providers),
+        query=request.query,
+        effective_query=" | ".join(effective_queries),
+        hits=hits,
+        attempts=attempts,
+        error="; ".join(dict.fromkeys(errors))[:500],
+        metadata={
+            "candidate_batch": True,
+            "candidate_count": len(candidate_titles),
+            "matched_candidate_count": len(hits),
+        },
+    )
+
+
+def _best_candidate_subject_hit(
+    hits: list[SearchHit],
+    *,
+    title: str,
+    search_hint: str = "",
+) -> SearchHit | None:
+    candidate_key = _book_title_key(title)
+    ranked: list[tuple[int, int, float, SearchHit]] = []
+    for hit in hits:
+        canonical_url = _canonical_douban_subject_url(str(hit.url or ""))
+        hit_key = _book_title_key(
+            re.sub(r"\s*[（(]豆瓣[）)]\s*$", "", str(hit.title or ""))
+        )
+        if (
+            not canonical_url
+            or not candidate_key
+            or not hit_key.startswith(candidate_key)
+        ):
+            continue
+        extra_chars = max(0, len(hit_key) - len(candidate_key))
+        hint_score = _candidate_hint_score(hit, title=title, search_hint=search_hint)
+        ranked.append(
+            (
+                -hint_score,
+                extra_chars,
+                -(float(hit.score) if isinstance(hit.score, (int, float)) else 0.0),
+                hit.model_copy(update={"url": canonical_url}),
+            )
+        )
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return ranked[0][3] if ranked else None
+
+
+def _best_candidate_evidence_hit(
+    hits: list[SearchHit],
+    *,
+    title: str,
+    search_hint: str = "",
+) -> SearchHit | None:
+    subject = _best_candidate_subject_hit(
+        hits,
+        title=title,
+        search_hint=search_hint,
+    )
+    if subject is not None:
+        return subject
+    candidate_key = _book_title_key(title)
+    ranked: list[tuple[int, int, float, SearchHit]] = []
+    for hit in hits:
+        source_class = classify_source(str(hit.url or ""))
+        if source_class in {
+            "marketplace",
+            "low_trust_text",
+            "social",
+            "unknown",
+        }:
+            continue
+        hit_key = _book_title_key(str(hit.title or ""))
+        if not candidate_key or not hit_key.startswith(candidate_key):
+            continue
+        extra_chars = max(0, len(hit_key) - len(candidate_key))
+        hint_score = _candidate_hint_score(hit, title=title, search_hint=search_hint)
+        ranked.append(
+            (
+                -hint_score,
+                extra_chars,
+                -(float(hit.score) if isinstance(hit.score, (int, float)) else 0.0),
+                hit,
+            )
+        )
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return ranked[0][3] if ranked else None
+
+
+def _candidate_hint_score(
+    hit: SearchHit,
+    *,
+    title: str,
+    search_hint: str,
+) -> int:
+    """Rank same-title results using author/edition hints from the one plan."""
+
+    haystack = _book_title_key(
+        " ".join((str(hit.title or ""), str(hit.snippet or ""), str(hit.content or "")))
+    )
+    tokens = _candidate_hint_keys(title=title, search_hint=search_hint)
+    score = 0
+    for key in tokens:
+        if key in haystack:
+            score += min(len(key), 12)
+    return score
+
+
+def _candidate_hint_is_supported(
+    hit: SearchHit,
+    *,
+    title: str,
+    search_hint: str,
+) -> bool:
+    keys = _candidate_hint_keys(title=title, search_hint=search_hint)
+    return not keys or _candidate_hint_score(
+        hit,
+        title=title,
+        search_hint=search_hint,
+    ) > 0
+
+
+def _candidate_hint_keys(*, title: str, search_hint: str) -> list[str]:
+    title_key = _book_title_key(title)
+    generic = {
+        "作者", "出版社", "内容简介", "豆瓣", "书籍", "经典", "推荐",
+        "中文版", "原版书名", "isbn", "site", "book", "douban", "subject",
+    }
+    keys: list[str] = []
+    for token in re.findall(
+        r"[A-Za-z0-9\u4e00-\u9fff]{2,}",
+        str(search_hint or ""),
+    ):
+        key = _book_title_key(token)
+        if not key or key == title_key or key in generic or key in keys:
+            continue
+        keys.append(key)
+    return keys
+
+
+def _book_title_key(value: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
+
+
+def _research_visit_step_status(status: str, *, has_document: bool) -> str:
+    """Map adapter detail statuses onto the persisted ResearchStep contract."""
+
+    if has_document:
+        return "completed"
+    if status == "timeout":
+        return "timeout"
+    if status in {"empty_result", "no_extractable_claims"}:
+        return "empty_result"
+    return "failed"
+
+
+def _public_research_search_error(result: SearchResult) -> str:
+    if result.outcome in {"found", "empty"}:
+        return ""
+    return "本轮外部检索暂时不可用，系统会在剩余预算内继续尝试其他方向。"
+
+
+def _review_verdict_label(verdict: str) -> str:
+    return {
+        "sufficient": "证据已满足回答要求",
+        "insufficient": "证据仍需补充，继续下一轮",
+        "budget_exhausted": "已完成预算内核验",
+    }.get(str(verdict or ""), "本轮审查已完成")
+
+
+def _book_entity_hits(
+    hits: list[SearchHit],
+    *,
+    objective: str,
+) -> list[SearchHit]:
+    """Keep exact-title subject hits for a quoted-work research objective."""
+
+    titles = [
+        " ".join(match.split()).strip().casefold()
+        for match in re.findall(r"《([^》]{1,100})》", str(objective or ""))
+        if " ".join(match.split()).strip()
+    ]
+    if not titles:
+        return list(hits)
+    selected: list[SearchHit] = []
+    for hit in hits:
+        if not any(title in str(hit.title or "").casefold() for title in titles):
+            continue
+        canonical_url = _canonical_douban_subject_url(str(hit.url or ""))
+        if not canonical_url:
+            continue
+        selected.append(hit.model_copy(update={"url": canonical_url}))
+    return selected
+
+
+def _canonical_douban_subject_url(value: str) -> str:
+    match = re.fullmatch(
+        r"https?://book\.douban\.com/subject/+(\d+)/?(?:\?[^#]*)?",
+        str(value or "").strip(),
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return ""
+    return f"https://book.douban.com/subject/{match.group(1)}/"
 
 
 async def _admit_round_evidence(

@@ -183,13 +183,13 @@ def _fallback_brief(
         for item in request.evidence[:limit]
     ]
     overview = (
-        "以下内容仅整理自通过可读性、相关性和来源检查的证据。"
+        "我把目前可靠、也和你的问题真正相关的内容整理在下面。"
         if request.language == "zh-CN"
-        else "The findings below use only evidence that passed publication checks."
+        else "I pulled together the reliable material that is genuinely relevant to your question."
     )
     if not findings:
         overview = (
-            "现有检索结果没有形成可发布的证据结论。"
+            "这次没有找到足够可靠、又真正匹配你问题的资料，我先不拿不确定的内容凑答案。"
             if request.language == "zh-CN"
             else "The available search results produced no publishable evidence."
         )
@@ -286,7 +286,7 @@ def _limitations(report: ResearchReport) -> list[str]:
     values: list[str] = []
     if report.uncertain_claims:
         values.append(
-            f"{len(report.uncertain_claims)} 条证据因强度不足未作为结论。"
+            "有些资料缺少足够支持，因此没有放进正文。"
             if zh
             else (
                 f"{len(report.uncertain_claims)} uncertain claim(s) lacked "
@@ -295,17 +295,17 @@ def _limitations(report: ResearchReport) -> list[str]:
         )
     if report.rejected_claims:
         values.append(
-            f"{len(report.rejected_claims)} 条候选证据未通过发布质量检查。"
+            "有些资料与问题不够匹配或信息不完整，因此没有采用。"
             if zh
             else f"{len(report.rejected_claims)} candidates failed publication checks."
         )
     values.extend(
-        (f"待补证据：{gap}" if zh else f"Open gap: {gap}")
+        (f"还缺少：{gap}" if zh else f"Still missing: {gap}")
         for gap in report.gaps[:3]
     )
     if report.memory_context.constraints:
         values.append(
-            "个人记忆只用于偏好背景，不作为事实证据。"
+            "你的偏好只用于调整回答方向，不会被当作外部事实。"
             if zh
             else "Personal memory was used only as context, not evidence."
         )
@@ -313,7 +313,7 @@ def _limitations(report: ResearchReport) -> list[str]:
         objective = report.objective.lower()
         if re.search(r"最新|近期|最近|新书|\blatest\b|\brecent\b", objective):
             values.append(
-                "现有来源缺少可核验的出版或发布时间。"
+                "现有资料没有明确标注出版或发布时间。"
                 if zh
                 else "The current sources lack verifiable publication dates."
             )
@@ -322,13 +322,13 @@ def _limitations(report: ResearchReport) -> list[str]:
             objective,
         ):
             values.append(
-                "现有来源缺少可核验的评分、评论或榜单依据。"
+                "现有资料没有明确的评分、评论或榜单信息。"
                 if zh
                 else "The current sources lack verifiable rating or review evidence."
             )
         if not values:
             values.append(
-                "现有来源未通过相关性和可发布性检查。"
+                "这次找到的资料和你的问题匹配度不够。"
                 if zh
                 else "The available sources did not pass relevance and publication checks."
             )

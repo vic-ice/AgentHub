@@ -66,6 +66,7 @@ class BookshelfCapabilityContractTests(unittest.TestCase):
             if item["function"]["name"] == "bookshelf_read"
         )
         self.assertIn("authoritative current Bookshelf", schema["description"])
+        self.assertIn("Shelf membership, not status=read", schema["description"])
         self.assertFalse(schema["parameters"]["additionalProperties"])
 
     def test_compiler_maps_bookshelf_read_to_single_native_operation(self):

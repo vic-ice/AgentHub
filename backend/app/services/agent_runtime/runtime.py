@@ -160,6 +160,7 @@ class SystemRuntime:
                     await _report_action_receipt(receipts[-1])
                     continue
 
+                await _report_action_started(action)
                 receipt = await self._execute_planned_action(
                     plan,
                     action,
@@ -466,6 +467,24 @@ async def _report_action_receipt(receipt: ActionReceipt) -> None:
         operation=receipt.operation,
         duration_ms=receipt.duration_ms,
         error=receipt.error or None,
+    )
+
+
+async def _report_action_started(action: PlannedAction) -> None:
+    details = {
+        "book_search_v1": "正在按主题查找书目，并交叉核对公开来源",
+        "web_search_v2": "正在从多个公开来源检索相关信息",
+        "research_report_v1": "正在整理研究证据并生成回答",
+        "bookshelf_read_v1": "正在读取你的当前书架状态",
+    }
+    await report_completed_step(
+        kind="action",
+        status="waiting",
+        title=f"执行 {action.operation}",
+        detail=details.get(action.operation, "正在执行这一步"),
+        step_id=f"action:{action.action_id}",
+        action_id=action.action_id,
+        operation=action.operation,
     )
 
 

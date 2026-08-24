@@ -233,6 +233,7 @@ def _timeline_line(ordered: list[dict]) -> str:
 
 def _current_line(item: dict) -> str:
     schema_key = str(item.get("schema_key") or "")
+    predicate = str(item.get("predicate") or "").strip().casefold()
     value = item.get("value") if isinstance(item.get("value"), dict) else {}
     qualifiers = (
         item.get("qualifiers") if isinstance(item.get("qualifiers"), dict) else {}
@@ -269,12 +270,16 @@ def _current_line(item: dict) -> str:
         entity = str(value.get("entity") or "").strip()
         name = str(value.get("name") or "").strip()
         return f"{entity}的名字是{name}。" if entity and name else ""
+    if predicate in {"name", "identity", "self_reported_name"}:
+        name = str(value.get("name") or "").strip()
+        return f"你的名字是{name}。" if name else ""
     quote = str(item.get("evidence_quote") or "").strip()
     return quote
 
 
 def _fact_kind(version: dict) -> str:
     schema_key = str(version.get("schema_key") or "")
+    predicate = str(version.get("predicate") or "").strip().casefold()
     if schema_key == "identity.self_reported_name":
         return "名字"
     if schema_key == "identity.preferred_address":
@@ -293,6 +298,8 @@ def _fact_kind(version: dict) -> str:
         return "行为约定"
     if schema_key == "feedback.outcome":
         return "反馈"
+    if predicate in {"name", "identity", "self_reported_name"}:
+        return "名字"
     return "状态"
 
 
@@ -300,6 +307,7 @@ def _value_label(version: dict, *, with_subject: bool = True) -> str:
     if not isinstance(version, dict):
         return ""
     schema_key = str(version.get("schema_key") or "")
+    predicate = str(version.get("predicate") or "").strip().casefold()
     value = version.get("value") if isinstance(version.get("value"), dict) else {}
     qualifiers = (
         version.get("qualifiers")
@@ -316,6 +324,8 @@ def _value_label(version: dict, *, with_subject: bool = True) -> str:
         entity = str(value.get("entity") or "").strip()
         name = str(value.get("name") or "").strip()
         return f"{entity}的名字是{name}" if entity and name else ""
+    if predicate in {"name", "identity", "self_reported_name"}:
+        return str(value.get("name") or "").strip()
     entity = str(value.get("entity") or qualifiers.get("entity") or "").strip()
     if schema_key == "possession.entity":
         prefix = _subject_label(version) if with_subject else ""

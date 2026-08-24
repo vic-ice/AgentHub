@@ -1179,6 +1179,10 @@ export type StreamEvent =
     type: "error"
     content: string
     error_type?: string
+    error_code?: string
+    request_id?: string
+    stage?: string
+    retryable?: boolean
   }
 
 

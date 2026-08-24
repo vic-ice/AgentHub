@@ -20,10 +20,18 @@ import {
 } from "@/components/ui/dialog"
 import CSSTurnDAG from "@/features/kanban/components/dag/CSSTurnDAG"
 import type { ExecutionDagRaw, MessageStepRaw } from "@/features/kanban/types/dag"
-import { getCurrentUserId } from "@/lib/api"
+import { getCurrentUserId, requestJson } from "@/lib/api"
+import { formatErrorForDisplay } from "@/lib/errors"
 import type { CompletedExecutionStep } from "@/types"
-
-const API_BASE_URL = "/api/v1"
+import {
+  formatDuration,
+  formatElapsed,
+  friendlyStepDetail,
+  friendlyStepTitle,
+  operationLabel,
+  summarizeToolInput,
+  summarizeToolOutput,
+} from "@/features/chat/execution-display"
 
 interface TurnDAGSidebarProps {
   threadId: string | null
@@ -55,15 +63,14 @@ function useDagByRequestId(threadId: string | null, requestId: string | null | u
       try {
         const userId = getCurrentUserId()
         if (!userId) throw new Error("尚未选择用户")
-        const response = await fetch(
-          `${API_BASE_URL}/traces/${threadId}/dag/${requestId}?user_id=${encodeURIComponent(userId)}`,
+        const response = await requestJson<ExecutionDagRaw>(
+          `/traces/${threadId}/dag/${requestId}?user_id=${encodeURIComponent(userId)}`,
           { signal: controller.signal },
         )
-        if (!response.ok) throw new Error(`执行记录读取失败（${response.status}）`)
-        setDag(await response.json() as ExecutionDagRaw)
+        setDag(response)
       } catch (fetchError) {
         if (fetchError instanceof Error && fetchError.name === "AbortError") return
-        setError(fetchError instanceof Error ? fetchError.message : "执行记录读取失败")
+        setError(formatErrorForDisplay(fetchError, "执行记录读取失败"))
       } finally {
         setLoading(false)
       }
@@ -123,17 +130,20 @@ function mapLegacyStep(step: MessageStepRaw, index: number): TimelineStep {
   }
 
   if (step.message_type === "tool") {
+    const hasOutput = Boolean(step.tool_output?.trim())
     return {
       id: step.tool_call_id || `tool-${step.step_number}-${index}`,
       order: step.step_number,
       type: "tool",
-      title: step.tool_name ? `调用 ${step.tool_name}` : "执行工具",
+      title: operationLabel(step.tool_name),
       status: toolStatusLabel(step.tool_status, step.tool_error),
-      detail: textPreview(step.tool_output, textPreview(step.tool_args, "工具已执行")),
+      detail: hasOutput
+        ? summarizeToolOutput(step.tool_output)
+        : `处理内容：${summarizeToolInput(step.tool_args)}`,
       error: step.tool_error,
       metadata: [
         ...(step.latency_ms != null ? [{ label: "耗时", value: `${step.latency_ms} ms` }] : []),
-        ...(step.action_id ? [{ label: "动作", value: step.action_id }] : []),
+        ...(step.tool_name ? [{ label: "技术操作", value: step.tool_name }] : []),
       ],
     }
   }
@@ -146,7 +156,7 @@ function mapLegacyStep(step: MessageStepRaw, index: number): TimelineStep {
     type: "ai",
     title: isThinking ? "模型分析与推理" : hasTools ? "模型规划工具" : "生成回复",
     status: step.thinking_status === "running" ? "执行中" : "已完成",
-    detail: textPreview(step.thinking || step.content, hasTools ? `计划调用 ${step.tool_calls?.length ?? 0} 个工具` : "模型已完成处理"),
+    detail: textPreview(step.thinking || step.content, hasTools ? `已确认需要执行 ${step.tool_calls?.length ?? 0} 个步骤` : "回答内容已经整理完成"),
     metadata: [
       ...(step.model_name ? [{ label: "模型", value: step.model_name }] : []),
       ...(step.latency_ms != null ? [{ label: "耗时", value: `${step.latency_ms} ms` }] : []),
@@ -175,18 +185,21 @@ function buildTimeline(dag: ExecutionDagRaw | null): TimelineStep[] {
       id: node.node_id,
       order: node.step_number || index + 1,
       type: node.kind === "user" ? "human" : node.kind === "action" ? "tool" : "ai",
-      title: node.label || (node.kind === "action" ? "执行动作" : node.kind === "response" ? "生成回复" : "接收请求"),
+      title: node.kind === "action"
+        ? operationLabel(node.operation || node.label)
+        : node.label || (node.kind === "response" ? "生成回复" : "接收请求"),
       status: toolStatusLabel(node.status),
-      detail: node.operation || node.capability || "该步骤已写入执行图",
+      detail: node.kind === "action"
+        ? "该步骤已完成，展开可查看耗时和技术操作"
+        : node.capability || "该步骤已写入执行记录",
       metadata: [
-        ...(node.capability ? [{ label: "能力", value: node.capability }] : []),
-        ...(node.action_id ? [{ label: "动作", value: node.action_id }] : []),
+        ...(node.capability ? [{ label: "能力", value: operationLabel(node.capability) }] : []),
+        ...(node.operation ? [{ label: "技术操作", value: node.operation }] : []),
       ],
     }))
 }
 
 function mapLiveStep(step: CompletedExecutionStep): TimelineStep {
-  const usage = step.usage
   const status = step.status === "completed"
     ? "\u5df2\u5b8c\u6210"
     : step.status === "skipped"
@@ -198,21 +211,12 @@ function mapLiveStep(step: CompletedExecutionStep): TimelineStep {
     id: step.step_id,
     order: step.order,
     type: step.kind === "action" ? "tool" : "ai",
-    title: step.title,
+    title: friendlyStepTitle(step),
     status,
-    detail: step.detail || "\u8be5\u6b65\u9aa4\u5df2\u5b8c\u6210",
+    detail: friendlyStepDetail(step),
     error: step.error,
     metadata: [
-      ...(step.model_name ? [{ label: "\u6a21\u578b", value: step.model_name }] : []),
-      ...(step.operation ? [{ label: "\u64cd\u4f5c", value: step.operation }] : []),
-      ...(step.duration_ms != null ? [{ label: "\u8017\u65f6", value: `${step.duration_ms} ms` }] : []),
-      ...(step.action_id ? [{ label: "\u52a8\u4f5c", value: step.action_id }] : []),
-      ...(usage ? [{
-        label: "Token",
-        value: `\u8f93\u5165 ${usage.input_tokens} \u00b7 \u8f93\u51fa ${usage.output_tokens}`,
-      }] : []),
-      ...(usage?.cached_tokens ? [{ label: "\u7f13\u5b58", value: `${usage.cached_tokens}` }] : []),
-      ...(usage?.reasoning_tokens ? [{ label: "\u63a8\u7406", value: `${usage.reasoning_tokens}` }] : []),
+      ...(step.duration_ms != null ? [{ label: "\u8017\u65f6", value: formatDuration(step.duration_ms) ?? "-" }] : []),
     ],
   }
 }
@@ -233,6 +237,8 @@ export function TurnDAGSidebar({
 }: TurnDAGSidebarProps) {
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set())
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const { dag: fetchedDag, loading: fetchedLoading, error } = useDagByRequestId(threadId, requestId)
   const dag = isStreaming ? null : fetchedDag
   const loading = isStreaming ? liveSteps.length === 0 : fetchedLoading
@@ -242,6 +248,32 @@ export function TurnDAGSidebar({
       : buildTimeline(dag),
     [dag, isStreaming, liveSteps],
   )
+
+  useEffect(() => {
+    if (!isStreaming) {
+      setStreamStartedAt(null)
+      setElapsedSeconds(0)
+      return
+    }
+    setStreamStartedAt((current) => current ?? Date.now())
+  }, [isStreaming])
+
+  useEffect(() => {
+    if (!isStreaming || streamStartedAt == null) return
+    const update = () => setElapsedSeconds(Math.floor((Date.now() - streamStartedAt) / 1000))
+    update()
+    const timer = window.setInterval(update, 1000)
+    return () => window.clearInterval(timer)
+  }, [isStreaming, streamStartedAt])
+
+  useEffect(() => {
+    if (!isStreaming || steps.length === 0) return
+    const latestId = steps[steps.length - 1].id
+    setExpandedSteps((current) => {
+      if (current.size === 1 && current.has(latestId)) return current
+      return new Set([latestId])
+    })
+  }, [isStreaming, steps])
 
   const toggleStep = (id: string) => {
     setExpandedSteps((current) => {
@@ -261,7 +293,9 @@ export function TurnDAGSidebar({
               <TerminalSquare className="size-4" aria-hidden="true" />
               执行步骤
             </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">按实际发生顺序记录</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {isStreaming ? `实时更新 · 已用时 ${formatElapsed(elapsedSeconds)}` : "输入、处理与结果按实际顺序记录"}
+            </p>
           </div>
           <div className="flex items-center gap-1">
             {steps.length > 0 && <span className="px-2 font-mono text-xs text-muted-foreground">{steps.length} 步</span>}
@@ -281,7 +315,7 @@ export function TurnDAGSidebar({
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {loading ? (
             <div className="space-y-3" role="status">
-              <div className="flex items-center gap-2 text-sm font-medium"><CircleDashed className="size-4 animate-spin text-primary" />正在记录本轮执行…</div>
+              <div className="flex items-center gap-2 text-sm font-medium"><CircleDashed className="size-4 animate-spin text-primary" />正在理解问题并准备执行…</div>
               {[0, 1, 2].map((item) => <div key={item} className="h-14 animate-pulse bg-muted/60" />)}
             </div>
           ) : error ? (

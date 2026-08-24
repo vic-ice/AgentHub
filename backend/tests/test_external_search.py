@@ -157,6 +157,88 @@ class SearchPolicyTests(unittest.TestCase):
 
 
 class SearchGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_federated_search_merges_providers_in_balanced_order(self) -> None:
+        tavily = _FakeProvider(
+            "tavily", "found", url="https://one.example/a"
+        )
+        ddgs = _FakeProvider(
+            "ddgs", "found", url="https://two.example/b"
+        )
+        anysearch = _FakeProvider(
+            "anysearch", "found", url="https://three.example/c"
+        )
+        gateway = SearchGateway(
+            {"tavily": tavily, "ddgs": ddgs, "anysearch": anysearch}
+        )
+
+        result = await gateway.search(
+            SearchRequest(
+                query="multi source books",
+                strategy="federated",
+                provider_budget=3,
+                max_results=3,
+            )
+        )
+
+        self.assertEqual(result.outcome, "found")
+        self.assertEqual(result.provider, "tavily,ddgs,anysearch")
+        self.assertEqual(
+            [hit.provider for hit in result.hits],
+            ["tavily", "ddgs", "anysearch"],
+        )
+        self.assertEqual(
+            result.metadata["successful_providers"],
+            ["tavily", "ddgs", "anysearch"],
+        )
+        self.assertEqual(tavily.calls, 1)
+        self.assertEqual(ddgs.calls, 1)
+        self.assertEqual(anysearch.calls, 1)
+
+    async def test_federated_search_deduplicates_same_source_url(self) -> None:
+        gateway = SearchGateway(
+            {
+                "tavily": _FakeProvider(
+                    "tavily", "found", url="https://example.test/book?q=1"
+                ),
+                "ddgs": _FakeProvider(
+                    "ddgs", "found", url="https://example.test/book?q=2"
+                ),
+            }
+        )
+
+        result = await gateway.search(
+            SearchRequest(
+                query="same source",
+                strategy="federated",
+                provider_budget=2,
+                max_results=5,
+            )
+        )
+
+        self.assertEqual(len(result.hits), 1)
+        self.assertEqual(len(result.attempts), 2)
+
+    async def test_federated_success_keeps_provider_failure_as_warning(self) -> None:
+        gateway = SearchGateway(
+            {
+                "tavily": _FakeProvider("tavily", "unavailable"),
+                "ddgs": _FakeProvider("ddgs", "found"),
+            }
+        )
+
+        result = await gateway.search(
+            SearchRequest(
+                query="multi source fallback",
+                strategy="federated",
+                provider_budget=2,
+            )
+        )
+
+        self.assertEqual(result.outcome, "found")
+        self.assertEqual(result.error, "")
+        self.assertEqual(result.metadata["provider_warning_count"], 1)
+        self.assertEqual(len(result.attempts), 2)
+
     async def test_tavily_failure_falls_back_to_ddgs(self) -> None:
         tavily = _FakeProvider("tavily", "unavailable")
         ddgs = _FakeProvider("ddgs", "found")

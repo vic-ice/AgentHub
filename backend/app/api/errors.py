@@ -13,10 +13,14 @@ Architecture
 """
 
 import logging
+import re
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.infra.errors import (
     AgentHubError,
@@ -24,8 +28,39 @@ from app.infra.errors import (
     LLMError as DomainLLMError,
     ToolError as DomainToolError,
 )
+from app.utils.logging import get_request_id
 
 logger = logging.getLogger(__name__)
+
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def resolve_request_id(candidate: str | None = None) -> str:
+    """Return a log-safe correlation id, preserving valid caller ids."""
+    value = (candidate or "").strip()
+    if value and _SAFE_REQUEST_ID.fullmatch(value):
+        return value
+    return f"http-{uuid4().hex}"
+
+
+def build_error_payload(
+    *,
+    detail: Any,
+    error_type: str,
+    error_code: str,
+    stage: str,
+    retryable: bool = False,
+) -> dict[str, Any]:
+    """Build the single diagnostic error contract used by HTTP and SSE."""
+    request_id = get_request_id()
+    return {
+        "detail": detail,
+        "error_type": error_type,
+        "error_code": error_code,
+        "request_id": request_id if request_id != "-" else "untracked",
+        "stage": stage,
+        "retryable": retryable,
+    }
 
 
 # =============================================================================
@@ -86,7 +121,6 @@ def is_llm_authentication_error(exception: Exception) -> bool:
     class_name = type(exception).__name__.lower()
 
     auth_keywords = [
-        "auth",
         "api key",
         "api_key",
         "authentication",
@@ -94,8 +128,8 @@ def is_llm_authentication_error(exception: Exception) -> bool:
         "401",
         "forbidden",
         "403",
-        "invalid",
-        "incorrect",
+        "invalid api key",
+        "incorrect api key",
         "wrong key",
         "missing key",
     ]
@@ -184,7 +218,6 @@ def is_llm_invalid_request_error(exception: Exception) -> bool:
         "invalid request",
         "bad request",
         "400",
-        "parameter",
         "invalid parameter",
         "missing parameter",
         "max tokens",
@@ -348,7 +381,7 @@ def extract_error_context(exception: Exception) -> dict[str, Any]:
 
 async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle HTTPExceptions raised by business logic."""
-    assert isinstance(exc, HTTPException)
+    assert isinstance(exc, StarletteHTTPException)
 
     logger.warning(
         "HTTPException: status_code=%s, detail=%s, path=%s, method=%s",
@@ -360,10 +393,43 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
 
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "detail": str(exc.detail),
-            "error_type": "http_exception",
-        },
+        content=build_error_payload(
+            detail=exc.detail,
+            error_type="http_exception",
+            error_code=f"http_{exc.status_code}",
+            stage="http",
+            retryable=exc.status_code in (408, 425, 429) or exc.status_code >= 500,
+        ),
+    )
+
+
+async def validation_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Return validation failures in the same diagnostic envelope."""
+    assert isinstance(exc, RequestValidationError)
+    validation_details = [
+        {
+            "type": item.get("type", "validation_error"),
+            "loc": list(item.get("loc", ())),
+            "msg": item.get("msg", "Invalid value"),
+        }
+        for item in exc.errors()
+    ]
+    logger.warning(
+        "Request validation failed: path=%s, method=%s, errors=%s",
+        request.url.path,
+        request.method,
+        validation_details,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content=build_error_payload(
+            detail=validation_details,
+            error_type="validation_error",
+            error_code="request_validation_failed",
+            stage="validation",
+        ),
     )
 
 
@@ -385,10 +451,14 @@ async def llm_base_error_handler(request: Request, exc: Exception) -> JSONRespon
 
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "detail": get_user_friendly_error_message(exc),
-            "error_type": error_context["llm_error_category"],
-        },
+        content=build_error_payload(
+            detail=get_user_friendly_error_message(exc),
+            error_type="llm_error",
+            error_code=error_context["llm_error_category"],
+            stage="llm",
+            retryable=error_context["llm_error_category"]
+            in ("llm_connection", "llm_rate_limit"),
+        ),
     )
 
 
@@ -430,10 +500,13 @@ async def agent_hub_error_handler(request: Request, exc: Exception) -> JSONRespo
 
     return JSONResponse(
         status_code=http_status,
-        content={
-            "detail": str(exc),
-            "error_type": error_type,
-        },
+        content=build_error_payload(
+            detail=str(exc),
+            error_type="agent_error",
+            error_code=error_type,
+            stage="agent",
+            retryable=isinstance(exc, (AgentTimeoutError, DomainLLMError)),
+        ),
     )
 
 
@@ -460,16 +533,22 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 
     return JSONResponse(
         status_code=status_code,
-        content={
-            "detail": get_user_friendly_error_message(exc),
-            "error_type": error_category if is_llm_error else "internal_error",
-        },
+        content=build_error_payload(
+            detail=get_user_friendly_error_message(exc),
+            error_type="llm_error" if is_llm_error else "internal_error",
+            error_code=error_category if is_llm_error else "internal_error",
+            stage="llm" if is_llm_error else "unhandled",
+            retryable=error_category in ("llm_connection", "llm_rate_limit"),
+        ),
     )
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Register all exception handlers with the FastAPI application."""
-    app.add_exception_handler(HTTPException, http_exception_handler)  # type: ignore[arg-type]
+    # Starlette owns router-level 404/405 errors; FastAPI.HTTPException is its
+    # subclass, so this one registration covers framework and business errors.
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(LLMBaseError, llm_base_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(AgentHubError, agent_hub_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, general_exception_handler)
@@ -505,12 +584,22 @@ def format_sse_error(exception: Exception) -> dict[str, Any]:
         exc_info=True,
     )
 
-    return {
-        "type": "error",
-        "content": get_user_friendly_error_message(exception),
-        "error_type": error_context["llm_error_category"]
+    payload = build_error_payload(
+        detail=get_user_friendly_error_message(exception),
+        error_type="llm_error"
         if error_context["is_llm_related"]
         else "internal_error",
+        error_code=error_context["llm_error_category"]
+        if error_context["is_llm_related"]
+        else "internal_error",
+        stage="stream",
+        retryable=error_context["llm_error_category"]
+        in ("llm_connection", "llm_rate_limit"),
+    )
+    return {
+        "type": "error",
+        "content": payload.pop("detail"),
+        **payload,
     }
 
 
@@ -539,8 +628,11 @@ __all__ = [
     "get_user_friendly_error_message",
     "should_show_detailed_error",
     "extract_error_context",
+    "build_error_payload",
+    "resolve_request_id",
     # Exception handlers
     "http_exception_handler",
+    "validation_exception_handler",
     "llm_base_error_handler",
     "general_exception_handler",
     "register_exception_handlers",

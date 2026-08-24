@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Activity, ChevronDown, Coins, RefreshCw } from "lucide-react"
 
-import { getCurrentUserId } from "@/lib/api"
+import { getCurrentUserId, requestJson } from "@/lib/api"
+import { formatErrorForDisplay } from "@/lib/errors"
 import type { ConversationInDB } from "@/types"
 
 interface TokenStatsPanelProps {
@@ -94,11 +95,10 @@ export function TokenStatsPanel({ currentConversation }: TokenStatsPanelProps) {
     if (!threadId || !userId) {
       return () => controller.abort()
     }
-    void fetch(
-      `/api/v1/chat/conversations/${threadId}/stats?user_id=${encodeURIComponent(userId)}`,
+    void requestJson<ConversationUsage>(
+      `/chat/conversations/${threadId}/stats?user_id=${encodeURIComponent(userId)}`,
       { signal: controller.signal },
     )
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error("usage unavailable")))
       .then((payload: ConversationUsage) => setConversationUsage(payload))
       .catch((error: unknown) => {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
@@ -139,11 +139,8 @@ export function TokenStatsPanel({ currentConversation }: TokenStatsPanelProps) {
       const params = new URLSearchParams({ days: "7" })
       const userId = getCurrentUserId()
       if (userId) params.set("user_id", userId)
-      const response = await fetch(`/api/v1/chat/stats/daily?${params.toString()}`)
-      if (!response.ok) {
-        throw new Error(`\u7edf\u8ba1\u8bfb\u53d6\u5931\u8d25\uff08${response.status}\uff09`)
-      }
-      const parsed = parseDailyStats(await response.json())
+      const payload = await requestJson<unknown>(`/chat/stats/daily?${params.toString()}`)
+      const parsed = parseDailyStats(payload)
       const byDate = new Map(parsed.map((item) => [item.date, item]))
       setDailyStats(pastSevenDays().map((date) => byDate.get(date) ?? {
         date,
@@ -155,7 +152,7 @@ export function TokenStatsPanel({ currentConversation }: TokenStatsPanelProps) {
         reasoning_tokens: 0,
       }))
     } catch (error) {
-      setStatsError(error instanceof Error ? error.message : "\u65e0\u6cd5\u8bfb\u53d6\u4e03\u65e5\u8d8b\u52bf")
+      setStatsError(formatErrorForDisplay(error, "\u65e0\u6cd5\u8bfb\u53d6\u4e03\u65e5\u8d8b\u52bf"))
     } finally {
       setIsLoadingStats(false)
     }

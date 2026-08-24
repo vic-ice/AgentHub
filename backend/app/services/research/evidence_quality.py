@@ -33,6 +33,25 @@ _SOCIAL_HOST_MARKERS = (
     "xiaohongshu.",
     "zhihu.",
     "reddit.",
+    "instagram.com",
+    "x.com",
+    "twitter.com",
+    "toutiao.com",
+    "sina.cn",
+    "sina.com",
+)
+_LOW_TRUST_TEXT_HOST_MARKERS = (
+    "youtube.com",
+    "youtu.be",
+    "bilibili.com",
+    "scribd.com",
+    "github.io",
+    "blogspot.",
+    "wordpress.com",
+    "medium.com",
+    "docin.com",
+    "wenku.baidu.com",
+    "z-library",
 )
 _COMMERCIAL_MARKERS = (
     "正版",
@@ -48,6 +67,19 @@ _COMMERCIAL_MARKERS = (
     "淘宝",
     "天猫",
     "京东",
+)
+_PERSONAL_REVIEW_MARKERS = (
+    "我觉得",
+    "我认为",
+    "我在",
+    "对我而言",
+    "我的感悟",
+    "让我想",
+    "读的时候",
+    "看完",
+    "读完",
+    "这篇书评",
+    "原文摘录",
 )
 _QUERY_STOP_TERMS = {
     "一下",
@@ -124,6 +156,20 @@ def assess_evidence_candidate(
 
     if source_class == "marketplace":
         reasons.append("marketplace_source")
+    if source_class == "low_trust_text":
+        reasons.append("low_trust_source")
+    if source_class == "review" and any(
+        marker in normalized_claim for marker in _PERSONAL_REVIEW_MARKERS
+    ):
+        reasons.append("personal_review_excerpt")
+    if re.search(r"(?:作者|author).{0,40}[A-Z]\.$", normalized_claim):
+        reasons.append("truncated_fact_fragment")
+    if re.search(
+        r"^\(?\s*(?:全部|查看原文|展开|收起)|回复\s*\d+|"
+        r"\d+\s*赞|引自第\s*\d+\s*页",
+        normalized_claim,
+    ):
+        reasons.append("source_ui_artifact")
 
     query_relevance = _query_relevance(
         normalized_query,
@@ -132,13 +178,17 @@ def assess_evidence_candidate(
     )
     if normalized_query and query_relevance <= 0:
         reasons.append("query_irrelevant")
-    reasons.extend(
-        _requirement_reasons(
+    requirement_reasons = _requirement_reasons(
             query=normalized_query,
             candidate_text=f"{normalized_title} {normalized_claim}",
             published_date=normalized_published_date,
         )
-    )
+    if (
+        "missing_book_evidence" in requirement_reasons
+        and _source_host(normalized_url).startswith("book.douban.")
+    ):
+        requirement_reasons.remove("missing_book_evidence")
+    reasons.extend(requirement_reasons)
 
     blocking = {
         "missing_source_metadata",
@@ -147,6 +197,10 @@ def assess_evidence_candidate(
         "claim_not_atomic",
         "keyword_stuffing",
         "marketplace_source",
+        "low_trust_source",
+        "personal_review_excerpt",
+        "truncated_fact_fragment",
+        "source_ui_artifact",
         "query_irrelevant",
         "missing_recency_evidence",
         "missing_review_evidence",
@@ -189,6 +243,8 @@ def classify_source(source_url: str) -> str:
         return "scholarly"
     if any(marker in host for marker in _SOCIAL_HOST_MARKERS):
         return "social"
+    if any(marker in host for marker in _LOW_TRUST_TEXT_HOST_MARKERS):
+        return "low_trust_text"
     if host.endswith(".gov") or ".gov." in host:
         return "official"
     if host.endswith(".edu") or ".edu." in host:
@@ -203,6 +259,7 @@ def source_quality(source_class: str) -> str:
         "editorial": "medium",
         "review": "medium",
         "social": "low",
+        "low_trust_text": "low",
         "marketplace": "low",
         "unknown": "unknown",
     }.get(source_class, "unknown")
@@ -302,7 +359,7 @@ def _requirement_reasons(
         lowered_query,
     ):
         if not re.search(
-            r"好评|高分|口碑|评分|评价|书评|推荐|榜单|星级|读者|评论|"
+            r"好评|高分|口碑|评分|评价|书评|推荐|榜单|书单|清单|精选|入选|星级|读者|评论|"
             r"\breview|\brating|\brated|\bbest\b|\brecommend",
             lowered_candidate,
         ):

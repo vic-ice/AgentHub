@@ -26,6 +26,7 @@ import {
   updateProviderConnection,
   validateModel,
 } from "@/lib/api"
+import { formatErrorForDisplay } from "@/lib/errors"
 import type {
   ModelCreate,
   ModelInfo,
@@ -229,7 +230,7 @@ export function ProviderConfigDialog({
       setConnectionDraft(nextProvider ? toConnectionDraft(nextConnection, nextProvider) : null)
       setModelDraft(nextModel ? toModelDraft(nextModel) : null)
     } catch (error) {
-      const details = error instanceof Error ? error.message : String(error)
+      const details = formatErrorForDisplay(error)
       setStatus({ tone: "error", text: `加载配置失败：${details}` })
     } finally {
       setIsLoading(false)
@@ -347,7 +348,7 @@ export function ProviderConfigDialog({
       setStatus({ tone: "success", text: success })
       await notifyChanged()
     } catch (error) {
-      setStatus({ tone: "error", text: error instanceof Error ? error.message : String(error) })
+      setStatus({ tone: "error", text: formatErrorForDisplay(error) })
     } finally {
       setBusyKey(null)
     }

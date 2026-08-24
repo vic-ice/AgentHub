@@ -226,35 +226,35 @@ async def _call_reviewer_model(
     from app.infra.llm import get_llm
 
     prompt = _review_prompt(workspace, round_index=round_index, budget=budget)
-    for thinking_mode in (None, False):
-        for attempt in range(2):
-            started = time.perf_counter()
-            response = None
-            try:
-                model = get_llm(model_id, thinking_mode=thinking_mode)
-                async with asyncio.timeout(REVIEW_TIMEOUT_SECONDS):
-                    response = await model.ainvoke(prompt)
-                await report_model_completion(
-                    response,
-                    title="\u7814\u7a76\u5ba1\u67e5\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
-                    detail=f"\u5df2\u5ba1\u67e5\u7b2c {round_index} \u8f6e\u7814\u7a76\u8bc1\u636e",
-                    model_name=model_id,
-                    duration_ms=int((time.perf_counter() - started) * 1000),
-                )
-                payload = _json_payload(_message_text(response))
-                if isinstance(payload, dict) and payload.get("verdict"):
-                    return payload
-            except Exception as exc:
-                await report_model_completion(
-                    response,
-                    title="\u7814\u7a76\u5ba1\u67e5\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
-                    detail=f"\u7b2c {round_index} \u8f6e\u7814\u7a76\u5ba1\u67e5\u5931\u8d25",
-                    model_name=model_id,
-                    duration_ms=int((time.perf_counter() - started) * 1000),
-                    status="failed",
-                    error=str(exc) or exc.__class__.__name__,
-                )
-                continue
+    started = time.perf_counter()
+    response = None
+    try:
+        # One bounded semantic judgment per research round. Repeating the same
+        # prompt cannot improve evidence and used to create four duplicate
+        # model calls before falling back.
+        model = get_llm(model_id, thinking_mode=False)
+        async with asyncio.timeout(REVIEW_TIMEOUT_SECONDS):
+            response = await model.ainvoke(prompt)
+        await report_model_completion(
+            response,
+            title="\u7814\u7a76\u5ba1\u67e5\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+            detail=f"\u5df2\u5ba1\u67e5\u7b2c {round_index} \u8f6e\u7814\u7a76\u8bc1\u636e",
+            model_name=model_id,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        payload = _json_payload(_message_text(response))
+        if isinstance(payload, dict) and payload.get("verdict"):
+            return payload
+    except Exception as exc:
+        await report_model_completion(
+            response,
+            title="\u7814\u7a76\u5ba1\u67e5\u6a21\u578b\u8c03\u7528\u5b8c\u6210",
+            detail=f"\u7b2c {round_index} \u8f6e\u7814\u7a76\u5ba1\u67e5\u5931\u8d25",
+            model_name=model_id,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            status="failed",
+            error=str(exc) or exc.__class__.__name__,
+        )
     return None
 
 
@@ -340,6 +340,11 @@ def _validate_review(
         return None
     verdict = str(payload.get("verdict") or "").strip().lower()
     if verdict not in {"sufficient", "insufficient", "budget_exhausted"}:
+        return None
+    # The model reviews semantics, but it cannot waive deterministic evidence
+    # gaps. Otherwise a weak lead may stop the loop and then be rejected by
+    # the final verifier using the very same budget.
+    if verdict == "sufficient" and state.state.gaps:
         return None
     return ResearchReview(
         round_index=round_index,

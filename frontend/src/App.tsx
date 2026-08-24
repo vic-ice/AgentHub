@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { BookOpen, Brain, Languages, MessageSquare, Moon, PlugZap, SearchCheck, Share2, Sun, Settings } from "lucide-react"
 
 import {
@@ -42,7 +42,6 @@ import { useModels } from "@/hooks/use-models"
 import { useUser } from "@/hooks/use-user"
 import { useAuth } from "@/contexts/AuthContext"
 import {
-  ChatMainPanel,
   ChatSidebar,
   ConversationRenameDialog,
   DeleteConversationDialog,
@@ -53,8 +52,6 @@ import {
 } from "@/features/chat/components"
 import { ProviderConfigDialog } from "@/features/chat/components/provider-config-workbench-v2"
 import { AppProviderConfigDialog } from "@/features/chat/components/app-provider-config-dialog"
-import { ResearchView } from "@/features/research/components/research-view"
-import { BookshelfView } from "@/features/bookshelf/components/bookshelf-view"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import {
@@ -71,6 +68,7 @@ import {
 import { useI18n } from "@/i18n"
 import { HomePage } from "@/pages/home-page"
 import { Toaster } from "@/components/ui/toaster"
+import { formatDiagnosticDetails } from "@/lib/errors"
 import {
   findRecentDetailRequestTarget,
   findRecentFollowUpMatch,
@@ -80,6 +78,26 @@ import {
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const ChatMainPanel = lazy(() =>
+  import("@/features/chat/components/chat-main-panel").then(module => ({ default: module.ChatMainPanel })),
+)
+const ResearchView = lazy(() =>
+  import("@/features/research/components/research-view").then(module => ({ default: module.ResearchView })),
+)
+const BookshelfView = lazy(() =>
+  import("@/features/bookshelf/components/bookshelf-view").then(module => ({ default: module.BookshelfView })),
+)
+
+function WorkspacePanelFallback() {
+  return (
+    <div className="flex h-full flex-col gap-4 p-6" aria-label="正在加载工作区">
+      <div className="h-10 w-44 animate-pulse rounded-lg bg-muted" />
+      <div className="h-20 animate-pulse rounded-xl bg-muted/70" />
+      <div className="h-32 animate-pulse rounded-xl bg-muted/50" />
+    </div>
+  )
+}
 
 function App() {
   const { t, toggleLocale } = useI18n()
@@ -202,10 +220,20 @@ function App() {
   const abortControllerRef = useRef<AbortController | null>(null)
   const streamControllersRef = useRef<Map<string, AbortController>>(new Map())
   const streamingPlaceholderIdsRef = useRef<Map<string, string>>(new Map())
+  const streamTokenBuffersRef = useRef<Map<string, string>>(new Map())
+  const streamTokenFramesRef = useRef<Map<string, number>>(new Map())
   const conversationDraftsRef = useRef<Map<string, LocalChatMessage[]>>(new Map())
   const activeThreadIdRef = useRef(threadId)
   const messagesRef = useRef<LocalChatMessage[]>(messages)
   const currentRequestIdRef = useRef<string | null>(null)
+
+  useEffect(() => () => {
+    for (const frame of streamTokenFramesRef.current.values()) {
+      window.cancelAnimationFrame(frame)
+    }
+    streamTokenFramesRef.current.clear()
+    streamTokenBuffersRef.current.clear()
+  }, [])
   const isProcessingRef = useRef(false)
   const thinkingModeRef = useRef(thinkingMode)
   const effectiveModelRef = useRef<string | null>(null)
@@ -552,25 +580,26 @@ function App() {
     ])
   }, [updateThreadMessages])
 
-  const addStreamToken = useCallback((token: string, targetThreadId: string) => {
-    if (!token) {
-      return
+  const flushStreamTokenBuffer = useCallback((targetThreadId: string) => {
+    const frame = streamTokenFramesRef.current.get(targetThreadId)
+    if (frame !== undefined) {
+      window.cancelAnimationFrame(frame)
+      streamTokenFramesRef.current.delete(targetThreadId)
     }
+
+    const buffered = streamTokenBuffersRef.current.get(targetThreadId) ?? ""
+    if (!buffered) return
+    streamTokenBuffersRef.current.delete(targetThreadId)
 
     updateThreadMessages(targetThreadId, (previous) => {
       let placeholderId = streamingPlaceholderIdsRef.current.get(targetThreadId)
-
       if (!placeholderId) {
         placeholderId = crypto.randomUUID()
         streamingPlaceholderIdsRef.current.set(targetThreadId, placeholderId)
-
         return [
           ...previous,
           toLocalMessage(
-            {
-              type: "ai",
-              content: token,
-            },
+            { type: "ai", content: buffered },
             { localId: placeholderId, isStreaming: true },
           ),
         ]
@@ -578,11 +607,24 @@ function App() {
 
       return previous.map((message) =>
         message.local_id === placeholderId
-          ? { ...message, content: `${message.content}${token}`, is_streaming: true }
+          ? { ...message, content: `${message.content}${buffered}`, is_streaming: true }
           : message,
       )
     })
   }, [updateThreadMessages])
+
+  const addStreamToken = useCallback((token: string, targetThreadId: string) => {
+    if (!token) return
+    const pending = streamTokenBuffersRef.current.get(targetThreadId) ?? ""
+    streamTokenBuffersRef.current.set(targetThreadId, pending + token)
+    if (streamTokenFramesRef.current.has(targetThreadId)) return
+
+    const frame = window.requestAnimationFrame(() => {
+      streamTokenFramesRef.current.delete(targetThreadId)
+      flushStreamTokenBuffer(targetThreadId)
+    })
+    streamTokenFramesRef.current.set(targetThreadId, frame)
+  }, [flushStreamTokenBuffer])
 
   const addMessageFromStream = useCallback(
     (message: ChatMessage, targetThreadId: string) => {
@@ -592,6 +634,9 @@ function App() {
       if (normalized.type === "human") {
         return
       }
+
+      // Preserve token order while avoiding a render for every network chunk.
+      flushStreamTokenBuffer(targetThreadId)
 
       updateThreadMessages(targetThreadId, (previous) => {
         if (normalized.type === "ai") {
@@ -724,12 +769,89 @@ function App() {
         return [...previous, toLocalMessage(normalized)]
       })
     },
-    [updateThreadMessages],
+    [flushStreamTokenBuffer, updateThreadMessages],
+  )
+
+  const revealCommittedMessage = useCallback(
+    async (
+      message: ChatMessage,
+      targetThreadId: string,
+      signal: AbortSignal,
+    ) => {
+      const normalized = normalizeChatMessage(message)
+      const content = normalized.content || ""
+      const placeholderId = streamingPlaceholderIdsRef.current.get(targetThreadId)
+
+      if (normalized.type !== "ai" || !content.trim() || !placeholderId) {
+        addMessageFromStream(message, targetThreadId)
+        return
+      }
+
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      if (reduceMotion || content.length < 48) {
+        addMessageFromStream(message, targetThreadId)
+        return
+      }
+
+      flushStreamTokenBuffer(targetThreadId)
+      updateThreadMessages(targetThreadId, (previous) =>
+        previous.map((item) =>
+          item.local_id === placeholderId
+            ? {
+              ...item,
+              content: "",
+              tool_calls: normalized.tool_calls,
+              request_id: normalized.request_id || item.request_id,
+              run_id: normalized.run_id || item.run_id,
+              custom_data: {
+                ...item.custom_data,
+                ...normalized.custom_data,
+              },
+              is_streaming: true,
+            }
+            : item,
+        ),
+      )
+
+      const targetFrames = Math.min(72, Math.max(24, Math.ceil(content.length / 9)))
+      const chunkSize = Math.max(1, Math.ceil(content.length / targetFrames))
+      let visibleLength = 0
+
+      while (visibleLength < content.length && !signal.aborted) {
+        visibleLength = Math.min(content.length, visibleLength + chunkSize)
+        const visibleContent = content.slice(0, visibleLength)
+        updateThreadMessages(targetThreadId, (previous) =>
+          previous.map((item) =>
+            item.local_id === placeholderId
+              ? {
+                ...item,
+                content: visibleContent,
+                is_streaming: visibleLength < content.length,
+              }
+              : item,
+          ),
+        )
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 18))
+      }
+
+      updateThreadMessages(targetThreadId, (previous) =>
+        previous.map((item) =>
+          item.local_id === placeholderId
+            ? { ...item, content, is_streaming: false }
+            : item,
+        ),
+      )
+    },
+    [addMessageFromStream, flushStreamTokenBuffer, updateThreadMessages],
   )
 
   const stopStreaming = useCallback(() => {
     streamControllersRef.current.get(activeThreadIdRef.current)?.abort()
     setIsStreaming(false)
+    setIsProcessing(false)
+    isProcessingRef.current = false
+    setIsAgentThinking(false)
+    setActiveToolCall(null)
   }, [])
 
   const maybeGenerateTitle = useCallback(
@@ -873,6 +995,7 @@ function App() {
 
       const currentTitle = conversationTitle
       let controller: AbortController | null = null
+      let committedAnswerMessage: ChatMessage | null = null
 
       try {
         await ensureConversationExists(targetThreadId, currentTitle)
@@ -936,6 +1059,8 @@ function App() {
                 setLiveExecutionSteps((previous) => {
                   if (previous.some((item) => item.step_id === event.content.step.step_id)) {
                     return previous
+                      .map((item) => item.step_id === event.content.step.step_id ? event.content.step : item)
+                      .sort((left, right) => left.order - right.order)
                   }
                   return [...previous, event.content.step].sort(
                     (left, right) => left.order - right.order,
@@ -979,21 +1104,26 @@ function App() {
                 setIsAgentThinking(false)
                 setActiveToolCall(null)
               }
-              addMessageFromStream(event.content.message, targetThreadId)
+              committedAnswerMessage = event.content.message
               return
             }
 
             if (event.type === "turn.failed") {
+              const failureMessage = formatDiagnosticDetails({
+                message: event.content.message,
+                code: event.content.code,
+                requestId: event.request_id,
+              })
               if (isTargetActive) {
                 setIsProcessing(false)
                 isProcessingRef.current = false
-                setAppError(event.content.message)
+                setAppError(failureMessage)
               }
               updateThreadMessages(targetThreadId, (previous) => [
                 ...previous,
                 toLocalMessage({
                   type: "ai",
-                  content: event.content.message,
+                  content: failureMessage,
                   request_id: event.request_id,
                 }),
               ])
@@ -1150,20 +1280,36 @@ function App() {
 
             // error event - TypeScript knows this must be { type: "error"; content: string }
             if (event.type === "error") {
+              const streamErrorMessage = formatDiagnosticDetails({
+                message: event.content,
+                code: event.error_code ?? event.error_type,
+                requestId: event.request_id,
+                stage: event.stage,
+                retryable: event.retryable,
+              })
               if (isTargetActive) {
-                setAppError(event.content)
+                setAppError(streamErrorMessage)
               }
               updateThreadMessages(targetThreadId, (previous) => [
                 ...previous,
                 toLocalMessage({
                   type: "ai",
-                  content: t("error.streamPrefix", { details: event.content }),
+                  content: t("error.streamPrefix", { details: streamErrorMessage }),
+                  request_id: event.request_id,
                 }),
               ])
             }
           },
           controller.signal,
         )
+
+        if (committedAnswerMessage) {
+          await revealCommittedMessage(
+            committedAnswerMessage,
+            targetThreadId,
+            controller.signal,
+          )
+        }
 
         await refreshConversations()
 
@@ -1196,6 +1342,7 @@ function App() {
           ])
         }
       } finally {
+        flushStreamTokenBuffer(targetThreadId)
         if (controller && streamControllersRef.current.get(targetThreadId) === controller) {
           streamControllersRef.current.delete(targetThreadId)
         }
@@ -1206,6 +1353,10 @@ function App() {
 
         if (activeThreadIdRef.current === targetThreadId) {
           setIsStreaming(false)
+          setIsProcessing(false)
+          isProcessingRef.current = false
+          setIsAgentThinking(false)
+          setActiveToolCall(null)
           // Auto-select the latest request_id from messages
           const currentMessages = conversationDraftsRef.current.get(targetThreadId) ?? []
           const lastAiMessage = currentMessages.filter(m => m.type === "ai" && m.request_id).pop()
@@ -1223,10 +1374,12 @@ function App() {
       createStreamingPlaceholder,
       ensureConversationExists,
       effectiveUserId,
+      flushStreamTokenBuffer,
       isStreaming,
       maybeGenerateTitle,
       messages,
       recordFollowUpSignal,
+      revealCommittedMessage,
       refreshConversations,
       t,
       threadId,
@@ -1472,13 +1625,14 @@ function App() {
     }
 
     void bootstrap()
+    const streamControllers = streamControllersRef.current
 
     return () => {
       cancelled = true
-      for (const controller of streamControllersRef.current.values()) {
+      for (const controller of streamControllers.values()) {
         controller.abort()
       }
-      streamControllersRef.current.clear()
+      streamControllers.clear()
     }
   }, [writeUrl, needsReinit, isLoggedIn, defaultConversationTitle])
 
@@ -1537,15 +1691,18 @@ function App() {
         />
 
         <SidebarInset className="min-h-0 overflow-hidden border-x border-border bg-background flex-1">
-          {mainView === "chat" ? (
-            <ChatMainPanel
+          <Suspense fallback={<WorkspacePanelFallback />}>
+            {mainView === "chat" ? (
+              <ChatMainPanel
               appError={appError}
+              onDismissError={() => setAppError(null)}
               isStreaming={isStreaming}
               isInitializing={isInitializing}
               isLoadingConversation={isLoadingConversation}
               isProcessing={isProcessing}
               isAgentThinking={isAgentThinking}
               calledTools={calledTools}
+              liveExecutionSteps={liveExecutionSteps}
               thinkingContent={thinkingContent}
               messages={messages}
               onSendMessage={handleSendMessage}
@@ -1565,16 +1722,17 @@ function App() {
               onOpenModelConfig={() => setShowProviderConfig(true)}
               hasAvailableModels={hasAvailableModels}
               selectedRequestId={selectedRequestId}
-            />
-          ) : mainView === "research" ? (
-            <ResearchView userId={effectiveUserId} />
-          ) : (
-            <BookshelfView userId={effectiveUserId} />
-          )}
+              />
+            ) : mainView === "research" ? (
+              <ResearchView userId={effectiveUserId} />
+            ) : (
+              <BookshelfView userId={effectiveUserId} />
+            )}
+          </Suspense>
         </SidebarInset>
 
         {/* Right Panel - same width as left sidebar (16rem) */}
-        <aside className="hidden w-72 min-w-72 flex-col gap-4 bg-[var(--background-elevated)] p-4 md:flex">
+        <aside className="hidden w-80 min-w-80 flex-col gap-4 bg-[var(--background-elevated)] p-4 md:flex">
           {/* Top Section: Configuration */}
           <div className="space-y-2">
             {/* Utility buttons */}

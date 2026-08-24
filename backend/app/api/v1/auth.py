@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.config import get_settings
@@ -43,12 +43,11 @@ class MockLoginRequest(BaseModel):
 class UserResponse(BaseModel):
     """User info response."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     display_name: str
     is_mock_user: bool
-
-    class Config:
-        from_attributes = True
 
 
 class AuthStatusResponse(BaseModel):

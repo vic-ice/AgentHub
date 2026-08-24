@@ -12,6 +12,10 @@ from app.services.agent_core.publication.contracts import (
 from app.services.agent_core.publication.deterministic import (
     DeterministicReceiptRenderer,
 )
+from app.services.agent_core.publication.evidence_fallback import (
+    complete_book_candidate_coverage,
+    render_external_evidence_fallback,
+)
 from app.services.agent_core.publication.policy import (
     validate_direct_text,
     validate_synthesis,
@@ -64,6 +68,8 @@ class TrustedPublisher:
                 "model synthesis requires a direct-answer model draft"
             )
         content = validate_synthesis(output.text, evidence=evidence)
+        content = complete_book_candidate_coverage(content, evidence)
+        content = validate_synthesis(content, evidence=evidence)
         refs = [
             action.action_id
             for bundle in evidence
@@ -81,6 +87,13 @@ class TrustedPublisher:
             receipt_refs=list(dict.fromkeys(refs)),
             publication_mode="model_synthesis",
         )
+
+    def publish_evidence_fallback(
+        self,
+        *,
+        evidence: Sequence[ReceiptEvidenceBundle],
+    ) -> PublishedAnswer | None:
+        return render_external_evidence_fallback(evidence)
 
 
 __all__ = ["TrustedPublisher"]
