@@ -7,6 +7,7 @@
 - 否决实验分支：`codex/research-controller-experiment-archive`
 - 否决实验提交：`211f61b`（`archive: preserve rejected goal research experiment`）
 
+- 当前验收状态：**代码已恢复；当前环境效果验收未通过**
 ## 1. 决策摘要
 
 生产开发回到 `e746714`。提交 `211f61b` 完整保留，确保代码、测试与失败实现
@@ -66,9 +67,28 @@ goal_research_error = "goal research model unavailable"
 - Publication Guard 拒绝自然稿件后，确定性 fallback 质量不足，向用户暴露审计语气。
 - 路由/步骤完成被当作 E2E 通过，未要求候选增长、证据沉淀、答案有效与延迟可接受。
 
+### 2.4 回退后的当前环境复测（2026-08-26）
+
+恢复分支加载 `e746714 + 本 ADR/门禁` 后，立即运行该基线自带的真实
+`verify_recommendation_chat_e2e.py`，结果为失败：
+
+```text
+elapsed_ms = 124860
+operations = [bookshelf_read_v1, book_search_v1,
+              bookshelf_read_v1, book_search_v1, bookshelf_read_v1]
+expected book_search_v1 count = 1
+actual book_search_v1 count = 2
+```
+
+因此 `e746714` 是相对于 `211f61b` 的恢复与对照锚点，不是当前环境已经通过
+效果验收的最终生产版本。普通推荐门禁失败后没有继续运行高成本 Deep Research
+E2E，避免用额外时间掩盖已明确的首要失败。后续任何“已恢复正常”结论必须引用
+新的冻结代码黑盒结果，不能只引用提交名或历史测试。
+
 ## 3. 恢复后的权威边界
 
 ### 3.1 普通 Chat / Search
+
 
 ```text
 一次 Controller 语义理解
