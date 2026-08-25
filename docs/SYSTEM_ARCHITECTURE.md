@@ -1,5 +1,11 @@
 # SYSTEM_ARCHITECTURE — 效果驱动单基线（2026-08-23）
 
+> **2026-08-26 效果基线裁决：** 当前生产恢复基线为 `e746714`。
+> `codex/research-controller-experiment-archive` / `211f61b` 是经真实 E2E
+> 否决的研究控制器实验，只能用于分析或选择性重做，禁止整体合并、禁止作为
+> “更新架构”恢复到生产。决策证据、禁止项和重新晋级条件见
+> [ADR-2026-08-26：恢复效果基线并隔离退化研究实验](./ADR-2026-08-26-EFFECT-BASELINE-RECOVERY.md)。
+
 本文件是生产架构的权威说明。新功能先找到下表中的唯一 Owner 并扩展它；禁止从 Controller、API、Tool、后台任务直接拼装第二条完整业务链。
 
 ## 1. 不变原则
@@ -274,7 +280,7 @@ Chat 使用已提交 conversation user event；Reading 使用真实 Recommendati
 
 `backend/tests/test_effect_driven_reading.py` 验证一次 Controller batch 可投影多个书籍动作、同书多断言合并、规则仅接受 canonical 枚举、所有 Shelf 状态不作为“新书”、Deep Research 默认不读画像。
 
-`backend/tests/test_recommendation_control_flow.py` 与 `test_recommendation_architecture.py` 锁定：一次推荐只进入一个 RecommendationService Owner；同批重复搜索被收口；多语义主题只在 Owner 内部多路召回并均衡合并；Web 不能绕开推荐投影；表达阶段不再暴露工具且收到紧凑 Response View；参考书/明确排除书在 Owner 边界过滤；出版年份真实执行；脏缓存 URL 不击穿 receipt；显式版本后缀仍按 Shelf 已知作品抑制；模型表达异常时发布已有受信用户视图。
+`backend/tests/test_recommendation_control_flow.py` 与 `test_recommendation_architecture.py` 锁定：一次推荐只进入一个 RecommendationService Owner；同批重复搜索被收口；多语义主题只在 Owner 内部多路召回并均衡合并；Web 不能绕开推荐投影；表达阶段不再暴露工具且收到紧凑 Response View；参考书/明确排除书在 Owner 边界过滤；出版年份真实执行；脏缓存 URL 不击穿 receipt；显式版本后缀仍按 Shelf 已知作品抑制；模型表达异常时发布已有受信用户视图；普通 RecommendationService 不得导入或调用 GoalResearch / QueryFrontier，防止恢复 `211f61b` 中被效果验收否决的嵌套研究控制器。
 
 `backend/tests/test_external_search.py` 以行为测试锁定 federated Provider 的轮询融合与跨 Provider URL 去重；`test_recommendation_architecture.py` 以 AST 检查锁定生产 `book_search_v1` adapter 必须开启 RecommendationService 内部证据增强，且只能由该 Owner 创建 federated 内容搜索请求。`test_execution_progress.py` 锁定用户看到的是候选数、主题覆盖和公开页面数量，而不是 Provider 参数或内部回执。
 

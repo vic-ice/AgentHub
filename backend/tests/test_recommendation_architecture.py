@@ -132,6 +132,26 @@ class RecommendationArchitectureTests(unittest.TestCase):
         self.assertEqual(strategy.value, "federated")
         self.assertIn("provider_budget", keywords)
 
+    def test_ordinary_recommendation_has_no_nested_research_controller(self) -> None:
+        path = APP / "services" / "books" / "recommendation_service.py"
+        source = path.read_text(encoding="utf-8")
+        imports = _imports(path)
+        forbidden_imports = {
+            name
+            for name in imports
+            if name in {
+                "app.services.books.goal_research",
+                "app.services.research.query_frontier",
+            }
+        }
+        self.assertEqual(forbidden_imports, set())
+        for symbol in (
+            "GoalResearch",
+            "QueryFrontier",
+            "run_goal_research",
+        ):
+            self.assertNotIn(symbol, source)
+
 
 if __name__ == "__main__":
     unittest.main()
