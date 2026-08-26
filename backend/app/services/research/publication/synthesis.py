@@ -138,7 +138,7 @@ def _request_from_report(report: ResearchReport) -> ResearchSynthesisRequest:
     sources = {str(item.evidence_id): item for item in report.sources}
     evidence: list[SynthesisEvidence] = []
     seen: set[str] = set()
-    for decision in report.verified_claims:
+    for decision in [*report.verified_claims, *report.uncertain_claims]:
         if not decision.publishable:
             continue
         for evidence_id in decision.evidence_ids:
@@ -285,14 +285,25 @@ def _limitations(report: ResearchReport) -> list[str]:
     zh = _language(report.objective) == "zh-CN"
     values: list[str] = []
     if report.uncertain_claims:
-        values.append(
-            "有些资料缺少足够支持，因此没有放进正文。"
-            if zh
-            else (
-                f"{len(report.uncertain_claims)} uncertain claim(s) lacked "
-                "enough evidence strength."
-            )
+        limited_count = sum(
+            1 for item in report.uncertain_claims if item.publishable
         )
+        excluded_count = len(report.uncertain_claims) - limited_count
+        if limited_count:
+            values.append(
+                "部分资料会以保守措辞作为线索呈现。"
+                if zh
+                else "Some material is presented cautiously as limited evidence."
+            )
+        if excluded_count:
+            values.append(
+                "另有资料支持不足，因此没有放进正文。"
+                if zh
+                else (
+                    f"{excluded_count} uncertain claim(s) lacked "
+                    "enough evidence strength."
+                )
+            )
     if report.rejected_claims:
         values.append(
             "有些资料与问题不够匹配或信息不完整，因此没有采用。"

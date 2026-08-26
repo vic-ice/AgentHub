@@ -29,6 +29,7 @@ class AtomicFact(BaseModel):
     """One atomic fact proposed by the compiler (never persisted as-is)."""
 
     entity: str = ""
+    subject: str = ""
     entity_type: str = ""
     domain: str = ""
     kind: str = ""
@@ -42,6 +43,7 @@ class AtomicFact(BaseModel):
 
     @field_validator(
         "entity",
+        "subject",
         "entity_type",
         "domain",
         "kind",
@@ -226,9 +228,12 @@ def compiled_turn_from_assertions(
                 }
         elif assertion.subject.casefold() not in {"self", "user", "用户", "我"}:
             entity = assertion.subject.strip()
+        else:
+            entity = str(value.get("entity") or "").strip()
 
         fact = AtomicFact(
             entity=entity,
+            subject=assertion.subject,
             entity_type=entity_type,
             domain=domain,
             kind=kind,

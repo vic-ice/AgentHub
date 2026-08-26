@@ -169,6 +169,7 @@ async def report_model_completion(
     duration_ms: int,
     status: StepStatus = "completed",
     error: str | None = None,
+    step_id: str | None = None,
 ) -> CompletedExecutionStep | None:
     return await report_completed_step(
         kind="model",
@@ -178,6 +179,7 @@ async def report_model_completion(
         model_name=model_name,
         duration_ms=duration_ms,
         error=error,
+        step_id=step_id,
         usage=extract_model_usage(response),
     )
 

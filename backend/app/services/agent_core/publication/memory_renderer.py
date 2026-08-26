@@ -9,8 +9,22 @@ _SELF_SUBJECTS = frozenset({"self", "user", "me", "myself", "我", "本人"})
 
 def _subject_label(version: dict) -> str:
     """主语标签：self 别名用“你”，实体用实体名。"""
+    schema_key = str((version or {}).get("schema_key") or "")
+    value = (
+        version.get("value")
+        if isinstance((version or {}).get("value"), dict)
+        else {}
+    )
+    if schema_key.startswith("reading."):
+        title = str(value.get("book_title") or value.get("entity") or "").strip()
+        if title:
+            return f"《{title}》"
     subject = str((version or {}).get("subject") or "").strip()
-    if not subject or subject in _SELF_SUBJECTS:
+    if (
+        not subject
+        or subject in _SELF_SUBJECTS
+        or (schema_key == "preference.entity" and subject == "other")
+    ):
         return "你"
     return subject
 
@@ -51,10 +65,22 @@ def render_memory_mutation(output: dict) -> str:
             old_label = _value_label(previous)
             kind = _fact_kind(version_payload)
             if new_label and old_label:
-                lines.append(f"已把{_subject_label(version_payload)}的{kind}从{old_label}更新为{new_label}。")
+                subject = _subject_label(version_payload)
+                lines.append(
+                    f"已把{subject}的{kind}从“{old_label}”更新为“{new_label}”。"
+                )
                 continue
         if mutation_status in {"created", "revised"} and new_label:
-            lines.append(f"已记录长期记忆：{new_label}。")
+            schema_key = str(version_payload.get("schema_key") or "")
+            subject = _subject_label(version_payload)
+            if schema_key == "reading.state":
+                lines.append(f"已将{subject}的阅读状态设为“{new_label}”。")
+            elif schema_key == "reading.feedback":
+                lines.append(f"已记录：你对{subject}的评价是“{new_label}”。")
+            elif schema_key == "identity.self_reported_name":
+                lines.append(f"记住了：你现在叫{new_label}。")
+            else:
+                lines.append(f"记住了：{new_label}。")
     if lines:
         return "\n".join(lines)
     return "已根据你的最新表述更新长期记忆。"
@@ -298,6 +324,10 @@ def _fact_kind(version: dict) -> str:
         return "行为约定"
     if schema_key == "feedback.outcome":
         return "反馈"
+    if schema_key == "reading.state":
+        return "阅读状态"
+    if schema_key == "reading.feedback":
+        return "评价"
     if predicate in {"name", "identity", "self_reported_name"}:
         return "名字"
     return "状态"
@@ -320,6 +350,24 @@ def _value_label(version: dict, *, with_subject: bool = True) -> str:
         return str(value.get("address") or "").strip()
     if schema_key == "identity.alias":
         return str(value.get("alias") or "").strip()
+    if schema_key == "reading.state":
+        status = str(
+            value.get("reading_status") or value.get("status") or ""
+        ).strip()
+        return {
+            "want_to_read": "想读",
+            "reading": "在读",
+            "read": "已读",
+            "dropped": "弃读",
+        }.get(status, status)
+    if schema_key == "reading.feedback":
+        evaluation = str(value.get("evaluation") or "").strip()
+        return {
+            "liked": "喜欢",
+            "neutral": "一般",
+            "disliked": "不喜欢",
+            "not_interested": "不感兴趣",
+        }.get(evaluation, evaluation)
     if schema_key == "entity.name":
         entity = str(value.get("entity") or "").strip()
         name = str(value.get("name") or "").strip()

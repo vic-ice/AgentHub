@@ -235,6 +235,7 @@ class RecommendationService:
             error=error,
             candidate_count=len(sources),
             response_depth=request.response_depth,
+            theme_match=request.theme_match,
             items=items,
             coverage=coverage,
             filters_applied=filters_applied,
@@ -242,6 +243,7 @@ class RecommendationService:
             metadata={
                 "owner": "RecommendationService",
                 "mode": request.mode,
+                "theme_match": request.theme_match,
                 "effective_query": effective_query,
                 "search_status": result.status,
                 "discovery": result.metadata,
@@ -285,17 +287,25 @@ class RecommendationService:
             10,
             max(3, (candidate_limit + len(discovery_queries) - 1) // len(discovery_queries) + 2),
         )
-        results = []
-        for query in discovery_queries:
+        results = [
+            await search_and_cache_books_with_status(
+                self.session,
+                query=discovery_queries[0],
+                limit=(candidate_limit if len(discovery_queries) == 1 else per_query_limit),
+                force_external=(
+                    strict_year_filter or request.mode == "recommendation"
+                ),
+                federated_discovery=(request.mode == "recommendation"),
+            )
+        ]
+        if len(discovery_queries) > 1 and not results[0].books:
             results.append(
                 await search_and_cache_books_with_status(
                     self.session,
-                    query=query,
-                    limit=(candidate_limit if len(discovery_queries) == 1 else per_query_limit),
-                    force_external=(
-                        strict_year_filter or request.mode == "recommendation"
-                    ),
-                    federated_discovery=(request.mode == "recommendation"),
+                    query=discovery_queries[1],
+                    limit=per_query_limit,
+                    force_external=True,
+                    federated_discovery=True,
                 )
             )
         result = _merge_discovery_results(
@@ -325,14 +335,22 @@ def _discovery_queries(
     user's natural-language message.
     """
 
-    if request.mode != "recommendation" or not request.themes:
+    if (
+        request.mode != "recommendation"
+        or not request.themes
+        or request.theme_match == "all"
+    ):
         return [effective_query]
-    queries = [
+    themes = [
         " ".join(str(theme or "").split()).strip()
         for theme in request.themes
         if str(theme or "").strip()
     ]
-    return list(dict.fromkeys(queries)) or [effective_query]
+    supplemental = " OR ".join(themes)
+    queries = [effective_query]
+    if supplemental and supplemental.casefold() != effective_query.casefold():
+        queries.append(supplemental[:300])
+    return queries[:2]
 
 
 def _merge_discovery_results(
@@ -437,16 +455,9 @@ def _theme_coverage(
 ) -> list[BookThemeCoverage]:
     if request.mode != "recommendation" or not request.themes:
         return []
-    mapping = {
-        str(book_id): str(theme or "").strip()
-        for book_id, theme in dict(
-            discovery_metadata.get("candidate_theme_by_id") or {}
-        ).items()
-    }
     counts = {theme: 0 for theme in request.themes}
     for book in books:
-        theme = mapping.get(_book_mapping_key(book), "")
-        if theme in counts:
+        for theme in _matching_themes(book, request):
             counts[theme] += 1
     if request.response_depth == "quick":
         complete_at = 1
@@ -485,6 +496,11 @@ async def _recommendation_items(
             discovery_metadata.get("candidate_theme_by_id") or {}
         ).items()
     }
+    def theme_for(book: Book) -> str:
+        matched = _matching_themes(book, request)
+        if matched:
+            return " × ".join(matched)
+        return mapping.get(_book_mapping_key(book), "")
     if (
         request.mode == "lookup"
         or request.response_depth == "quick"
@@ -493,33 +509,38 @@ async def _recommendation_items(
         items = [
             _base_recommendation_item(
                 book,
-                theme=mapping.get(_book_mapping_key(book), ""),
+                theme=theme_for(book),
             )
             for book in books
         ]
         return items, []
 
     gateway = gateway or get_search_gateway()
-    provider_budget = 3 if request.response_depth == "deep" else 2
+    provider_budget = 3 if request.response_depth == "deep" else 1
     semaphore = asyncio.Semaphore(3)
+    enrichment_count = min(
+        len(books),
+        4 if request.response_depth == "deep" else 2,
+    )
+    books_to_enrich = books[:enrichment_count]
 
     async def enrich(book: Book):
         async with semaphore:
             return await _enrich_recommendation_book(
                 book,
-                theme=mapping.get(_book_mapping_key(book), ""),
+                theme=theme_for(book),
                 gateway=gateway,
                 provider_budget=provider_budget,
             )
 
     results = await asyncio.gather(
-        *(enrich(book) for book in books),
+        *(enrich(book) for book in books_to_enrich),
         return_exceptions=True,
     )
     items: list[BookRecommendationItem] = []
     metadata: list[dict[str, Any]] = []
-    for book, raw in zip(books, results, strict=True):
-        theme = mapping.get(_book_mapping_key(book), "")
+    for book, raw in zip(books_to_enrich, results, strict=True):
+        theme = theme_for(book)
         if isinstance(raw, Exception):
             items.append(_base_recommendation_item(book, theme=theme))
             metadata.append(
@@ -534,6 +555,8 @@ async def _recommendation_items(
         item, item_metadata = raw
         items.append(item)
         metadata.append(item_metadata)
+    for book in books[enrichment_count:]:
+        items.append(_base_recommendation_item(book, theme=theme_for(book)))
     return items, metadata
 
 
@@ -891,16 +914,16 @@ def _filter_verified_constraints(
                 and year > request.publication_year_to
             ):
                 continue
-        theme = str(
-            (candidate_theme_by_id or {}).get(_book_mapping_key(book), "")
-        )
-        if (
-            request.mode == "recommendation"
-            and request.themes
-            and theme
-            and not _matches_structured_theme(book, theme=theme)
-        ):
-            continue
+        theme_matches = _matching_themes(book, request)
+        if request.mode == "recommendation" and request.themes:
+            satisfies_theme_contract = (
+                len(theme_matches) == len(request.themes)
+                if request.theme_match == "all"
+                else bool(theme_matches)
+            )
+            if not satisfies_theme_contract:
+                continue
+        theme = " ".join(theme_matches)
         if _has_explicit_audience_conflict(
             book,
             structured_target=" ".join(
@@ -949,6 +972,14 @@ def _matches_structured_theme(book: Book, *, theme: str) -> bool:
         if re.fullmatch(r"[\u3400-\u9fff]{3,}", token):
             variants.extend([token[:2], token[-2:]])
     return not variants or any(value in candidate for value in variants)
+
+
+def _matching_themes(book: Book, request: BookSearchInput) -> list[str]:
+    return [
+        theme
+        for theme in request.themes
+        if _matches_structured_theme(book, theme=theme)
+    ]
 
 
 def _has_explicit_audience_conflict(
@@ -1027,6 +1058,8 @@ def _publication_year(book: Book) -> int | None:
 
 def _filters_applied(request: BookSearchInput) -> list[str]:
     filters: list[str] = []
+    if request.themes:
+        filters.append(f"themes_{request.theme_match}_verified")
     if request.language:
         filters.append("language_discovery")
     if request.genres:

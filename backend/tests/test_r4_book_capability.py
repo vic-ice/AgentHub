@@ -99,6 +99,7 @@ class BookCapabilityContractTests(unittest.TestCase):
                 "language",
                 "themes",
                 "genres",
+                "theme_match",
                 "authors",
                 "audience",
                 "reference_titles",

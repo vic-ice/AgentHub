@@ -60,7 +60,6 @@ import {
 import {
   friendlyStepDetail,
   friendlyStepTitle,
-  technicalToolDetails,
   toolDisplay,
 } from "@/features/chat/execution-display"
 
@@ -4084,7 +4083,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {/* Tool calls are presented as user-facing activities; raw payloads stay in optional diagnostics. */}
+          {/* Main chat shows user-facing activities only; raw payloads stay in Trace. */}
           {isAI && allTools.length > 0 && (isStreaming || !message.content.trim()) ? (
             <div className="mb-3 max-h-64 overflow-y-auto rounded-xl border border-border/70 bg-background/65 p-3 text-xs">
               <div className="mb-2 flex items-center justify-between gap-3">
@@ -4118,14 +4117,6 @@ export function ChatMessageItem({
                       <p className="mt-1.5 leading-5 text-muted-foreground">
                         {isCalling ? `正在处理：${display.input}` : display.result}
                       </p>
-                      {isCompleted ? (
-                        <details className="mt-1.5 text-[10px] text-muted-foreground/80">
-                          <summary className="w-fit cursor-pointer select-none hover:text-foreground">查看技术详情</summary>
-                          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-2 font-mono leading-4">
-                            {technicalToolDetails(tool)}
-                          </pre>
-                        </details>
-                      ) : null}
                     </div>
                   )
                 })}

@@ -14,7 +14,7 @@ from app.services.research.objective_planner import (
 
 
 class ResearchObjectivePlannerTests(unittest.TestCase):
-    def test_candidate_aliases_and_seed_variants_are_removed_with_aligned_hints(self) -> None:
+    def test_normalization_discards_preselected_candidates_and_bounds_frontier(self) -> None:
         from app.services.research.objective_planner import _normalize_plan
 
         plan = _normalize_plan(
@@ -36,14 +36,9 @@ class ResearchObjectivePlannerTests(unittest.TestCase):
                 ],
             )
         )
-        self.assertEqual(plan.candidate_titles, ["原则：生活与工作", "影响力"])
-        self.assertEqual(
-            candidate_search_hints(plan),
-            {
-                "原则：生活与工作": "原则生活与工作 瑞达利欧",
-                "影响力": "影响力 罗伯特西奥迪尼",
-            },
-        )
+        self.assertEqual(plan.candidate_titles, [])
+        self.assertEqual(plan.search_queries, ["原则 瑞达利欧", "穷查理宝典 查理芒格", "原则生活与工作 瑞达利欧"])
+        self.assertEqual(candidate_search_hints(plan), {})
 
     def test_candidate_hint_removes_schema_scaffolding(self) -> None:
         plan = ResearchObjectivePlan(
@@ -119,10 +114,9 @@ class ResearchObjectivePlannerTests(unittest.TestCase):
         self.assertEqual(plan.task_type, "book_recommendation")
         self.assertFalse(plan.publication_recency_required)
         self.assertEqual(plan.response_style, "conversational")
-        queries = candidate_verification_queries(plan)
-        self.assertEqual(len(queries), 2)
-        self.assertIn("《候选一》", queries[0])
-        self.assertIn("《候选六》", queries[1])
+        self.assertEqual(plan.candidate_titles, [])
+        self.assertEqual(plan.search_queries, ["沟通与财商图书推荐"])
+        self.assertEqual(candidate_verification_queries(plan), [])
 
     def test_invalid_model_plan_falls_back_without_inventing_candidates(self) -> None:
         class InvalidModel:

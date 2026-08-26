@@ -204,3 +204,50 @@ git cherry-pick 211f61b
 
 提交时间新于 `e746714` 不代表它自动成为架构基线。`211f61b` 的存在只用于
 留痕和复盘，不构成生产授权。
+
+## 8. 2026-08-26 实施与验收记录
+
+本节记录本 ADR 约束下的最小实现，不授权恢复被否决的研究控制器实验。
+
+### 8.1 已实施
+
+- 普通 Chat/Search 仍由 Controller 做一次语义理解；推荐只进入
+  `RecommendationService`。新增 `themes + theme_match(any/all)` 正式合同，
+  `all` 保留完整交集 Query 并在 Owner 边界做候选准入，参考书继续作为
+  anchor/exclusion，不作为候选。
+- 普通推荐保留多源目录发现，但不再因为首轮候选数未达到上限就执行第二轮
+  补查；只有首轮零候选时才允许一个补充 Query。balanced 只并行增强前 2 本、
+  每本一个 Provider；deep 才增强前 4 本、最多三个 Provider。
+- 修复推荐发布函数的提前返回：增强预算只控制事实增强，不得截断已准入书单。
+  架构回归测试明确要求所有候选都发布，未增强候选保留目录事实。
+- Deep Research 的 Goal 在首次语义规划后保持稳定，但候选、专业术语与 Gap
+  由 Reviewer 根据 discovery leads 动态增长；首轮 Planner 不再猜最终书单。
+  缺证据保持 unresolved，不自动判定不符合；有限证据可以保守呈现，但不能
+  支撑确定评分、最优结论或强因果。
+- Memory 同一语义结果可以产生多书、多状态、多评价动作；指代在同一次语义
+  理解内解析到具体实体，Gateway/规则只验证结构，不用关键词规则二次理解。
+- 前端主对话隐藏 Tool 原始 JSON，模型等待、研究审阅和最终成文使用稳定
+  step_id 原位更新，技术细节只保留在 Trace。
+
+### 8.2 冻结代码后的验收事实
+
+- 后端完整测试：548 passed，33 subtests passed。
+- 前端生产构建：TypeScript + Vite build 通过。
+- 架构门禁：research loop / research publication 均通过；legacy reachability
+  扫描 1834 个 import、268 个生产可达文件，bridge_count=0，
+  system_runtime_retired_operations=0。
+- Reading/Memory/Shelf 真实 E2E：4 组自然语言状态与评价场景通过，Shelf、
+  Memory、作者和封面合同均通过。
+- 普通推荐真实 Chat E2E：只执行 bookshelf_read_v1 + book_search_v1；
+  book_search 从修复前约 20.0 秒降到 5.3 秒，回答从 515 字恢复到 839 字。
+- 复杂约束 Deep Research 真实 HTTP E2E：run completed，44 个步骤、20 条证据、
+  1324 字回答；未出现 trusted_publication_failed，也未读取个性化 Memory。
+
+### 8.3 不得误解的边界
+
+- balanced 的单 Provider 内容增强不等于单源搜索；候选发现仍由联邦搜索执行。
+- “只增强前两本”不允许只回答两本；所有已准入候选必须进入可信 Response View。
+- Deep Research 可以给出部分结论，但必须区分 verified、limited 与 rejected；
+  不能为了保守再次退化为只有错误码或“没有可发布结论”。
+- release-exit 汇总器当前仍会因 online/observation 门禁尚未登记而显示 blocked；
+  这不代表 legacy 可达性失败，也不得将其伪报为正式发布门禁已全部完成。

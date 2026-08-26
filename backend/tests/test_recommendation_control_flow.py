@@ -669,7 +669,64 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("reference_titles_excluded", evidence.filters_applied)
 
-    async def test_multiple_semantic_themes_fan_out_inside_one_owner_call(self) -> None:
+
+    async def test_all_theme_contract_keeps_intersection_query_and_admits_only_cross_domain_books(self) -> None:
+        communication_only = Book(
+            title="关键沟通练习",
+            authors=["甲"],
+            tags=[],
+            summary="聚焦冲突沟通与倾听。",
+            source_name="douban",
+            source_url="https://book.example/communication-only",
+            raw_data={},
+        )
+        cross_domain = Book(
+            title="谈钱不伤感情",
+            authors=["乙"],
+            tags=[],
+            summary="同时讨论家庭理财决策、金钱观与沟通协商。",
+            source_name="douban",
+            source_url="https://book.example/cross-domain",
+            raw_data={},
+        )
+        search = AsyncMock(
+            return_value=BookSearchCacheResult(
+                query="用理财思维沟通，用沟通技巧理财",
+                status="ok",
+                books=[communication_only, cross_domain],
+            )
+        )
+        request = BookSearchInput(
+            query="用理财思维沟通，用沟通技巧理财",
+            mode="recommendation",
+            themes=["沟通", "理财"],
+            theme_match="all",
+            reference_titles=["非暴力沟通", "小狗钱钱"],
+            limit=6,
+        )
+
+        with patch(
+            "app.services.books.recommendation_service.search_and_cache_books_with_status",
+            search,
+        ):
+            evidence = await RecommendationService(AsyncMock()).search(
+                request,
+                user_id=None,
+            )
+
+        self.assertEqual(search.await_count, 1)
+        self.assertEqual(
+            search.await_args.kwargs["query"],
+            "用理财思维沟通，用沟通技巧理财",
+        )
+        self.assertEqual(
+            [item.title for item in evidence.items],
+            ["谈钱不伤感情"],
+        )
+        self.assertEqual(evidence.theme_match, "all")
+        self.assertEqual(evidence.items[0].theme, "沟通 × 理财")
+
+    async def test_multiple_semantic_themes_only_fallback_after_zero_result(self) -> None:
         communication = Book(
             title="沟通候选",
             authors=["甲"],
@@ -691,14 +748,14 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         search = AsyncMock(
             side_effect=[
                 BookSearchCacheResult(
-                    query="沟通技巧",
-                    status="ok",
-                    books=[communication],
+                    query="轻松提升沟通和金钱观",
+                    status="empty_result",
+                    books=[],
                 ),
                 BookSearchCacheResult(
-                    query="金钱观",
+                    query="沟通技巧 OR 金钱观",
                     status="ok",
-                    books=[finance],
+                    books=[communication, finance],
                 ),
             ]
         )
@@ -721,7 +778,7 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(search.await_count, 2)
         self.assertEqual(
             [call.kwargs["query"] for call in search.await_args_list],
-            ["沟通技巧", "金钱观"],
+            ["轻松提升沟通和金钱观", "沟通技巧 OR 金钱观"],
         )
         self.assertEqual(
             [source.title for source in evidence.sources],
@@ -829,6 +886,58 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent.strategy, "federated")
         self.assertEqual(sent.provider_budget, 3)
 
+    async def test_balanced_enrichment_keeps_every_admitted_candidate(self) -> None:
+        books = [
+            Book(
+                title=f"候选{index}",
+                authors=["作者"],
+                tags=[],
+                summary=f"候选{index}简介",
+                source_name="douban",
+                source_url=f"https://book.example/{index}",
+                raw_data={},
+            )
+            for index in range(1, 4)
+        ]
+        cache = BookSearchCacheResult(
+            query="候选书单",
+            status="ok",
+            books=books,
+        )
+        gateway = AsyncMock()
+        gateway.search.return_value = SearchResult(
+            outcome="empty",
+            provider="ddgs",
+            query="候选书单",
+        )
+        request = BookSearchInput(
+            query="候选书单",
+            mode="recommendation",
+            response_depth="balanced",
+            limit=3,
+        )
+
+        with patch(
+            "app.services.books.recommendation_service.search_and_cache_books_with_status",
+            AsyncMock(return_value=cache),
+        ):
+            evidence = await RecommendationService(
+                AsyncMock(),
+                search_gateway=gateway,
+                enable_external_enrichment=True,
+            ).search(request, user_id=None)
+
+        self.assertEqual(
+            [item.title for item in evidence.items],
+            ["候选1", "候选2", "候选3"],
+        )
+        self.assertEqual(gateway.search.await_count, 2)
+        self.assertTrue(
+            all(
+                call.args[0].provider_budget == 1
+                for call in gateway.search.await_args_list
+            )
+        )
     async def test_publication_year_is_sent_to_discovery_and_verified(self) -> None:
         old = Book(
             title="旧候选",

@@ -310,7 +310,7 @@ def _requirement_relevance(
     if re.search(r"最新|近期|最近|新书|\blatest\b|\brecent\b|\bnew\b", lowered_query):
         required.append("missing_recency_evidence")
     if re.search(
-        r"好评|高分|口碑|评分|评价|推荐|\breview|\brating|\bbest\b|well[- ]reviewed",
+        r"好评|高分|口碑|评分|评价|书评|\breview|\brating|well[- ]reviewed",
         lowered_query,
     ):
         required.append("missing_review_evidence")
@@ -355,7 +355,7 @@ def _requirement_reasons(
         if not recent_year and not (explicit_recency and dated_source):
             reasons.append("missing_recency_evidence")
     if re.search(
-        r"好评|高分|口碑|评分|评价|推荐|\breview|\brating|\bbest\b|well[- ]reviewed",
+        r"好评|高分|口碑|评分|评价|书评|\breview|\brating|well[- ]reviewed",
         lowered_query,
     ):
         if not re.search(

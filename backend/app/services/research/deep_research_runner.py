@@ -131,10 +131,13 @@ def _plan_next_task(
         if not normalized or normalized in used_queries:
             continue
         base = build_research_search_request(objective)
-        candidate_titles = re.findall(r"《([^》]{1,100})》", candidate)
+        discovered_titles = re.findall(r"《([^》]{1,100})》", candidate)
+        known_hints = candidate_hints or {}
+        candidate_titles = [
+            title for title in discovered_titles if title in known_hints
+        ]
         candidate_verification = bool(
-            candidate_titles
-            and "book_recommendation" in base.requirements
+            candidate_titles and "book_recommendation" in base.requirements
         )
         return ResearchSearchTask(
             round_index=round_index,
@@ -214,6 +217,32 @@ def _normalize_query(value: str) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
+def _review_leads(rounds: list[ResearchRoundSources]) -> list[dict[str, Any]]:
+    """Expose bounded discovery leads to Reviewer without promoting them to facts."""
+
+    leads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for round_sources in rounds:
+        for source in round_sources.source_records:
+            title = " ".join(str(source.source_title or "").split()).strip()
+            claim = " ".join(str(source.claim or source.excerpt or "").split()).strip()
+            url = str(source.source_url or "").strip()
+            identity = (url or f"{title}|{claim}").casefold()
+            if not identity or identity in seen or not (title or claim):
+                continue
+            seen.add(identity)
+            leads.append(
+                {
+                    "source_title": title[:240],
+                    "claim": claim[:600],
+                    "source_url": url[:1000],
+                    "quality": str(source.quality or "unknown"),
+                    "status": "discovery_lead",
+                }
+            )
+    return leads[-12:]
+
+
 async def run_deep_research(
     *,
     user_id: UUID,
@@ -236,18 +265,12 @@ async def run_deep_research(
         get_research_orchestrator,
     )
     from app.services.research.report import build_research_report
-    from app.services.research.objective_planner import (
-        candidate_search_hints,
-        candidate_verification_queries,
-        plan_research_objective,
-    )
+    from app.services.research.objective_planner import plan_research_objective
 
     objective_plan = await plan_research_objective(
         objective,
         model_id=model_name,
     )
-    planned_candidate_queries = candidate_verification_queries(objective_plan)
-    planned_candidate_hints = candidate_search_hints(objective_plan)
 
     budget = ResearchLoopBudget(
         max_search_rounds=3,
@@ -258,7 +281,7 @@ async def run_deep_research(
         min_recommendation_candidates=(
             4 if objective_plan.task_type == "book_recommendation" else 0
         ),
-        recommendation_candidate_titles=list(objective_plan.candidate_titles),
+        recommendation_candidate_titles=[],
     )
     orchestrator = get_research_orchestrator()
     started = await orchestrator.start_research(
@@ -291,61 +314,17 @@ async def run_deep_research(
         step_id=f"research:{run_id}:created",
     )
 
-    # Recommendation candidate discovery is the one semantic planning step.
-    # If it is unavailable (timeout, quota, provider failure), a broad year or
-    # keyword search cannot preserve the user's requested similarity themes.
-    # Fail transparently instead of publishing an unrelated booklist.
-    if (
-        objective_plan.task_type == "book_recommendation"
-        and not objective_plan.candidate_titles
-    ):
-        planning_error = objective_plan.error or "semantic planner unavailable"
-        content = (
-            "## 本次研究未完成\n\n"
-            "用于理解推荐方向的模型本次不可用，因此没有继续生成可能偏题的书单。"
-            "请检查当前模型配额或稍后重试。\n\n"
-            f"错误阶段：research_objective_planning · {planning_error}"
-        )
-        finished = await orchestrator.finish_research(
-            user_id=user_id,
-            run_id=run_id,
-            conclusion="研究目标语义规划不可用，已阻止无关检索结果发布。",
-            status="failed",
-            gaps=["research_objective_planning_unavailable"],
-            metadata={
-                "planning_error": planning_error[:300],
-                "evidence_count": 0,
-                "source_count": 0,
-                "token_usage": _current_research_usage(),
-                "deep_research_contract": DEEP_RESEARCH_RECEIPT_VERSION,
-            },
-        )
-        return DeepResearchReceipt(
-            run_id=run_id,
-            objective=objective,
-            status="failed",
-            content=content,
-            conclusion="研究目标语义规划不可用，已阻止无关检索结果发布。",
-            evidence_count=0,
-            source_count=0,
-            created_at=(
-                finished.run.created_at.isoformat()
-                if finished.run.created_at is not None
-                else ""
-            ),
-        )
 
     previous_assessment: ResearchGapAssessment | None = None
     rounds: list[ResearchRoundSources] = []
     from app.services.research.search_policy import build_research_search_request
 
-    # Real discovery gets the first research round. Model-proposed candidate
-    # titles are leads for later verification, never a substitute for searching
-    # the requested topic. This is still the same one-shot semantic plan.
+    # The immutable goal seeds a broad first query.  The semantic plan contributes
+    # only a bounded initial frontier; evidence and Reviewer gaps may grow it.
     broad_discovery_query = build_research_search_request(objective).query
     pending_subquestions: list[str] = list(
         dict.fromkeys(
-            [broad_discovery_query, *planned_candidate_queries]
+            [broad_discovery_query, *objective_plan.search_queries]
         )
     )
     used_queries: set[str] = set()
@@ -359,7 +338,7 @@ async def run_deep_research(
                 previous_assessment=previous_assessment,
                 pending_subquestions=pending_subquestions,
                 used_queries=used_queries,
-                candidate_hints=planned_candidate_hints,
+                candidate_hints={},
             )
             if task is None or not task.should_search:
                 break
@@ -411,10 +390,16 @@ async def run_deep_research(
                 round_index=round_index,
                 budget=budget,
                 model_id=model_name,
+                leads=_review_leads(rounds),
+            )
+            discovered_frontier = _enqueue_subquestions(
+                [],
+                review.next_subquestions,
+                used_queries=used_queries,
             )
             pending_subquestions = _enqueue_subquestions(
+                discovered_frontier,
                 pending_subquestions,
-                review.next_subquestions,
                 used_queries=used_queries,
             )
             await orchestrator.update_research_state(
@@ -465,16 +450,16 @@ async def run_deep_research(
             limit_steps=100,
             limit_evidence=100,
         )
-        verified_evidence_ids = {
+        publishable_evidence_ids = {
             evidence_id
-            for claim in report.verified_claims
+            for claim in [*report.verified_claims, *report.uncertain_claims]
             if claim.publishable
             for evidence_id in claim.evidence_ids
         }
         sources = [
             item
             for item in report.sources
-            if item.evidence_id in verified_evidence_ids
+            if item.evidence_id in publishable_evidence_ids
             and str(item.source_url or "").strip()
         ]
         evidence_count = len(sources)

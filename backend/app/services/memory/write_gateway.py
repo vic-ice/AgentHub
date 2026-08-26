@@ -114,6 +114,13 @@ class MemoryWriteGateway:
         resolver = EntityResolver(self.session)
         for fact in facts:
             entity = str(fact.entity or "").strip()
+            raw_subject = str(getattr(fact, "subject", "") or "").strip()
+            subject = (
+                "user"
+                if not raw_subject
+                or raw_subject.casefold() in {"self", "user", "用户", "我"}
+                else raw_subject
+            )
             entity_type = str(fact.entity_type or "").strip()
             domain = fact.domain if fact.domain in _DOMAINS else "general"
             kind = fact.kind if fact.kind in _KINDS else "fact"
@@ -136,7 +143,7 @@ class MemoryWriteGateway:
                 "predicate": predicate,
                 "summary": fact.summary or entity or raw_text,
             }
-            if entity:
+            if entity and not str(value.get("entity") or "").strip():
                 value["entity"] = entity
             if entity_type:
                 value["entity_type"] = entity_type
@@ -152,7 +159,7 @@ class MemoryWriteGateway:
                     schema_key=f"{domain}.{kind}",
                     memory_key=memory_key,
                     schema_version=1,
-                    subject=entity_type or "user",
+                    subject=subject,
                     predicate=predicate,
                     value=value,
                     qualifiers={},

@@ -21,7 +21,10 @@ from app.infra.llm.model_candidates import (
     record_model_success,
 )
 from app.services.research.report import ResearchReport
-from app.services.execution_progress import report_model_completion
+from app.services.execution_progress import (
+    report_completed_step,
+    report_model_completion,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -205,6 +208,15 @@ async def _generate_report_once(
     for attempt_index in range(2):
         call_started = time.perf_counter()
         response = None
+        step_id = f"model:research:report:{attempt_index}:{id(prompt)}"
+        await report_completed_step(
+            kind="model",
+            status="waiting",
+            title="正在整理最终回答",
+            detail="正在把研究材料组织成自然、完整且可引用的回答",
+            model_name=model_id,
+            step_id=step_id,
+        )
         try:
             model = get_llm(model_id, thinking_mode=None)
             async with asyncio.timeout(REPORT_TIMEOUT_SECONDS):
@@ -215,6 +227,7 @@ async def _generate_report_once(
                 detail="\u7814\u7a76\u62a5\u544a\u8349\u7a3f\u5df2\u751f\u6210",
                 model_name=model_id,
                 duration_ms=int((time.perf_counter() - call_started) * 1000),
+                step_id=step_id,
             )
             final_text, thinking_text = _message_text_and_thinking(response)
             body = final_text or thinking_text
@@ -254,6 +267,7 @@ async def _generate_report_once(
                 duration_ms=int((time.perf_counter() - call_started) * 1000),
                 status="failed",
                 error=str(exc) or exc.__class__.__name__,
+                step_id=step_id,
             )
             last_attempt = {
                 "model_id": model_id,
@@ -644,7 +658,8 @@ def _prompt_freeform(
     }
     material_lines = [
         f"- [{index}] {_bounded(item.get('claim'), 220)}"
-        f"（来源：{_bounded(item.get('source_title'), 80)}）"
+        + ("（证据强度有限；" if item.get("evidence_status") == "uncertain" else "（")
+        + f"来源：{_bounded(item.get('source_title'), 80)}）"
         for index, item in enumerate(evidence, start=1)
     ]
     if limitations:
@@ -667,6 +682,7 @@ def _prompt_freeform(
             + "\n7. 若任务类型是图书推荐，可依据已核验图书简介与语义主题做选择和分组；这是有引用支撑的综合判断，不要求来源逐字写出‘与示例相似’。\n"
             + "8. 当 publication_recency_required=false 时，年份表示阅读计划时间，不得擅自要求所有候选必须在该年新出版。\n"
             + "9. 遵守 answer_depth：deep 必须覆盖用户问题的每个维度，充分解释重点结论、比较取舍，并在适用时给出可执行顺序；balanced 保留核心比较；quick 才允许极简。不能因为材料多就任意压缩成几句。\n"
+            + "10. 标为“证据强度有限”的材料仍可用于给出有帮助的候选或方向，但必须使用“资料显示”“可能”“可作为线索”等保守措辞，不得据此给出确定评分、最优断言或强因果结论。\n"
             + "\n\n用户原始问题：\n"
             + objective
             + "\n\n用户意图的单次语义计划（仅用于理解约束，不是事实证据）：\n"
@@ -685,6 +701,7 @@ def _prompt_freeform(
         + "\n7. For a book-recommendation task, you may select and group candidates by comparing verified descriptions with the semantic themes; this is a cited synthesis and does not require a source to literally say ‘similar to the examples’.\n"
         + "8. When publication_recency_required=false, a year is the reading-plan horizon; do not require every candidate to have been newly published that year.\n"
         + "9. Obey answer_depth: deep covers every requested dimension, explains major conclusions and trade-offs, and gives a practical sequence when useful; balanced preserves the core comparison; only quick may be minimal. Do not arbitrarily compress rich evidence into a few sentences.\n"
+        + "10. Material marked as limited evidence may still support a useful candidate or direction, but use cautious wording such as 'the available source suggests' or 'may'; never derive definitive scores, best-in-class claims, or strong causal conclusions from it.\n"
         + "\n\nUser's original question:\n"
         + objective
         + "\n\nSingle semantic plan for interpreting constraints (not factual evidence):\n"
@@ -730,7 +747,11 @@ def _evidence_list(
     evidence: list[dict[str, Any]] = []
     seen: set[str] = set()
     evidence_by_url: dict[str, dict[str, Any]] = {}
-    for decision in report.verified_claims:
+    decisions = [
+        *((decision, "verified") for decision in report.verified_claims),
+        *((decision, "uncertain") for decision in report.uncertain_claims),
+    ]
+    for decision, evidence_status in decisions:
         if not decision.publishable:
             continue
         for evidence_id in decision.evidence_ids:
@@ -748,16 +769,19 @@ def _evidence_list(
                 current = str(existing.get("claim") or "").strip()
                 if claim and claim not in current:
                     existing["claim"] = f"{current}；{claim}"[:600]
+                if evidence_status == "verified":
+                    existing["evidence_status"] = "verified"
                 continue
             item = {
-                    "source_id": str(evidence_id),
-                    "source_title": source.source_title,
-                    "source_url": safe_url,
-                    "claim": decision.claim,
-                    "quality": decision.quality,
-                    "corroborated": decision.corroborated,
-                    "published_date": source.published_date,
-                }
+                "source_id": str(evidence_id),
+                "source_title": source.source_title,
+                "source_url": safe_url,
+                "claim": decision.claim,
+                "quality": decision.quality,
+                "corroborated": decision.corroborated,
+                "published_date": source.published_date,
+                "evidence_status": evidence_status,
+            }
             evidence.append(item)
             if url_key:
                 evidence_by_url[url_key] = item
@@ -794,9 +818,15 @@ def _safe_public_source_url(value: object) -> str:
 
 def _limitations(report: ResearchReport) -> list[str]:
     values: list[str] = []
-    if report.uncertain_claims:
+    limited_count = sum(1 for item in report.uncertain_claims if item.publishable)
+    excluded_count = len(report.uncertain_claims) - limited_count
+    if limited_count:
         values.append(
-            f"{len(report.uncertain_claims)} 条\u8bc1\u636e\u56e0\u5f3a\u5ea6\u4e0d\u8db3\u672a\u4f5c\u4e3a\u7ed3\u8bba\u3002"
+            f"{limited_count} \u6761\u6750\u6599\u8bc1\u636e\u5f3a\u5ea6\u6709\u9650\uff0c\u5df2\u6309\u7ebf\u7d22\u4fdd\u5b88\u5448\u73b0\u3002"
+        )
+    if excluded_count:
+        values.append(
+            f"{excluded_count} \u6761\u6750\u6599\u56e0\u4e0d\u53ef\u53d1\u5e03\u672a\u4f5c\u4e3a\u7ed3\u8bba\u3002"
         )
     if report.rejected_claims:
         values.append(

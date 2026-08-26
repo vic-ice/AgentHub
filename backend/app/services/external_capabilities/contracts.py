@@ -99,6 +99,14 @@ class BookSearchInput(ExternalCapabilityInput):
             "inside the same owner call; lookup mode leaves this empty."
         ),
     )
+    theme_match: Literal["any", "all"] = Field(
+        default="any",
+        description=(
+            "How admitted candidates must relate to themes. Use all only when "
+            "the user requires every returned book to cover every theme; use "
+            "any for alternatives, broad discovery, or balanced theme coverage."
+        ),
+    )
     genres: list[str] = Field(default_factory=list, max_length=10)
     authors: list[str] = Field(default_factory=list, max_length=10)
     audience: str = Field(
@@ -273,6 +281,7 @@ class BookEvidence(BaseModel):
     error: str = Field(default="", max_length=120)
     candidate_count: int = Field(default=0, ge=0, le=10)
     response_depth: Literal["quick", "balanced", "deep"] = "balanced"
+    theme_match: Literal["any", "all"] = "any"
     items: list[BookRecommendationItem] = Field(
         default_factory=list,
         max_length=10,

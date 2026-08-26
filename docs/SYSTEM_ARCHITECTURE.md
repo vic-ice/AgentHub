@@ -112,7 +112,7 @@ ReadingService 不直接调用 Memory Provider。派生 Memory 必须重新进�
 Controller decision（一次，可输出至多一个 book_search recommendation）
   → BookSearchInput
       ├─ query / genres / audience：整体发现目标
-      ├─ themes：同一次语义理解得到的独立发现维度
+      ├─ themes + theme_match：维度及 any/all 关系
       ├─ reference_titles：用户给出的比较锚点
       └─ excluded_titles：明确不应作为新推荐的作品
   → ProposalValidator
@@ -120,9 +120,9 @@ Controller decision（一次，可输出至多一个 book_search recommendation�
       └─ 隔离并行 web_search 推荐候选旁路
   → book_search_v1(mode=recommendation)
   → RecommendationService
-      ├─ themes 多路召回（仍是一次 Owner 调用，不再调用 LLM）
+      ├─ 一个完整目标主 Query；仅首轮零候选时允许一个补充 Query
       ├─ response_depth：quick / balanced / deep
-      └─ coverage：每个结构化主题的候选覆盖状态
+      └─ theme_match 准入 + coverage 覆盖状态
   → MemoryReadGateway.profile_memories + ReadingService.reading_anchors
   → DoubanCatalogProvider → SearchGateway fallback / books cache（书目身份召回）
   → request exclusion（参考书/明确排除书，按标准作品标题归一化）
@@ -131,7 +131,7 @@ Controller decision（一次，可输出至多一个 book_search recommendation�
   → RecommendationService 内部 SearchGateway federated enrichment
       ├─ Tavily / DDGS / AnySearch 有界并发
       ├─ URL 规范化去重 + Provider 间轮询融合
-      └─ 每本候选只接纳能核对到该书名的内容证据
+      └─ balanced 前 2 本单 Provider / deep 前 4 本三 Provider 增强，其余保留目录事实
   → 排序并返回 BookEvidence
   → Response presentation（无 Tool schema，只能基于 trusted receipts 表达）
 ```
@@ -140,11 +140,11 @@ Controller decision（一次，可输出至多一个 book_search recommendation�
 
 `reference_titles` 与 `excluded_titles` 是正式业务契约，不是 Prompt 中的一句软约束。Controller 在唯一语义理解中填充字段，RecommendationService 在 Owner 边界执行排除；规则只对结构化标题做标准化比较，不从原始自然语言再次猜书名。来源标题中的明确页面后缀（例如 `- 读书`）在比较前移除，参考书因此不会重新进入候选集合。
 
-`themes` 同样是正式语义契约。用户同时要求多个独立主题时，Controller 在本轮唯一语义调用中输出若干简短维度；RecommendationService 在一个业务调用内部按维度执行有界检索，再轮询合并、去重、统一做 Shelf/Memory 投影。Service 不得用关键词规则重新拆解原始用户消息，Controller 也不得为每个主题建立多个可独立完成推荐的 Owner 调用。
+`themes + theme_match` 是正式语义契约。Controller 在本轮唯一语义调用中输出简短主题，并用 `theme_match=all` 表达“每一本都必须同时覆盖全部主题”，用 `any` 表达替代项或均衡覆盖；Service 不得从原始文本重新猜该关系。RecommendationService 保留一个完整目标主 Query：`all` 不拆成多个主题 Query，避免把分别命中的候选错误拼成“同时满足”；`any` 只有在主 Query 零候选时才允许一个 `OR` 补充 Query，不能因为未达到候选上限就重复扩展。所有查询仍属于同一个 Owner 调用，随后统一去重、排除 Reference/Shelf/Memory 并做结构化主题准入。
 
-`DoubanCatalogProvider` 只是只读目录执行器：接受已结构化的短主题，读取豆瓣公开书目建议数据并 allowlist 书名、作者、封面来源、出版年和 `/subject/<id>` 链接；复合前缀无结果或首批结果不足时，只做与主题词汇无关的有限字符前缀退避，并在固定预算内继续收集。它不读取原始用户消息，不选择推荐、不排序、不写 Shelf/Memory。目录身份优先于通用网页片段；目录召回失败时，通用 SearchGateway fallback 仍只接纳具体书目页。强儿童包装候选只有在结构化受众明确包含儿童时才能进入成人推荐，规则只做 fail-closed 校验，不替代语义理解。候选通过 Shelf/Memory 和显式排除校验后，RecommendationService 才以每本书的标准标题发起内容证据增强；SearchGateway 的 `federated` 策略对 Tavily、DDGS、AnySearch 做有界并发、统一过滤、URL 去重和轮询融合，`failover` 只保留给天气、明确图书 lookup 等低延迟单点查询。远程封面进入 Shelf 后由 ReadingService 下载到应用缓存，长期展示不依赖豆瓣图床。
+`DoubanCatalogProvider` 只是只读目录执行器：接受已结构化查询，读取豆瓣公开书目建议数据并 allowlist 书名、作者、封面来源、出版年和 `/subject/<id>` 链接；复合前缀无结果或首批结果不足时，只做有限退避。它不读取原始用户消息，不选择推荐、不排序、不写 Shelf/Memory。目录身份优先于通用网页片段；目录召回失败时，通用 SearchGateway fallback 仍只接纳具体书目页。强儿童包装候选只有在结构化受众明确包含儿童时才能进入成人推荐，规则只做 fail-closed 校验，不替代语义理解。候选通过 Shelf/Memory、显式排除与主题合同校验后，RecommendationService 对排序最前的 balanced 2 本各使用一个最快可用内容来源并行增强；deep 才扩大到前 4 本、最多三个 Provider。目录发现本身仍为多源联邦搜索，未增强候选必须原样保留目录事实，禁止因预算截断最终书单或对每本无限扇出。SearchGateway 的 `federated` 策略对 Tavily、DDGS、AnySearch 做有界并发、过滤、URL 去重和轮询融合。远程封面进入 Shelf 后由 ReadingService 下载到应用缓存，长期展示不依赖豆瓣图床。
 
-普通推荐的“多源化”是 RecommendationService 内部能力，不是 Controller 再规划多个 `web_search`。`response_depth` 与 `themes` 来自本轮同一次 LLM 语义理解；Service 只执行结构化深度预算和逐主题覆盖校验，不根据原始自然语言二次判断。`coverage` 必须进入可信 Response View：某主题缺少候选时要诚实说明，不能用另一个主题凑数。balanced 默认解释每本候选的适配理由；deep 还应给出主题比较、取舍和阅读顺序。所有理由只能来自 BookEvidence 中的目录字段与已接纳公开来源，表达层不得自行补写书籍事实。
+普通推荐的“多源化”是 RecommendationService 内部能力，不是 Controller 再规划多个 `web_search`。`response_depth`、`themes` 与 `theme_match` 来自本轮同一次 LLM 语义理解；Service 只执行结构化查询预算和候选校验，不根据原始自然语言二次判断。`coverage` 与 `theme_match` 必须进入可信 Response View：`all` 下缺任一主题的候选不准入，`any` 下某主题缺少候选则诚实说明，不能用另一个主题冒充。balanced 默认解释每本已准入候选；deep 还应给出比较、取舍和阅读顺序。所有理由只能来自 BookEvidence 中的目录字段与已接纳公开来源。
 
 `publication_year_from/to` 是强契约：RecommendationService 必须把它们传入发现查询，并且只保留能从书目元数据或带“出版年/出版时间”等上下文的来源文本中核验的候选。搜索网页自身的抓取/发布日期不等于图书出版年份，二者必须分开存储。语言、类型、作者、受众若来源元数据不足，只能标注为 discovery constraint，不能宣称已严格核验。
 
@@ -173,7 +173,7 @@ Response Presenter 可以使用 LLM 组织语言，但没有语义解释、候�
 
 默认 `personalization_mode=off`，不读取 Memory 或 Shelf。只有显式个性化模式才通过 MemoryReadGateway 读取；不得隐式混入普通推荐画像。
 
-Deep Research 是研究能力，不等于固定报告文体。默认回答必须先自然回应用户，再按内容使用少量 Emoji、短分组和来源；只有一次语义计划明确输出 `response_style=formal_report` 时，才能使用“研究结论/主要发现/证据限制”等正式报告章节。`answer_depth` 默认 deep，只有用户明确要求简短时才为 quick。第一轮必须从用户原始研究目标做宽口径真实发现；语义计划提出的候选标题只能作为后续核验线索，不能占满轮次、代替主题发现。每轮检索默认通过同一 SearchGateway 对最多三个已配置 Provider 做 federated 融合，单个 Provider 失败只作为内部告警；只要其他来源可用，用户侧仍收到正常结果。普通网页研究最多并发阅读前五个接纳页面，再以未成功读取正文的搜索片段补足；报告写入最多使用十八条接纳证据。来源不足时应降低结论强度，但不得因为单一来源未达“权威出版物”就丢弃其他可用证据并返回空报告。证据不足和执行失败用日常语言说明，技术细节只进入 Trace。
+Deep Research 是研究能力，不等于固定报告文体。默认回答必须先自然回应用户，再按内容使用少量 Emoji、短分组和来源；只有唯一语义计划明确输出 `response_style=formal_report` 时才能使用正式报告章节。`answer_depth` 默认 deep。ResearchObjectivePlan 固定 Goal、显式约束、种子实体与 2–3 个初始搜索方向，`candidate_titles` 在生产规划中必须为空：模型不得在检索前预猜 8–10 本书。第一轮从原始目标宽口径发现；每轮未准入来源仅作为 `discovery_lead` 提供给 Reviewer，用来登记新专业术语、新候选或新 Gap，不能进入 known facts 或单独触发 sufficient。Reviewer 新 Query 进入下一轮队首，因此第一轮不能锁死搜索空间。每轮通过同一 SearchGateway 做 federated 融合；单 Provider 失败只写 Trace。普通网页研究最多并发阅读前五个接纳页面；最终合成最多使用十八条材料。`publishable` 的 uncertain evidence 可以用“资料显示/可能/线索”保守呈现，不得支持确定评分、最优断言或强因果；不可发布证据仍被排除。证据不足和执行失败只用日常语言说明。
 
 Research 证据覆盖率与回答交付状态是两个维度：只要存在可发布内容和至少一条已接纳证据，带诚实限制的部分回答就是成功交付，`objective_satisfied=false` 仅写入 ResearchRun/Trace；只有没有任何可发布内容或运行异常才标记失败。来源 URL 在发布前校验协议、主机和百分号编码完整性；畸形来源及其引用被丢弃，不得把错误码、请求 ID 或失败弹层拼入已有回答。
 
@@ -281,11 +281,11 @@ Chat 使用已提交 conversation user event；Reading 使用真实 Recommendati
 
 `backend/tests/test_effect_driven_reading.py` 验证一次 Controller batch 可投影多个书籍动作、同书多断言合并、规则仅接受 canonical 枚举、所有 Shelf 状态不作为“新书”、Deep Research 默认不读画像。
 
-`backend/tests/test_recommendation_control_flow.py` 与 `test_recommendation_architecture.py` 锁定：一次推荐只进入一个 RecommendationService Owner；同批重复搜索被收口；多语义主题只在 Owner 内部多路召回并均衡合并；Web 不能绕开推荐投影；表达阶段不再暴露工具且收到紧凑 Response View；参考书/明确排除书在 Owner 边界过滤；出版年份真实执行；脏缓存 URL 不击穿 receipt；显式版本后缀仍按 Shelf 已知作品抑制；模型表达异常时发布已有受信用户视图；普通 RecommendationService 不得导入或调用 GoalResearch / QueryFrontier，防止恢复 `211f61b` 中被效果验收否决的嵌套研究控制器。
+`backend/tests/test_recommendation_control_flow.py` 与 `test_recommendation_architecture.py` 锁定：一次推荐只进入一个 RecommendationService Owner；完整目标主 Query 不按主题串行扇出；最多一次候选不足补充查询；`theme_match=all` 只准入真正同时覆盖全部结构化主题的候选；Web 不能绕开推荐投影；参考书/明确排除书在 Owner 边界过滤；出版年份真实执行；显式版本后缀仍按 Shelf 已知作品抑制；普通 RecommendationService 不得导入或调用 GoalResearch / QueryFrontier。
 
 `backend/tests/test_external_search.py` 以行为测试锁定 federated Provider 的轮询融合与跨 Provider URL 去重；`test_recommendation_architecture.py` 以 AST 检查锁定生产 `book_search_v1` adapter 必须开启 RecommendationService 内部证据增强，且只能由该 Owner 创建 federated 内容搜索请求。`test_execution_progress.py` 锁定用户看到的是候选数、主题覆盖和公开页面数量，而不是 Provider 参数或内部回执。
 
-`backend/tests/test_response_presentation_architecture.py`、`test_research_architecture.py` 与 `verify_research_publication_architecture.py` 锁定：证据投影不拥有搜索/推荐/写入能力；普通兜底不出现回执和证据限制话术；Deep Research 默认使用 conversational，只有显式 formal_report 才生成报告章节；真实主题发现先于模型候选核验；图书研究和通用研究都必须读取来源正文；Deep Research 搜索必须使用 federated；发布校验不以固定 Markdown 形状代替真实性校验。
+`backend/tests/test_response_presentation_architecture.py`、`test_dr_reviewer.py`、`test_research_objective_planner.py`、`test_research_architecture.py` 与 `verify_research_publication_architecture.py` 锁定：证据投影不拥有搜索/推荐/写入能力；Deep Research 默认 conversational；ObjectivePlanner 不预选候选；Reviewer 发现的新 Gap 可扩展 Frontier，含书名的新 Query 不再自动降级为豆瓣单站；图书研究和通用研究都读取来源正文；搜索使用 federated；发布校验不以固定 Markdown 形状代替真实性校验。
 
 `backend/scripts/verify_reading_effect_e2e.py` 使用真实 HTTP、真实 Controller 模型和 PostgreSQL，随机用户执行多组不同自然语言、多实体、多动作，以及 Bookshelf POST→PATCH；只读取最终 Shelf 与 Memory 验收，不匹配伪造回答文本。每次运行后只清理本次 mock user。
 

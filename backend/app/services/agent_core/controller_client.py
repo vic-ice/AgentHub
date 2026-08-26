@@ -21,7 +21,10 @@ from app.services.agent_core.task_plan_proposal import (
     ControllerTaskPlanProposal,
 )
 from app.utils.message import convert_message_content_to_string
-from app.services.execution_progress import report_model_completion
+from app.services.execution_progress import (
+    report_completed_step,
+    report_model_completion,
+)
 
 
 REQUEST_CLARIFICATION_TOOL: dict[str, Any] = {
@@ -84,6 +87,19 @@ class ControllerClient:
     async def decide(self, request: ControllerModelRequest) -> ControllerOutput:
         started = time.perf_counter()
         response: AIMessage | None = None
+        step_id = f"model:controller:{request.phase}:{id(request)}"
+        await report_completed_step(
+            kind="model",
+            status="waiting",
+            title=(
+                "正在组织最终回答"
+                if request.phase == "synthesis"
+                else "正在理解你的问题"
+            ),
+            detail="正在结合当前对话与可用能力进行处理",
+            model_name=request.model_name,
+            step_id=step_id,
+        )
         try:
             model = self._model_factory(request.model_name)
             if request.phase == "synthesis":
@@ -122,6 +138,7 @@ class ControllerClient:
                 duration_ms=int((time.perf_counter() - started) * 1000),
                 status="failed",
                 error=str(exc) or exc.__class__.__name__,
+                step_id=step_id,
             )
             raise
         await report_model_completion(
@@ -130,6 +147,7 @@ class ControllerClient:
             detail=_decision_detail(output),
             model_name=request.model_name,
             duration_ms=int((time.perf_counter() - started) * 1000),
+            step_id=step_id,
         )
         return output
 

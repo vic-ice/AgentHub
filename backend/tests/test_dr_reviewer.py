@@ -286,14 +286,8 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertIsNotNone(task)
         self.assertTrue(task.should_search)
         self.assertEqual(task.purpose, "reviewer_gap")
-        self.assertEqual(
-            task.query,
-            "site:book.douban.com/subject/ 《机器学习》难度分级 初学者",
-        )
-        self.assertEqual(
-            task.include_url_prefixes,
-            ["https://book.douban.com/subject/"],
-        )
+        self.assertEqual(task.query, "《机器学习》难度分级 初学者")
+        self.assertEqual(task.include_url_prefixes, [])
 
     def test_used_subquestion_is_skipped(self):
         used = self._normalize("已搜过的子问题")
