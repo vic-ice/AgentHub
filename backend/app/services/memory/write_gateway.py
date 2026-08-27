@@ -440,6 +440,54 @@ class MemoryWriteGateway:
         )
         return {"status": "forgotten", "receipt": receipt.model_dump(mode="json")}
 
+    async def forget_reading_memory(
+        self,
+        *,
+        user_id: UUID,
+        thread_id: UUID | None,
+        book_title: str,
+        source_event_id: UUID,
+        receipt_id: str,
+        evidence_quote: str,
+    ) -> dict[str, Any]:
+        """Retire current reading projections for one removed Shelf book.
+
+        Shelf owns the current reading asset. Its deletion must not leave the
+        derived reading status/evaluation exposed as current long-term memory.
+        Matching is deliberately limited to reading schemas and the stored
+        canonical book title; unrelated memories about the same words remain.
+        """
+
+        title_token = canonical_entity_name(book_title)
+        current = await MemoryVersionStore(self.session).list_current(
+            user_id=user_id,
+            limit=500,
+        )
+        memory_keys = [
+            record.memory_key
+            for record in current
+            if _is_reading_projection(record)
+            and title_token
+            and title_token
+            in {
+                canonical_entity_name((record.value or {}).get("book_title")),
+                canonical_entity_name((record.value or {}).get("entity")),
+                canonical_entity_name((record.value or {}).get("title")),
+            }
+        ]
+        memory_keys = list(dict.fromkeys(memory_keys))
+        if not memory_keys:
+            return {"status": "noop", "mutations": []}
+        return await self.forget(
+            user_id=user_id,
+            thread_id=thread_id,
+            memory_keys=memory_keys,
+            source_event_id=source_event_id,
+            receipt_id=receipt_id,
+            evidence_quote=evidence_quote,
+            source_kind="reading_event",
+        )
+
     async def forget_admin_target(
         self,
         *,
@@ -526,7 +574,9 @@ class MemoryWriteGateway:
 
         resolver = EntityResolver(self.session)
         svc = ReadingService(self.session)
-        resolved_items: list[tuple[Any, Any, str | None, str | None]] = []
+        resolved_items: list[
+            tuple[Any, Any, str | None, str | None, str | None]
+        ] = []
         questions: list[str] = []
         for fact in facts:
             if not str(fact.entity or "").strip():
@@ -541,14 +591,15 @@ class MemoryWriteGateway:
             attributes = dict(fact.attributes or {})
             reading_status = _normalize_reading_status(attributes.get("reading_status"))
             evaluation = _normalize_evaluation(attributes.get("evaluation"))
-            if reading_status is None and evaluation is None:
-                questions.append(f"请明确《{fact.entity}》的阅读状态或评价。")
+            note = _normalize_reading_note(attributes.get("note"))
+            if reading_status is None and evaluation is None and note is None:
+                questions.append(f"请明确《{fact.entity}》的阅读状态、评价或备注。")
                 continue
-            resolved_items.append((fact, resolved, reading_status, evaluation))
+            resolved_items.append((fact, resolved, reading_status, evaluation, note))
 
         shelf_entries: list[dict[str, Any]] = []
         mutations: list[dict[str, Any]] = []
-        for index, (fact, resolved, reading_status, evaluation) in enumerate(resolved_items):
+        for index, (fact, resolved, reading_status, evaluation, note) in enumerate(resolved_items):
             kwargs: dict[str, Any] = {
                 "user_id": user_id,
                 "title": fact.entity,
@@ -559,6 +610,8 @@ class MemoryWriteGateway:
             }
             if evaluation is not None:
                 kwargs["evaluation"] = evaluation
+            if note is not None:
+                kwargs["note"] = note
             result = await svc.upsert(**kwargs)
             shelf_entries.append(result.shelf.model_dump(mode="json"))
             event_id = next(
@@ -739,6 +792,15 @@ def _token(value: Any) -> str:
     return " ".join(str(value or "").split()).strip().casefold().replace("-", "_")
 
 
+def _is_reading_projection(record: Any) -> bool:
+    schema_key = str(getattr(record, "schema_key", "") or "")
+    predicate = str(getattr(record, "predicate", "") or "")
+    return schema_key in {"reading.state", "reading.feedback"} or predicate in {
+        "reading_status",
+        "evaluation",
+    }
+
+
 __all__ = ["MemoryWriteGateway"]
 
 
@@ -760,3 +822,8 @@ _EVALUATIONS = frozenset(
 def _normalize_evaluation(value):
     raw = str(value or "").strip().lower()
     return raw if raw in _EVALUATIONS else None
+
+
+def _normalize_reading_note(value):
+    raw = str(value or "").strip()
+    return raw[:2000] if raw else None

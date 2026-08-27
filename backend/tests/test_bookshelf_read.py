@@ -275,6 +275,19 @@ class BookshelfCapabilityContractTests(unittest.TestCase):
         self.assertIn("《失控》：想读；评价：一般", rendered)
         self.assertNotIn("长期记忆", rendered)
 
+    def test_renderer_includes_user_authored_shelf_note(self):
+        item = _shelf_book(
+            "Python编程：从入门到实践",
+            "reading",
+            "liked",
+        ).model_copy(update={"note": "学习python"})
+
+        rendered = render_bookshelf_read(
+            {"status": "completed", "total": 1, "items": [item.model_dump(mode="json")]}
+        )
+
+        self.assertIn("备注：学习python", rendered)
+
 
 class BookshelfReadRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_reads_only_through_reading_service(self):

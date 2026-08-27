@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import uuid
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage
@@ -51,6 +52,10 @@ from app.services.books.douban_catalog import (
     normalize_douban_suggestions,
 )
 from app.services.recommendation_projection import _shelf_state_for_book
+from app.services.recommendation_constraints import (
+    PersonalizedRecommendationConstraints,
+    _add_shelf_reference_titles,
+)
 from app.services.external_capabilities.availability import (
     ExternalCapabilityAvailability,
 )
@@ -298,6 +303,79 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
                 "类似《非暴力沟通》、《小狗钱钱》的书 推荐",
             ],
         )
+
+    def test_shelf_personalization_adds_concrete_discovery_anchors(self) -> None:
+        request = BookSearchInput(
+            query="根据我的书架推荐不重复的新书",
+            mode="recommendation",
+        )
+
+        self.assertEqual(
+            _discovery_queries(
+                request=request,
+                effective_query=request.query,
+                personalization_reference_titles=["小狗钱钱", "Python深度学习"],
+            ),
+            [
+                "类似《小狗钱钱》的书 推荐",
+                "类似《Python深度学习》的书 推荐",
+                "根据我的书架推荐不重复的新书",
+            ],
+        )
+
+    async def test_shelf_context_prefers_positive_reading_assets(self) -> None:
+        service = AsyncMock()
+        service.list_entries.return_value = (
+            [
+                SimpleNamespace(
+                    title="正在读且喜欢",
+                    reading_status="reading",
+                    evaluation="liked",
+                    rating=None,
+                ),
+                SimpleNamespace(
+                    title="已读且喜欢",
+                    reading_status="read",
+                    evaluation="liked",
+                    rating=5,
+                ),
+                SimpleNamespace(
+                    title="想读且喜欢",
+                    reading_status="want_to_read",
+                    evaluation="liked",
+                    rating=None,
+                ),
+                SimpleNamespace(
+                    title="明确不喜欢",
+                    reading_status="read",
+                    evaluation="disliked",
+                    rating=None,
+                ),
+            ],
+            4,
+        )
+        constraints = PersonalizedRecommendationConstraints(
+            user_id=uuid.uuid4(),
+            original_query="根据我的书架推荐不重复的新书",
+            effective_query="根据我的书架推荐不重复的新书",
+        )
+
+        with patch(
+            "app.services.books.reading_service.ReadingService",
+            return_value=service,
+        ):
+            await _add_shelf_reference_titles(
+                None,
+                user_id=constraints.user_id,
+                constraints=constraints,
+            )
+
+        self.assertEqual(
+            constraints.shelf_reference_titles,
+            ["已读且喜欢", "正在读且喜欢", "想读且喜欢"],
+        )
+        self.assertEqual(constraints.metadata["shelf_context_status"], "available")
+        self.assertEqual(constraints.metadata["shelf_entry_count"], 4)
 
     def test_sparse_model_candidates_are_supplemented_from_reference_titles(self) -> None:
         request = BookSearchInput(

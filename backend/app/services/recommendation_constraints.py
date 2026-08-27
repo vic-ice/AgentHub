@@ -50,6 +50,7 @@ class PersonalizedRecommendationConstraints(BaseModel):
     disliked_authors: list[str] = Field(default_factory=list)
     source_memory_ids: list[str] = Field(default_factory=list)
     search_terms_added: list[str] = Field(default_factory=list)
+    shelf_reference_titles: list[str] = Field(default_factory=list)
     applied_to_search: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -80,6 +81,11 @@ async def build_personalized_recommendation_constraints(
         user_id=user_id,
         constraints=constraints,
         max_search_terms=max_search_terms,
+    )
+    await _add_shelf_reference_titles(
+        session,
+        user_id=user_id,
+        constraints=constraints,
     )
     return constraints
 
@@ -235,3 +241,87 @@ async def _add_reading_anchor_terms(
         if item
     )
     constraints.metadata["reading_anchor_terms_added"] = additions
+
+
+async def _add_shelf_reference_titles(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    constraints: PersonalizedRecommendationConstraints,
+    limit: int = 3,
+) -> None:
+    """Use positive Shelf entries as discovery anchors for Shelf-based requests.
+
+    The Shelf remains authoritative for current reading assets.  Memory supplies
+    broader preferences, while these titles give catalog discovery a concrete
+    starting point when the user's request is deictic (for example, "根据我的书架
+    推荐").  RecommendationProjector still performs the final full-Shelf
+    exclusion, so an anchor can shape discovery but can never be returned again.
+    """
+
+    if not _asks_for_shelf_personalization(constraints.original_query):
+        return
+    try:
+        from app.services.books.reading_service import ReadingService
+
+        entries, total = await ReadingService(session).list_entries(
+            user_id=user_id,
+            limit=100,
+            offset=0,
+        )
+    except Exception:
+        constraints.metadata["shelf_context_status"] = "unavailable"
+        return
+
+    ranked = sorted(
+        enumerate(entries),
+        key=lambda pair: (_shelf_reference_score(pair[1]), -pair[0]),
+        reverse=True,
+    )
+    titles = [
+        str(entry.title).strip()
+        for _, entry in ranked
+        if _shelf_reference_score(entry) >= 0 and str(entry.title or "").strip()
+    ]
+    constraints.shelf_reference_titles = list(dict.fromkeys(titles))[
+        : max(0, limit)
+    ]
+    constraints.metadata.update(
+        {
+            "shelf_context_status": "available",
+            "shelf_entry_count": total,
+            "shelf_reference_titles": list(constraints.shelf_reference_titles),
+        }
+    )
+
+
+_SHELF_PERSONALIZATION_RE = re.compile(
+    r"(?:我的|本人|我)?\s*(?:书架|藏书|阅读记录|读书记录|已读|在读).{0,24}"
+    r"(?:推荐|找|选|新书)|(?:根据|结合|参考|按照).{0,16}"
+    r"(?:书架|藏书|阅读记录|读书记录|读过的书)",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_shelf_personalization(query: str) -> bool:
+    return _SHELF_PERSONALIZATION_RE.search(" ".join(str(query or "").split())) is not None
+
+
+def _shelf_reference_score(entry: Any) -> int:
+    status = str(getattr(entry, "reading_status", "") or "").strip()
+    evaluation = str(getattr(entry, "evaluation", "") or "").strip()
+    if status == "dropped" or evaluation in {"disliked", "not_interested"}:
+        return -1
+    score = {
+        "read": 30,
+        "reading": 25,
+        "want_to_read": 10,
+    }.get(status, 0)
+    score += {
+        "liked": 40,
+        "neutral": 5,
+    }.get(evaluation, 0)
+    rating = getattr(entry, "rating", None)
+    if isinstance(rating, int):
+        score += max(0, min(rating, 5))
+    return score

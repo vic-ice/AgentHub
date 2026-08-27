@@ -32,6 +32,7 @@ from app.services.agent_core.prompt_contracts import (
     ConversationContextTurn,
     TrustedMemoryContext,
     TrustedReceiptContext,
+    TrustedShelfBookContext,
 )
 
 
@@ -178,6 +179,46 @@ class ControllerClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             output.tool_calls[0].arguments["mode"],
             "recommendation",
+        )
+
+    async def test_shelf_context_preserves_direct_model_candidates_for_verification(self) -> None:
+        model = _BoundModel(
+            AIMessage(content="可以考虑《流畅的Python》和《深度学习进阶》。")
+        )
+        registry = CapabilityRegistry(
+            availability=ExternalCapabilityAvailability(book_search=True)
+        )
+
+        output = await ControllerClient(
+            registry=registry,
+            model_factory=lambda _name: model,
+        ).decide(
+            ControllerModelRequest(
+                model_name="test-controller",
+                current_user_message="根据我的书架推荐不重复的新书",
+                context=ControllerContextSnapshot(
+                    shelf=[
+                        TrustedShelfBookContext(
+                            title="Python深度学习",
+                            authors=["François Chollet"],
+                            reading_status="reading",
+                            evaluation="liked",
+                        )
+                    ]
+                ),
+            )
+        )
+
+        self.assertEqual(output.tool_calls[0].name, "book_search")
+        self.assertEqual(
+            output.tool_calls[0].arguments["candidate_titles"],
+            ["流畅的Python", "深度学习进阶"],
+        )
+        self.assertTrue(
+            any(
+                "trusted_shelf_snapshot" in str(message.content)
+                for message in model.messages
+            )
         )
 
     async def test_book_owner_uses_reference_anchors_without_speculative_themes(self) -> None:

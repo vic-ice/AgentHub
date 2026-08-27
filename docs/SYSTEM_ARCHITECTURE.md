@@ -85,7 +85,7 @@ Bookshelf POST/PATCH / book feedback Tool
   → VersionStore → PostgreSQL
 ```
 
-ReadingService 不直接调用 Memory Provider。派生 Memory 必须重新进入 MemoryWriteGateway。DELETE 只表示移出 Shelf；如果未来要求同时遗忘 Memory，必须在 ReadingService/Gateway 中增加正式动作，不得在 Controller/API 写 SQL。
+ReadingService 不直接调用 Memory Provider。派生 Memory 必须重新进入 MemoryWriteGateway。DELETE 移出 Shelf 时，由 ReadingService 在同一事务内调用 `MemoryWriteGateway.forget_reading_memory`，为该书当前的阅读状态/评价写入遗忘版本；Controller/API 不直接写 Memory SQL。
 
 `ReadingService.ensure_backfilled` 使用按用户的事务级 advisory lock，并且写入口也必须先调用它。这样“首次 Chat 写 Shelf → 立即 GET Shelf”和并发首次访问只初始化一次，不会把刚写入的 Reading Event 再回放成重复 Shelf 行。
 

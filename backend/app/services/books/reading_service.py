@@ -7,8 +7,9 @@ Responsibilities:
 - Every business write (chat feedback, recommendation buttons, Shelf API) goes
   through this service: Shelf row + RecommendationEvent audit (+ legacy
   BookInteraction compat row) are flushed in the same DB transaction.
-- Long-term memory is a derived write performed after commit by the caller;
-  failures never block the core reading-state update.
+- Reading status/evaluation memory is normally derived after an upsert. Shelf
+  removal retires those derived current memories in the same transaction so
+  the two authoritative user views cannot contradict each other.
 - All mappings (reading status <-> event type <-> memory polarity <->
   legacy interaction type) live here and nowhere else.
 """
@@ -621,10 +622,30 @@ class ReadingService:
             events=events,
         )
 
-    async def remove_entry(self, entry_id: UUID) -> bool:
+    async def remove_entry(
+        self,
+        entry_id: UUID,
+        *,
+        thread_id: UUID | None = None,
+        request_id: str = "",
+    ) -> bool:
         entry = await self.session.get(UserBookShelf, entry_id)
         if entry is None:
             return False
+        from app.services.memory.write_gateway import MemoryWriteGateway
+
+        receipt_id = (
+            request_id.strip()[:128]
+            or f"shelf-remove-{uuid.uuid4()}"[:128]
+        )
+        await MemoryWriteGateway(self.session).forget_reading_memory(
+            user_id=entry.user_id,
+            thread_id=thread_id,
+            book_title=entry.title,
+            source_event_id=uuid.uuid4(),
+            receipt_id=receipt_id,
+            evidence_quote=f"移出书架：《{entry.title}》",
+        )
         await self.session.delete(entry)
         await self.session.flush()
         return True

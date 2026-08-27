@@ -282,6 +282,18 @@ def summarize_step_result(value: Any) -> str:
             if summary:
                 return summary[:500]
 
+        shelf_entries = value.get("shelf_entries")
+        if isinstance(shelf_entries, list) and shelf_entries:
+            titles = _result_titles(shelf_entries)
+            if titles:
+                suffix = (
+                    f"等 {len(shelf_entries)} 本"
+                    if len(shelf_entries) > len(titles)
+                    else f"共 {len(shelf_entries)} 本"
+                )
+                return f"已同步书架：{'、'.join(titles)}（{suffix}）"[:500]
+            return f"已同步 {len(shelf_entries)} 本书的阅读记录"
+
         for key in ("message", "summary", "conclusion", "answer", "reason"):
             item = value.get(key)
             if item not in (None, "", [], {}):

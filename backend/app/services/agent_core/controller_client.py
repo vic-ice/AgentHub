@@ -257,7 +257,7 @@ class ControllerClient:
         if fallback is None:
             return output
         if output.mode == "direct_answer":
-            return fallback
+            return _fallback_with_model_candidates(fallback, output.text)
         if output.mode != "capability_proposals":
             return output
 
@@ -546,6 +546,46 @@ def _book_search_fallback_arguments(
         arguments["publication_year_from"] = min(years)
         arguments["publication_year_to"] = max(years)
     return arguments
+
+
+def _fallback_with_model_candidates(
+    fallback: ControllerOutput,
+    text: str,
+) -> ControllerOutput:
+    """Preserve useful model intelligence when a required Search call was omitted."""
+
+    if not fallback.tool_calls:
+        return fallback
+    call = fallback.tool_calls[0]
+    if call.name != "book_search" or call.arguments.get("mode") != "recommendation":
+        return fallback
+    excluded = {
+        " ".join(str(title or "").split()).casefold()
+        for title in [
+            *call.arguments.get("reference_titles", []),
+            *call.arguments.get("excluded_titles", []),
+        ]
+        if str(title or "").strip()
+    }
+    candidates = list(
+        dict.fromkeys(
+            " ".join(title.split()).strip()
+            for title in re.findall(r"《([^》]{1,100})》", str(text or ""))
+            if " ".join(title.split()).strip()
+            and " ".join(title.split()).strip().casefold() not in excluded
+        )
+    )[:10]
+    if not candidates:
+        return fallback
+    enriched = call.model_copy(
+        update={
+            "arguments": {
+                **call.arguments,
+                "candidate_titles": candidates,
+            }
+        }
+    )
+    return fallback.model_copy(update={"tool_calls": [enriched]})
 
 
 def _merge_required_search_arguments(

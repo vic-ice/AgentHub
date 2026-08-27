@@ -13,6 +13,7 @@ from app.services.agent_core.publication.deterministic import (
     DeterministicReceiptRenderer,
 )
 from app.services.agent_core.publication.evidence_fallback import (
+    complete_book_candidate_coverage,
     ensure_explicit_evidence_format,
     render_external_evidence_fallback,
 )
@@ -75,6 +76,7 @@ class TrustedPublisher:
             evidence,
             user_request=user_request,
         )
+        content = complete_book_candidate_coverage(content, evidence)
         content = validate_synthesis(content, evidence=evidence)
         refs = [
             action.action_id

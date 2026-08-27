@@ -40,10 +40,13 @@ def render_memory_mutation(output: dict) -> str:
     mutations = [
         item for item in output.get("mutations", []) if isinstance(item, dict)
     ]
+    note_lines = _render_shelf_note_mutations(output)
     if not mutations:
-        return ""
+        return "\n".join(note_lines)
     statuses = {str(item.get("status") or "") for item in mutations}
     if statuses == {"noop_duplicate"}:
+        if note_lines:
+            return "\n".join(note_lines)
         labels = [
             _value_label(item.get("version"))
             for item in mutations
@@ -121,8 +124,22 @@ def render_memory_mutation(output: dict) -> str:
             else:
                 lines.append(f"记住了：{new_label}。")
     if lines:
-        return "\n".join(dict.fromkeys(lines))
+        return "\n".join(dict.fromkeys([*lines, *note_lines]))
+    if note_lines:
+        return "\n".join(note_lines)
     return "已根据你的最新表述更新长期记忆。"
+
+
+def _render_shelf_note_mutations(output: dict) -> list[str]:
+    lines: list[str] = []
+    for entry in output.get("shelf_entries", []):
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        note = str(entry.get("note") or "").strip()
+        if title and note:
+            lines.append(f"已为《{title}》保存备注：“{note}”。")
+    return list(dict.fromkeys(lines))
 
 
 def render_memory_search(output: dict) -> str:

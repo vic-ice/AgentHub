@@ -171,6 +171,7 @@ class RecommendationService:
     ) -> BookEvidence:
         effective_query = request.query
         constraints_payload: dict[str, Any] = {}
+        personalization_reference_titles: list[str] = []
         if request.mode == "recommendation" and user_id is not None:
             constraints = await build_personalized_recommendation_constraints(
                 self.session,
@@ -179,11 +180,15 @@ class RecommendationService:
             )
             effective_query = constraints.effective_query or request.query
             constraints_payload = constraints.model_dump(mode="json")
+            personalization_reference_titles = list(
+                constraints.shelf_reference_titles
+            )
 
         effective_query = _apply_discovery_constraints(effective_query, request)
         result, books = await self._discover(
             request=request,
             effective_query=effective_query,
+            personalization_reference_titles=personalization_reference_titles,
         )
         books = _filter_lookup_candidates(books, request)
         books, request_exclusions = _exclude_request_titles(books, request)
@@ -302,6 +307,7 @@ class RecommendationService:
         *,
         request: BookSearchInput,
         effective_query: str,
+        personalization_reference_titles: list[str] | None = None,
     ) -> tuple[BookSearchCacheResult, list[Book]]:
         strict_year_filter = (
             request.publication_year_from is not None
@@ -311,6 +317,7 @@ class RecommendationService:
         discovery_queries = _discovery_queries(
             request=request,
             effective_query=effective_query,
+            personalization_reference_titles=personalization_reference_titles,
         )
         per_query_limit = min(
             10,
@@ -415,6 +422,7 @@ def _discovery_queries(
     *,
     request: BookSearchInput,
     effective_query: str,
+    personalization_reference_titles: list[str] | None = None,
 ) -> list[str]:
     """Compile one semantic request into bounded provider queries.
 
@@ -434,6 +442,12 @@ def _discovery_queries(
         if str(title or "").strip()
         and normalize_book_work_title(title) not in excluded
     ]
+    personalized_anchors = [
+        str(title).strip()
+        for title in (personalization_reference_titles or [])
+        if str(title or "").strip()
+        and normalize_book_work_title(title) not in excluded
+    ][:3]
     if request.mode == "recommendation" and candidate_titles:
         exact_queries = [
             f"《{title}》 作者 出版社 内容简介"[:160]
@@ -448,10 +462,17 @@ def _discovery_queries(
         # onto the reference title itself (which is excluded from publication).
         supplemental = [
             f"类似 {str(title).strip()} 的书 推荐"[:120]
-            for title in request.reference_titles[:3]
+            for title in [*request.reference_titles, *personalized_anchors][:3]
             if str(title or "").strip()
         ]
         return list(dict.fromkeys([*exact_queries, *supplemental]))[:6]
+
+    if request.mode == "recommendation" and personalized_anchors:
+        anchor_queries = [
+            f"类似《{title}》的书 推荐"[:120]
+            for title in personalized_anchors
+        ]
+        return list(dict.fromkeys([*anchor_queries, effective_query]))[:4]
 
     # Keep a model-authored semantic query intact. When the Controller timed
     # out, the safe fallback intentionally has no inferred themes; expand only

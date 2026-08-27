@@ -251,6 +251,12 @@ export function summarizeToolOutput(output?: string | null): string {
 }
 
 export function friendlyStepTitle(step: CompletedExecutionStep): string {
+  if (
+    step.operation === "remember_memory_v2"
+    && /书架|阅读记录/.test(cleanText(step.detail))
+  ) {
+    return "同步阅读记录"
+  }
   if (step.operation) return operationLabel(step.operation)
   const title = cleanText(step.title)
   if (title === "模型调用完成" && /规划|执行动作/.test(step.detail)) {

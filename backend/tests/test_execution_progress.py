@@ -52,6 +52,24 @@ class ExecutionProgressTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("4 项", detail)
         self.assertNotIn("status", detail)
 
+    def test_summarizes_shelf_write_before_empty_memory_mutations(self) -> None:
+        detail = summarize_step_result({
+            "status": "committed",
+            "mutations": [],
+            "shelf_entries": [
+                {
+                    "title": "Python深度学习 (第2版)",
+                    "reading_status": "reading",
+                    "evaluation": "liked",
+                    "note": "学习python",
+                }
+            ],
+        })
+
+        self.assertIn("已同步书架", detail)
+        self.assertIn("Python深度学习", detail)
+        self.assertNotIn("0 项更新", detail)
+
     def test_summarizes_multi_source_book_coverage_for_users(self) -> None:
         detail = summarize_step_result({
             "result_mode": "book_evidence",

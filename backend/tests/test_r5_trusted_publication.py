@@ -121,7 +121,7 @@ def _web_output() -> dict:
 
 
 class TrustedPublicationTests(unittest.TestCase):
-    def test_balanced_book_synthesis_may_prioritize_admitted_items(self) -> None:
+    def test_balanced_book_synthesis_preserves_all_admitted_items(self) -> None:
         plan = _plan().model_copy(
             update={
                 "actions": [
@@ -177,8 +177,8 @@ class TrustedPublicationTests(unittest.TestCase):
         )
 
         self.assertIn("候选甲", answer.content)
-        self.assertNotIn("其他已核验候选", answer.content)
-        self.assertNotIn("候选乙", answer.content)
+        self.assertIn("其他已核验候选", answer.content)
+        self.assertIn("候选乙", answer.content)
 
     def test_candidate_coverage_accepts_title_without_marketing_parenthetical(self) -> None:
         plan = _plan().model_copy(
@@ -692,7 +692,7 @@ class TrustedPublicationTests(unittest.TestCase):
         self.assertIn("零基础或初学者", answer.content)
         self.assertIn("单一公开来源", answer.content)
 
-    def test_valid_model_book_table_may_prioritize_a_verified_subset(self) -> None:
+    def test_valid_model_book_table_preserves_verified_candidates(self) -> None:
         plan = _plan().model_copy(
             update={
                 "actions": [
@@ -754,7 +754,8 @@ class TrustedPublicationTests(unittest.TestCase):
         )
 
         self.assertIn("沟通练习", answer.content)
-        self.assertNotIn("理财入门", answer.content)
+        self.assertIn("理财入门", answer.content)
+        self.assertIn("其他已核验候选", answer.content)
         self.assertIn("模型自写内容", answer.content)
         self.assertIn("通过案例讲解沟通方法", answer.content)
         self.assertIn(

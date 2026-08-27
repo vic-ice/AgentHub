@@ -57,7 +57,7 @@ class MemoryAssertionProposal(VersionedMemoryModel):
         default_factory=dict,
         description=(
             "Canonical structured value for this assertion; do not omit a "
-            "status or evaluation explicitly stated by the user."
+            "status, evaluation, or reading note explicitly stated by the user."
         ),
     )
     qualifiers: dict[str, Any] = Field(default_factory=dict)
@@ -154,7 +154,7 @@ class RememberMemoryRequest(VersionedMemoryModel):
             "Complete set of independent durable assertions from this one "
             "message. Preserve every explicitly named entity. A compound "
             "message about multiple books must include actions for every book "
-            "and every stated status/evaluation dimension."
+            "and every stated status/evaluation/note dimension."
         ),
     )
 

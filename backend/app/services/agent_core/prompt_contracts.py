@@ -19,6 +19,16 @@ class TrustedMemoryContext(AgentCoreModel):
     source: Literal["user_journal"] = "user_journal"
 
 
+class TrustedShelfBookContext(AgentCoreModel):
+    """Compact authoritative Shelf row exposed only as trusted decision data."""
+
+    title: str = Field(min_length=1, max_length=256)
+    authors: list[str] = Field(default_factory=list, max_length=10)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    reading_status: Literal["want_to_read", "reading", "read", "dropped"]
+    evaluation: Literal["liked", "neutral", "disliked", "not_interested"] | None = None
+
+
 class TrustedReceiptSource(AgentCoreModel):
     title: str = Field(default="", max_length=300)
     url: str = Field(min_length=1, max_length=2_000)
@@ -136,6 +146,10 @@ class ControllerContextSnapshot(AgentCoreModel):
         default_factory=list,
         max_length=50,
     )
+    shelf: list[TrustedShelfBookContext] = Field(
+        default_factory=list,
+        max_length=20,
+    )
     receipts: list[TrustedReceiptContext] = Field(
         default_factory=list,
         max_length=32,
@@ -176,6 +190,7 @@ __all__ = [
     "ConversationContextTurn",
     "TrustedConversationSummary",
     "TrustedMemoryContext",
+    "TrustedShelfBookContext",
     "TrustedReceiptContext",
     "TrustedResearchRunContext",
     "TrustedReceiptSource",

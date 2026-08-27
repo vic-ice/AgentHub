@@ -104,7 +104,7 @@ class TurnFactCompiler:
         incoming: AtomicFact,
         source: str,
     ) -> list[AtomicFact]:
-        """Merge same-entity reading facts (status + evaluation) instead of duplicating."""
+        """Merge same-book reading facts (status, evaluation, note)."""
         if not incoming.source_excerpt:
             incoming = incoming.model_copy(update={"source_excerpt": source})
         if incoming.domain == "reading" and incoming.entity_type == "book":
@@ -197,7 +197,7 @@ def compiled_turn_from_assertions(
         entity = ""
         attributes: dict[str, Any] = dict(value)
 
-        if predicate in {"reading_status", "evaluation"} or domain == "reading":
+        if predicate in {"reading_status", "evaluation", "note"} or domain == "reading":
             domain = "reading"
             entity_type = "book"
             entity = assertion.subject.strip()
@@ -210,6 +210,8 @@ def compiled_turn_from_assertions(
                 }
                 if value.get("evaluation") is not None:
                     attributes["evaluation"] = value.get("evaluation")
+                if value.get("note") is not None:
+                    attributes["note"] = value.get("note")
                 kind = "state"
             elif predicate == "evaluation":
                 attributes = {"evaluation": value.get("evaluation")}
@@ -219,11 +221,21 @@ def compiled_turn_from_assertions(
                 )
                 if status is not None:
                     attributes["reading_status"] = status
+                if value.get("note") is not None:
+                    attributes["note"] = value.get("note")
                 kind = "feedback"
+            elif predicate == "note":
+                attributes = {"note": value.get("note")}
+                status = value.get("reading_status", value.get("status"))
+                if status is not None:
+                    attributes["reading_status"] = status
+                if value.get("evaluation") is not None:
+                    attributes["evaluation"] = value.get("evaluation")
+                kind = "state"
             else:
                 attributes = {
                     key: value.get(key)
-                    for key in ("reading_status", "evaluation")
+                    for key in ("reading_status", "evaluation", "note")
                     if value.get(key) is not None
                 }
         elif assertion.subject.casefold() not in {"self", "user", "用户", "我"}:
@@ -301,9 +313,12 @@ Rules:
   Same entity + same predicate = one version chain (rename supersedes).
 - Reading statements use entity_type=book and domain=reading. Use predicate
   reading_status with canonical values want_to_read|reading|read|dropped, and
-  predicate evaluation with liked|neutral|disliked|not_interested. One turn may
-  produce several facts for several books. Do not infer asserted user state
-  from negated, hypothetical, uncertain, quoted, or third-party statements.
+  predicate evaluation with liked|neutral|disliked|not_interested. An explicit
+  user-authored reading note uses predicate note and attributes {"note": the
+  verbatim note content}. Preserve status, evaluation and note when they occur
+  in the same statement. One turn may produce several facts for several books.
+  Do not infer asserted user state from negated, hypothetical, uncertain,
+  quoted, or third-party statements.
 
 User statement (resolve referents like 它/这本/那只 using the recent conversation):
 {context_block}{text}

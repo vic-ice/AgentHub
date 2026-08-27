@@ -41,7 +41,9 @@ def render_bookshelf_read(output: dict[str, Any]) -> str:
             if evaluation_value is not None
             else "未评价"
         )
-        lines.append(f"- 《{title}》：{status}；评价：{evaluation}")
+        note = str(item.get("note") or "").strip()
+        suffix = f"；备注：{note}" if note else ""
+        lines.append(f"- 《{title}》：{status}；评价：{evaluation}{suffix}")
 
     if not lines:
         return "你的书架目前还没有可展示的书。"

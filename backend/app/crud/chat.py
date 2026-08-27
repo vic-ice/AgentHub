@@ -2,6 +2,7 @@ from uuid import UUID
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select, update, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import Conversation
@@ -68,8 +69,25 @@ async def get_or_create_conversation_by_thread_id(
         user_id=user_id,
         title=title,
     )
-    db.add(conversation)
-    await db.flush()
+    try:
+        async with db.begin_nested():
+            db.add(conversation)
+            await db.flush()
+    except IntegrityError:
+        # The frontend creates a conversation and starts streaming almost at
+        # the same time.  A concurrent transaction may therefore insert the
+        # same thread between the SELECT above and this INSERT.  Keep the outer
+        # session usable, then read the winning row instead of turning a safe
+        # retry into a 500 response.
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            raise
+        if existing.is_deleted:
+            existing.is_deleted = False
+            existing.title = title
+            await db.flush()
+        return existing
     await db.refresh(conversation)
     return conversation
 

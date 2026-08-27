@@ -119,7 +119,9 @@ Query：`status`（ReadingStatus，可多值逗号分隔）、`evaluation`（Boo
 
 ### DELETE /books/shelf/{entry_id}
 
-成功返回 `204`；`404` 当条目不存在。
+成功返回 `204`；`404` 当条目不存在。删除由 ReadingService 在同一事务内
+通过 MemoryWriteGateway 将该书派生的当前阅读状态/评价标记为遗忘，避免 Shelf
+与长期记忆出现相互矛盾的当前状态。
 
 ## 4. ReadingService 责任边界
 
@@ -138,7 +140,7 @@ Query：`status`（ReadingStatus，可多值逗号分隔）、`evaluation`（Boo
 1. upsert 当前状态到 `user_book_shelf`；
 2. 同事务写入 `RecommendationEvent` 审计（事件类型扩展见 §6）；
 3. 同事务写入 `BookInteraction` 兼容行（审计的一部分，默认开启，供 legacy 消费者）；
-4. 事务提交后尽力写入 Memory（`reading_state` / `feedback`），失败仅捕获日志，不阻断主流程；
+4. POST/PATCH 事务提交后尽力写入 Memory（`reading.state` / `reading.feedback`）；DELETE 则在同一事务内通过 Gateway 遗忘该书的派生当前记忆；
 5. 提供 `backfill_from_history(user_id)`：按每本书最后一次有效事件 last-write-wins 生成初始 Shelf，幂等可重跑；
 6. 拥有全部映射的唯一实现：`reading_status ↔ event_type ↔ memory polarity ↔ legacy interaction_type`。
 
