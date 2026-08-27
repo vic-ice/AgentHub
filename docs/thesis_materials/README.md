@@ -40,7 +40,7 @@ Controller 一次输出结构化动作和 `assertions[]`。`compiled_turn_from_a
 
 `ReadingService` 是 `user_book_shelf` 的业务写入所有者，书架保存当前阅读状态、评价、备注等阅读资产。阅读动作需要形成长期事实时，经 `write_reading_memory_best_effort()` 重新进入 `MemoryWriteGateway.record_reading_memory()`，再写入版本化 Memory。
 
-两者职责不同：Shelf 是当前阅读状态的权威来源；Memory 是跨会话长期事实和偏好的版本化来源。删除书架条目不等价于自动遗忘历史 Memory。
+两者职责不同：Shelf 是当前阅读状态的权威来源；Memory 是跨会话长期事实和偏好的版本化来源。移出书架会同步把该书当前阅读投影写成 tombstone，使其退出 CurrentProjection；历史 Memory 版本仍保留用于审计，因此不等价于物理删除历史。
 
 ### 2.5 图书查找与个性化推荐
 

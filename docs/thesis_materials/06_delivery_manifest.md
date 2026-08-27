@@ -30,6 +30,7 @@
 - `05_screenshot_plan.md`
 - `06_delivery_manifest.md`
 - `README.md`
+- `../论文技术事实材料.md`（仓库主技术事实材料；压缩包内使用 ASCII 路径 `docs/thesis_technical_facts_zh.md`）
 - `screenshots/01` 至 `screenshots/06`
 - 根目录 `thesis_source_evidence.zip`
 

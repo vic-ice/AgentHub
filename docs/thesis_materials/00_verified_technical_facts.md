@@ -17,6 +17,7 @@
 1. 普通 Chat 由 Controller 完成一次语义决策，业务能力只执行结构化动作和原子 assertions，最终通过 typed receipt/evidence 进入可信发布链。
 2. `MemoryWriteGateway` 是长期记忆统一写入入口，`MemoryVersionStore` 保存版本、修订和遗忘 tombstone，`current_projection.py` 只投影当前有效事实。
 3. `ReadingService` 与 `user_book_shelf` 是当前阅读资产的权威所有者；阅读类长期记忆是从阅读动作派生的跨会话事实，不是书架表的替代存储。
+   移出书架会在同一事务中定向遗忘该书当前阅读投影，但保留历史版本。
 4. 个性化推荐同时读取 Memory、Shelf、推荐事件和交互信号。Controller 在推荐请求中获得有界书架快照，模型负责产生候选智能，检索负责核验和补充信息。
 5. Shelf 中的已知书在“推荐新书”模式下统一排除；正向书架条目可以作为发现锚点，但不能再次成为最终候选。
 6. 发布阶段保留模型的面向用户综合，同时通过 `complete_book_candidate_coverage()` 防止已经核验的候选被静默压缩丢失。
