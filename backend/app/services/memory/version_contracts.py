@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -157,6 +158,19 @@ class RememberMemoryRequest(VersionedMemoryModel):
             "and every stated status/evaluation/note dimension."
         ),
     )
+
+    @field_validator("assertions", mode="before")
+    @classmethod
+    def restore_stringified_assertions(cls, value: Any) -> Any:
+        """Restore a JSON array serialized by an otherwise valid model call."""
+
+        if not isinstance(value, str):
+            return value
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+        return decoded if isinstance(decoded, list) else value
 
 
 class SearchMemoryRequest(VersionedMemoryModel):

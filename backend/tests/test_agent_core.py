@@ -29,13 +29,17 @@ from app.services.agent_runtime.contracts import (
     PlanReceipt,
     PlannedAction,
 )
+from app.services.agent_runtime.runtime import _evidence_is_user_authored
 from app.services.conversation import (
     ConversationReadRequest,
     ConversationTurn,
     ConversationWindow,
     read_conversation,
 )
-from app.services.memory.version_contracts import SearchMemoryRequest
+from app.services.memory.version_contracts import (
+    RememberMemoryRequest,
+    SearchMemoryRequest,
+)
 from app.services.tasks.contracts import TaskPlanDraft, TaskPlanStepDraft
 
 
@@ -95,6 +99,35 @@ def _conversation_output() -> ControllerOutput:
 
 
 class ControllerContractTests(unittest.TestCase):
+    def test_stringified_assertions_array_is_restored_at_contract_boundary(
+        self,
+    ) -> None:
+        request = RememberMemoryRequest.model_validate(
+            {
+                "assertions": (
+                    '[{"subject":"Python深度学习 (第2版)",'
+                    '"predicate":"reading_status",'
+                    '"value":{"reading_status":"reading"},'
+                    '"evidence_quote":"我正在读《Python深度学习 (第2版)》",'
+                    '"domain":"reading","entity_type":"book"}]'
+                )
+            }
+        )
+
+        self.assertEqual(len(request.assertions), 1)
+        self.assertEqual(request.assertions[0].domain, "reading")
+
+    def test_evidence_gate_tolerates_width_and_punctuation_only(self) -> None:
+        goal = "我正在读《Python深度学习（第2版）》，很喜欢。"
+
+        self.assertTrue(
+            _evidence_is_user_authored(
+                "我正在读 Python深度学习 (第2版)",
+                goal,
+            )
+        )
+        self.assertFalse(_evidence_is_user_authored("我读完了这本书", goal))
+
     def test_mode_schema_defines_clarification_boundary(self) -> None:
         description = ControllerOutput.model_json_schema()["properties"][
             "mode"

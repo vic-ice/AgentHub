@@ -40,13 +40,17 @@ def render_memory_mutation(output: dict) -> str:
     mutations = [
         item for item in output.get("mutations", []) if isinstance(item, dict)
     ]
-    note_lines = _render_shelf_note_mutations(output)
+    reading_lines = _render_shelf_reading_changes(output)
+    note_lines = (
+        [] if reading_lines else _render_shelf_note_mutations(output)
+    )
+    shelf_lines = [*reading_lines, *note_lines]
     if not mutations:
-        return "\n".join(note_lines)
+        return "\n".join(shelf_lines)
     statuses = {str(item.get("status") or "") for item in mutations}
     if statuses == {"noop_duplicate"}:
-        if note_lines:
-            return "\n".join(note_lines)
+        if shelf_lines:
+            return "\n".join(shelf_lines)
         labels = [
             _value_label(item.get("version"))
             for item in mutations
@@ -114,6 +118,11 @@ def render_memory_mutation(output: dict) -> str:
                 continue
         if mutation_status in {"created", "revised"} and new_label:
             schema_key = str(version_payload.get("schema_key") or "")
+            if reading_lines and schema_key in {
+                "reading.state",
+                "reading.feedback",
+            }:
+                continue
             subject = _subject_label(version_payload)
             if schema_key == "reading.state":
                 lines.append(f"已将{subject}的阅读状态设为“{new_label}”。")
@@ -124,10 +133,42 @@ def render_memory_mutation(output: dict) -> str:
             else:
                 lines.append(f"记住了：{new_label}。")
     if lines:
-        return "\n".join(dict.fromkeys([*lines, *note_lines]))
-    if note_lines:
-        return "\n".join(note_lines)
+        return "\n".join(dict.fromkeys([*lines, *shelf_lines]))
+    if shelf_lines:
+        return "\n".join(shelf_lines)
     return "已根据你的最新表述更新长期记忆。"
+
+
+def _render_shelf_reading_changes(output: dict) -> list[str]:
+    lines: list[str] = []
+    for change in output.get("reading_changes", []):
+        if not isinstance(change, dict):
+            continue
+        title = str(change.get("title") or "").strip()
+        if not title:
+            continue
+        status = str(change.get("reading_status") or "").strip()
+        evaluation = str(change.get("evaluation") or "").strip()
+        note = str(change.get("note") or "").strip()
+        if status:
+            status_label = {
+                "want_to_read": "想读",
+                "reading": "在读",
+                "read": "已读",
+                "dropped": "弃读",
+            }.get(status, status)
+            lines.append(f"已将《{title}》的阅读状态设置为“{status_label}”。")
+        if evaluation:
+            evaluation_label = {
+                "liked": "喜欢",
+                "neutral": "一般",
+                "disliked": "不喜欢",
+                "not_interested": "不感兴趣",
+            }.get(evaluation, evaluation)
+            lines.append(f"已将《{title}》的阅读评价更新为“{evaluation_label}”。")
+        if note:
+            lines.append(f"已保存《{title}》的备注：“{note}”。")
+    return list(dict.fromkeys(lines))
 
 
 def _render_shelf_note_mutations(output: dict) -> list[str]:

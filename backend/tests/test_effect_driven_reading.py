@@ -186,7 +186,7 @@ class ReadingWriteExecutionTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "title": "Python编程：从入门到实践",
                     "reading_status": "reading",
-                    "evaluation": None,
+                    "evaluation": "liked",
                     "note": "学习python",
                 }
             ),
@@ -205,7 +205,11 @@ class ReadingWriteExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         fact = SimpleNamespace(
             entity="Python编程：从入门到实践",
-            attributes={"reading_status": "reading", "note": "学习python"},
+            attributes={
+                "reading_status": "reading",
+                "evaluation": "liked",
+                "note": "学习python",
+            },
             source_excerpt="备注是学习python",
         )
         gateway = MemoryWriteGateway(Mock())
@@ -236,7 +240,9 @@ class ReadingWriteExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.upsert.await_args.kwargs["note"], "学习python")
         self.assertEqual(
             render_memory_mutation(outcome),
-            "已为《Python编程：从入门到实践》保存备注：“学习python”。",
+            "已将《Python编程：从入门到实践》的阅读状态设置为“在读”。\n"
+            "已将《Python编程：从入门到实践》的阅读评价更新为“喜欢”。\n"
+            "已保存《Python编程：从入门到实践》的备注：“学习python”。",
         )
 
 

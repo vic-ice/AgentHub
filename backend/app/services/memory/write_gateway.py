@@ -57,6 +57,7 @@ class MemoryWriteGateway:
         others = [fact for fact in executable if fact.domain != "reading"]
         mutations: list[dict[str, Any]] = []
         shelf_entries: list[dict[str, Any]] = []
+        reading_changes: list[dict[str, Any]] = []
         questions: list[str] = []
 
         if reading:
@@ -71,6 +72,7 @@ class MemoryWriteGateway:
             )
             mutations.extend(reading_outcome.get("mutations", []))
             shelf_entries.extend(reading_outcome.get("shelf_entries", []))
+            reading_changes.extend(reading_outcome.get("reading_changes", []))
             questions.extend(reading_outcome.get("clarification_questions", []))
 
         if others:
@@ -101,6 +103,7 @@ class MemoryWriteGateway:
             "status": "partial" if questions else "committed",
             "mutations": mutations,
             "shelf_entries": shelf_entries,
+            "reading_changes": reading_changes,
             "clarification_question": questions[0] if questions else "",
             "clarification_questions": questions,
         }
@@ -598,6 +601,7 @@ class MemoryWriteGateway:
             resolved_items.append((fact, resolved, reading_status, evaluation, note))
 
         shelf_entries: list[dict[str, Any]] = []
+        reading_changes: list[dict[str, Any]] = []
         mutations: list[dict[str, Any]] = []
         for index, (fact, resolved, reading_status, evaluation, note) in enumerate(resolved_items):
             kwargs: dict[str, Any] = {
@@ -614,6 +618,14 @@ class MemoryWriteGateway:
                 kwargs["note"] = note
             result = await svc.upsert(**kwargs)
             shelf_entries.append(result.shelf.model_dump(mode="json"))
+            reading_changes.append(
+                {
+                    "title": result.shelf.title,
+                    "reading_status": reading_status,
+                    "evaluation": evaluation,
+                    "note": note,
+                }
+            )
             event_id = next(
                 (
                     getattr(event, "id", None)
@@ -641,6 +653,7 @@ class MemoryWriteGateway:
             ),
             "mutations": mutations,
             "shelf_entries": shelf_entries,
+            "reading_changes": reading_changes,
             "clarification_question": questions[0] if questions else "",
             "clarification_questions": questions,
         }

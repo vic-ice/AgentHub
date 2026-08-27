@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -64,6 +65,19 @@ _NATIVE_OPERATIONS = frozenset(
         "research_read_v1",
     }
 )
+
+
+def _normalized_evidence_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(character for character in normalized if character.isalnum())
+
+
+def _evidence_is_user_authored(evidence_quote: str, goal: str) -> bool:
+    """Accept literal user evidence across harmless width/punctuation changes."""
+
+    evidence = _normalized_evidence_text(evidence_quote)
+    source = _normalized_evidence_text(goal)
+    return bool(evidence) and evidence in source
 
 
 class SystemRuntime:
@@ -579,9 +593,9 @@ def _admit_action(
             request = RememberMemoryRequest.model_validate(action.arguments)
         except Exception:
             return False, "versioned_memory_request_invalid"
-        goal = " ".join(str(plan.goal or "").split()).strip().casefold()
+        goal = str(plan.goal or "")
         if any(
-            assertion.evidence_quote.casefold() not in goal
+            not _evidence_is_user_authored(assertion.evidence_quote, goal)
             for assertion in request.assertions
         ):
             return False, "memory_evidence_must_be_user_authored"
@@ -597,9 +611,9 @@ def _admit_action(
             request = ForgetMemoryRequest.model_validate(action.arguments)
         except Exception:
             return False, "versioned_memory_forget_invalid"
-        goal = " ".join(str(plan.goal or "").split()).strip().casefold()
+        goal = str(plan.goal or "")
         if any(
-            target.evidence_quote.casefold() not in goal
+            not _evidence_is_user_authored(target.evidence_quote, goal)
             for target in request.targets
         ):
             return False, "memory_evidence_must_be_user_authored"
