@@ -14,7 +14,7 @@
 | 文件 | 尺寸 | SHA-256 |
 |---|---:|---|
 | `01_chat_multi_action.png` | 1920×1189 | `7571552dcfef1454c94913a5c0692fde8f4fcaf449aaa3a56c8306c6c11693e6` |
-| `02_bookshelf_result.png` | 1920×1189 | `f18041cea0b51985374193b5dee8915ef069f985af2a597af3ae95533f49910d` |
+| `02_bookshelf_result.png` | 1920×1189 | `2ee63ceb8827545bc9c13d4c4fd36e401408294a3043cb79a2329388b868ba8c` |
 | `03_memory_current.png` | 1920×1189 | `3fff43b22dddbd6e4a7d69b3af8c371bb4f00bdedc65c0b93bf62bb54125fd1b` |
 | `04_personalized_recommendation.png` | 1920×1189 | `5551d189ab75c54025ce68235139a8478bfef5a9537e3a050aa59de9bd8800eb` |
 | `05_deep_research_report.png` | 1920×1189 | `c2668ba943e05a17791bb75345a807355f3c2e9da585d387b7992db418715549` |
