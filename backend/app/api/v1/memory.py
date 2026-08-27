@@ -1,7 +1,6 @@
 """Version-chain memory management endpoints."""
 
 import hashlib
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,6 +16,11 @@ from app.schemas.memory import (
     MemoryForgetAdminRequest,
 )
 from app.services.memory.canonicalizer import MemoryCanonicalizer
+from app.services.memory.admin_projection import (
+    collapse_current_versions,
+    history_versions_for,
+    project_memory_record,
+)
 from app.services.memory.classification import derive_domain_kind
 from app.services.memory.version_contracts import (
     ForgetMemoryTargetProposal,
@@ -29,6 +33,12 @@ from app.services.memory.read_gateway import MemoryReadGateway
 from app.services.memory.write_gateway import MemoryWriteGateway
 
 api_router = APIRouter(prefix="/memory", tags=["Memory"])
+
+_SELF_NAME_COMPATIBILITY_KEYS = (
+    "personal.fact:name",
+    "personal.correction:name",
+    "identity.self_reported_name:self",
+)
 
 
 @api_router.get(
@@ -46,7 +56,7 @@ async def list_current_memories(
     return MemoryAdminCurrentResponse(
         facts=[
             _to_admin_fact(head)
-            for head in heads
+            for head in collapse_current_versions(heads)
             if not head.is_tombstone
         ]
     )
@@ -64,17 +74,22 @@ async def memory_history(
     """Return the full version timeline for one fact."""
 
     reader = MemoryReadGateway(db)
-    records = await reader.history_versions(user_id=user_id, limit=1000)
-    versions = [
-        record
-        for record in records
-        if record.memory_key == memory_key
-    ]
-    if not versions:
+    exact = await reader.history_versions_by_key(
+        user_id=user_id,
+        memory_key=memory_key,
+    )
+    if not exact:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="memory fact not found",
         )
+    records = exact
+    if _to_admin_fact(exact[-1]).presentation_key in {
+        "identity.self_reported_name",
+        "entity.name",
+    }:
+        records = await reader.history_versions(user_id=user_id, limit=1000)
+    versions = history_versions_for(records, memory_key=memory_key)
     return MemoryAdminHistoryResponse(
         memory_key=memory_key,
         versions=[_to_admin_fact(version) for version in versions],
@@ -92,6 +107,14 @@ async def edit_memory(
 ) -> MemoryMutationReceipt:
     """Create or correct one canonical fact from the memory panel."""
 
+    target_record = None
+    if request.memory_key:
+        target_record = await _require_manageable_target(
+            db,
+            user_id=request.user_id,
+            memory_key=request.memory_key,
+            action="edit",
+        )
     evidence = request.evidence_quote or _admin_evidence(
         "更新",
         request.predicate,
@@ -119,8 +142,8 @@ async def edit_memory(
         user_id=request.user_id,
         thread_id=request.thread_id,
         action="create",
-        schema_key=fact.schema_key,
-        memory_key=fact.memory_key,
+        schema_key=(target_record.schema_key if target_record else fact.schema_key),
+        memory_key=(target_record.memory_key if target_record else fact.memory_key),
         subject="self",
         predicate=request.predicate,
         value=request.value,
@@ -133,15 +156,25 @@ async def edit_memory(
     await db.refresh(event)
 
     gateway = MemoryWriteGateway(db)
-    gateway_result = await gateway.commit_facts(
-        canonical.facts,
-        user_id=request.user_id,
-        thread_id=request.thread_id,
-        source_event_id=event.id,
-        receipt_id=_admin_receipt_id(request.user_id, "edit", event.id),
-        evidence_quote=evidence,
-        source_kind="admin_action",
-    )
+    if target_record is not None:
+        gateway_result = await gateway.commit_admin_correction(
+            fact.model_copy(update={"evidence_quote": evidence}),
+            target_memory_key=target_record.memory_key,
+            user_id=request.user_id,
+            thread_id=request.thread_id,
+            source_event_id=event.id,
+            receipt_id=_admin_receipt_id(request.user_id, "edit", event.id),
+        )
+    else:
+        gateway_result = await gateway.commit_facts(
+            canonical.facts,
+            user_id=request.user_id,
+            thread_id=request.thread_id,
+            source_event_id=event.id,
+            receipt_id=_admin_receipt_id(request.user_id, "edit", event.id),
+            evidence_quote=evidence,
+            source_kind="admin_action",
+        )
     if gateway_result.get("status") == "clarification_required":
         raise _clarification_error(
             ["gateway_entity_resolution_ambiguous"],
@@ -167,6 +200,14 @@ async def forget_memory(
 ) -> MemoryMutationReceipt:
     """Tombstone one existing fact from the memory panel."""
 
+    target_record = None
+    if request.memory_key:
+        target_record = await _require_manageable_target(
+            db,
+            user_id=request.user_id,
+            memory_key=request.memory_key,
+            action="forget",
+        )
     evidence = request.evidence_quote or _admin_evidence(
         "遗忘",
         request.predicate,
@@ -183,8 +224,8 @@ async def forget_memory(
         user_id=request.user_id,
         thread_id=request.thread_id,
         action="forget",
-        schema_key=None,
-        memory_key=None,
+        schema_key=(target_record.schema_key if target_record else None),
+        memory_key=(target_record.memory_key if target_record else None),
         subject="self",
         predicate=request.predicate,
         value={},
@@ -198,15 +239,25 @@ async def forget_memory(
 
     gateway = MemoryWriteGateway(db)
     try:
-        gateway_result = await gateway.forget_targets(
-            user_id=request.user_id,
-            thread_id=request.thread_id,
-            targets=[target],
-            source_text=evidence,
-            source_event_id=event.id,
-            receipt_id=_admin_receipt_id(request.user_id, "forget", event.id),
-            source_kind="admin_action",
-        )
+        if target_record is not None:
+            gateway_result = await gateway.forget_admin_target(
+                user_id=request.user_id,
+                thread_id=request.thread_id,
+                target_memory_key=target_record.memory_key,
+                source_event_id=event.id,
+                receipt_id=_admin_receipt_id(request.user_id, "forget", event.id),
+                evidence_quote=evidence,
+            )
+        else:
+            gateway_result = await gateway.forget_targets(
+                user_id=request.user_id,
+                thread_id=request.thread_id,
+                targets=[target],
+                source_text=evidence,
+                source_event_id=event.id,
+                receipt_id=_admin_receipt_id(request.user_id, "forget", event.id),
+                source_kind="admin_action",
+            )
     except MemoryVersionTargetNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -235,10 +286,47 @@ async def forget_memory(
 
 
 def _admin_evidence(action: str, predicate: str, value) -> str:
-    return (
-        f"用户在记忆面板{action}：predicate={predicate} "
-        f"value={json.dumps(value, ensure_ascii=False)}"
+    del predicate, value
+    return f"用户在记忆中心{action}了这条事实。"
+
+
+async def _require_manageable_target(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    memory_key: str,
+    action: str,
+) -> MemoryVersionRecord:
+    reader = MemoryReadGateway(db)
+    records = await reader.current_versions_by_keys(
+        user_id=user_id,
+        memory_keys=[memory_key],
     )
+    target = next(
+        (
+            record
+            for record in records
+            if record.memory_key == memory_key and not record.is_tombstone
+        ),
+        None,
+    )
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="memory fact not found",
+        )
+    presentation = _to_admin_fact(target)
+    allowed = presentation.can_edit if action == "edit" else presentation.can_forget
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "this memory is managed by its owning feature"
+                if presentation.category_key == "reading"
+                else f"memory fact cannot be {action}ed"
+            ),
+        )
+    return target
 
 
 def _admin_receipt_id(user_id: UUID, action: str, event_id: UUID) -> str:
@@ -250,6 +338,13 @@ def _admin_receipt_id(user_id: UUID, action: str, event_id: UUID) -> str:
 def _to_admin_fact(record: MemoryVersionRecord) -> MemoryAdminFact:
     fallback_domain, fallback_kind = derive_domain_kind(
         "", record.subject, record.schema_key
+    )
+    domain = str(record.value.get("domain") or fallback_domain)
+    kind = str(record.value.get("kind") or fallback_kind)
+    presentation = project_memory_record(
+        record,
+        domain=domain,
+        kind=kind,
     )
     return MemoryAdminFact(
         schema_key=record.schema_key,
@@ -263,8 +358,15 @@ def _to_admin_fact(record: MemoryVersionRecord) -> MemoryAdminFact:
         valid_from=record.valid_from,
         valid_to=record.valid_to,
         is_tombstone=record.is_tombstone,
-        domain=str(record.value.get("domain") or fallback_domain),
-        kind=str(record.value.get("kind") or fallback_kind),
+        domain=domain,
+        kind=kind,
+        presentation_key=presentation.presentation_key,
+        category_key=presentation.category_key,
+        category_label=presentation.category_label,
+        display_value=presentation.display_value,
+        can_edit=presentation.can_edit,
+        can_forget=presentation.can_forget,
+        show_evidence=presentation.show_evidence,
     )
 
 

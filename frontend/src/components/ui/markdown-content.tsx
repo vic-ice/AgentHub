@@ -422,13 +422,13 @@ const createMarkdownComponents = (
 	disableCodeHighlight: boolean,
 ): Partial<Components> => ({
 	h1: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-		<h1 className="scroll-m-20 text-2xl font-bold" {...props}>
+		<h1 className="scroll-m-20 pt-1 text-2xl font-bold leading-tight tracking-tight" {...props}>
 			{children}
 		</h1>
 	),
 	h2: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
 		<h2
-			className="scroll-m-20 border-b pb-1 text-xl font-semibold tracking-tight"
+			className="scroll-m-20 border-b border-border/70 pb-2 pt-4 text-xl font-semibold leading-snug tracking-tight"
 			{...props}
 		>
 			{children}
@@ -436,7 +436,7 @@ const createMarkdownComponents = (
 	),
 	h3: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
 		<h3
-			className="scroll-m-20 text-lg font-semibold tracking-tight"
+			className="scroll-m-20 pt-3 text-lg font-semibold leading-snug tracking-tight"
 			{...props}
 		>
 			{children}
@@ -444,7 +444,7 @@ const createMarkdownComponents = (
 	),
 	h4: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
 		<h4
-			className="scroll-m-20 text-base font-semibold tracking-tight"
+			className="scroll-m-20 pt-2 text-base font-semibold leading-snug tracking-tight"
 			{...props}
 		>
 			{children}
@@ -467,14 +467,14 @@ const createMarkdownComponents = (
 		</h6>
 	),
 	p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
-		<p className="leading-7 break-words" {...props}>
+		<p className="break-words leading-7 text-foreground/95" {...props}>
 			{children}
 		</p>
 	),
 	strong: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
-		<span className="font-semibold" {...props}>
+		<strong className="font-semibold text-foreground" {...props}>
 			{children}
-		</span>
+		</strong>
 	),
 	span: ({
 		children,
@@ -519,28 +519,28 @@ const createMarkdownComponents = (
 		...props
 	}: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
 		<a
-			className="inline-flex items-center gap-1.5 px-3 py-1.5 my-1 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors no-underline"
+			className="my-0.5 inline-flex max-w-full items-center gap-1 rounded-md border border-emerald-600/25 bg-emerald-500/10 px-2 py-0.5 text-[13px] font-medium leading-5 text-emerald-700 no-underline transition-colors hover:border-emerald-600/40 hover:bg-emerald-500/15 dark:text-emerald-300"
 			target="_blank"
 			rel="noreferrer"
 			href={href}
 			{...props}
 		>
-			<ExternalLinkIcon className="size-3.5" />
-			{children}
+			<ExternalLinkIcon className="size-3 shrink-0" />
+			<span className="min-w-0 break-words">{children}</span>
 		</a>
 	),
 	ol: ({ children, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
-		<ol className="ml-6 list-decimal [&>li]:mt-0" {...props}>
+		<ol className="ml-6 list-decimal space-y-1.5 marker:font-medium marker:text-muted-foreground" {...props}>
 			{children}
 		</ol>
 	),
 	ul: ({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
-		<ul className="ml-6 list-disc [&>li]:mt-0" {...props}>
+		<ul className="ml-6 list-disc space-y-1.5 marker:text-primary/70" {...props}>
 			{children}
 		</ul>
 	),
 	li: ({ children, ...props }: React.LiHTMLAttributes<HTMLLIElement>) => (
-		<li className="break-words" {...props}>
+		<li className="break-words pl-0.5 leading-7" {...props}>
 			{children}
 		</li>
 	),
@@ -548,17 +548,20 @@ const createMarkdownComponents = (
 		children,
 		...props
 	}: React.HTMLAttributes<HTMLQuoteElement>) => (
-		<blockquote className="border-l-2 pl-4 italic" {...props}>
+		<blockquote
+			className="rounded-r-lg border-l-4 border-primary/45 bg-muted/35 py-2.5 pl-4 pr-3 text-foreground/85"
+			{...props}
+		>
 			{children}
 		</blockquote>
 	),
 	hr: (props: React.HTMLAttributes<HTMLHRElement>) => (
-		<hr className="my-4 md:my-8" {...props} />
+		<hr className="my-6 border-border/70 md:my-7" {...props} />
 	),
 	table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
-		<div className="my-6 w-full overflow-y-auto">
+		<div className="my-5 w-full overflow-x-auto rounded-xl border border-border/75 bg-card/55 shadow-sm">
 			<table
-				className="relative w-full overflow-hidden border-none text-sm"
+				className="relative min-w-[560px] w-full border-collapse text-sm"
 				{...props}
 			>
 				{children}
@@ -566,7 +569,7 @@ const createMarkdownComponents = (
 		</div>
 	),
 	tr: ({ children, ...props }: React.HTMLAttributes<HTMLTableRowElement>) => (
-		<tr className="last:border-b-none m-0 border-b" {...props}>
+		<tr className="m-0 border-b border-border/65 transition-colors last:border-b-0 hover:bg-muted/25" {...props}>
 			{children}
 		</tr>
 	),
@@ -575,7 +578,7 @@ const createMarkdownComponents = (
 		...props
 	}: React.HTMLAttributes<HTMLTableCellElement>) => (
 		<th
-			className="px-4 py-2 text-left font-bold [[align=center]]:text-center [[align=right]]:text-right"
+			className="bg-muted/55 px-4 py-3 text-left font-semibold text-foreground [[align=center]]:text-center [[align=right]]:text-right"
 			{...props}
 		>
 			{children}
@@ -586,7 +589,7 @@ const createMarkdownComponents = (
 		...props
 	}: React.HTMLAttributes<HTMLTableCellElement>) => (
 		<td
-			className="px-4 py-2 text-left [[align=center]]:text-center [[align=right]]:text-right"
+			className="px-4 py-3 align-top text-left leading-6 [[align=center]]:text-center [[align=right]]:text-right"
 			{...props}
 		>
 			{children}
@@ -686,17 +689,25 @@ export const MarkdownContent = memo(
 			[isStreaming],
 		);
 
-		return blocks.map((block, index) => (
-			<MemoizedMarkdownBlock
-				content={block}
-				className={className}
-				components={components}
-				key={`block-${
-					// biome-ignore lint/suspicious/noArrayIndexKey: Needed for react key
-					index
-					}`}
-			/>
-		));
+		return (
+			<div
+				className={cn(
+					"min-w-0 [text-wrap:pretty] [&>div+div]:mt-3.5 [&>div:has(>h1)+div]:mt-4 [&>div:has(>h2)+div]:mt-3 [&>div:has(>h3)+div]:mt-2.5",
+					className,
+				)}
+			>
+				{blocks.map((block, index) => (
+					<MemoizedMarkdownBlock
+						content={block}
+						components={components}
+						key={`block-${
+							// biome-ignore lint/suspicious/noArrayIndexKey: Needed for react key
+							index
+							}`}
+					/>
+				))}
+			</div>
+		);
 	},
 );
 

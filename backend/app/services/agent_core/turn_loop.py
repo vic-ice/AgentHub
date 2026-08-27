@@ -31,6 +31,10 @@ from app.services.agent_runtime.contracts import ExecutionContext
 
 
 MAX_CONTROLLER_ROUNDS = 6
+_MODEL_KNOWLEDGE_FALLBACK_OPERATIONS = {
+    "book_search_v1",
+    "web_search_v2",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -108,7 +112,10 @@ class TurnControllerLoop:
                     context.request_id,
                 )
                 fallback = (
-                    self._publisher.publish_evidence_fallback(evidence=evidence)
+                    self._publisher.publish_evidence_fallback(
+                        evidence=evidence,
+                        user_request=request.current_user_message,
+                    )
                     if request.phase == "synthesis" and evidence
                     else None
                 )
@@ -128,7 +135,8 @@ class TurnControllerLoop:
                 )
             if request.phase == "synthesis" and output.mode != "direct_answer":
                 fallback = self._publisher.publish_evidence_fallback(
-                    evidence=evidence
+                    evidence=evidence,
+                    user_request=request.current_user_message,
                 )
                 if fallback is not None:
                     return TurnReceipt(
@@ -146,9 +154,16 @@ class TurnControllerLoop:
                 )
             if request.phase == "synthesis":
                 try:
-                    answer = self._publisher.publish_synthesis(
-                        output,
-                        evidence=evidence,
+                    answer = (
+                        self._publisher.publish_synthesis(
+                            output,
+                            evidence=evidence,
+                            user_request=request.current_user_message,
+                        )
+                        if _has_completed_evidence(evidence)
+                        else self._publisher.publish_model_knowledge_fallback(
+                            output
+                        )
                     )
                 except ValueError as exc:
                     logger.warning(
@@ -157,7 +172,8 @@ class TurnControllerLoop:
                         exc,
                     )
                     answer = self._publisher.publish_evidence_fallback(
-                        evidence=evidence
+                        evidence=evidence,
+                        user_request=request.current_user_message,
                     )
                 except Exception:
                     logger.exception(
@@ -165,7 +181,8 @@ class TurnControllerLoop:
                         context.request_id,
                     )
                     answer = self._publisher.publish_evidence_fallback(
-                        evidence=evidence
+                        evidence=evidence,
+                        user_request=request.current_user_message,
                     )
                 rounds.append(
                     ControllerRoundReceipt(
@@ -203,7 +220,10 @@ class TurnControllerLoop:
                     context.request_id,
                 )
                 fallback = (
-                    self._publisher.publish_evidence_fallback(evidence=evidence)
+                    self._publisher.publish_evidence_fallback(
+                        evidence=evidence,
+                        user_request=request.current_user_message,
+                    )
                     if request.phase == "synthesis" and evidence
                     else None
                 )
@@ -254,6 +274,7 @@ class TurnControllerLoop:
                     answer = self._publisher.publish_synthesis(
                         output,
                         evidence=evidence,
+                        user_request=request.current_user_message,
                     )
                 except Exception:
                     logger.exception(
@@ -261,7 +282,8 @@ class TurnControllerLoop:
                         context.request_id,
                     )
                     fallback = self._publisher.publish_evidence_fallback(
-                        evidence=evidence
+                        evidence=evidence,
+                        user_request=request.current_user_message,
                     )
                     if fallback is not None:
                         rounds.append(
@@ -332,6 +354,26 @@ class TurnControllerLoop:
                 for action in result.receipt.actions
             )
             if not has_completed:
+                if _can_use_model_knowledge_fallback(
+                    result.plan,
+                    result.receipt,
+                ):
+                    projected = self._projector.project(result.receipt)
+                    request = request.model_copy(
+                        update={
+                            "phase": "synthesis",
+                            "context": request.context.model_copy(
+                                update={
+                                    "receipts": [
+                                        *request.context.receipts,
+                                        *projected,
+                                    ][-32:],
+                                    "response_view": None,
+                                }
+                            ),
+                        }
+                    )
+                    continue
                 reason = _first_failure_reason(result.receipt.actions)
                 return _failed_turn(
                     request_id=context.request_id,
@@ -359,6 +401,22 @@ class TurnControllerLoop:
                     plan_receipts=plan_receipts,
                     content="本轮没有可供继续综合的受信结果。",
                 )
+            if (
+                _has_external_result(projected)
+                and not _has_external_evidence(projected)
+            ):
+                fallback = self._publisher.publish_evidence_fallback(
+                    evidence=evidence,
+                    user_request=request.current_user_message,
+                )
+                if fallback is not None:
+                    return TurnReceipt(
+                        status="completed",
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=fallback,
+                    )
             receipts = [*request.context.receipts, *projected][-32:]
             research_state = project_research_controller_context(
                 [
@@ -377,14 +435,20 @@ class TurnControllerLoop:
                     "context": request.context.model_copy(
                         update={
                             "receipts": receipts,
-                            "response_view": project_external_answer_view(evidence),
+                            "response_view": project_external_answer_view(
+                                evidence,
+                                user_request=request.current_user_message,
+                            ),
                             "trusted_research_state": research_state,
                         }
                     )
                 }
             )
 
-        fallback = self._publisher.publish_evidence_fallback(evidence=evidence)
+        fallback = self._publisher.publish_evidence_fallback(
+            evidence=evidence,
+            user_request=request.current_user_message,
+        )
         if fallback is not None:
             return TurnReceipt(
                 status="completed",
@@ -407,6 +471,37 @@ class TurnControllerLoop:
 
 
 def _has_external_evidence(projected) -> bool:
+    return any(
+        item.result_mode
+        in {"book_evidence", "web_evidence", "weather_evidence"}
+        and bool(item.sources or item.facts)
+        for item in projected
+    )
+
+
+def _has_completed_evidence(
+    evidence: list[ReceiptEvidenceBundle],
+) -> bool:
+    return any(
+        action.status == "completed"
+        for bundle in evidence
+        for action in bundle.receipt.actions
+    )
+
+
+def _can_use_model_knowledge_fallback(
+    plan,
+    receipt,
+) -> bool:
+    operations = {action.operation for action in receipt.actions}
+    return bool(
+        plan.response_mode == "model"
+        and operations
+        and operations.issubset(_MODEL_KNOWLEDGE_FALLBACK_OPERATIONS)
+    )
+
+
+def _has_external_result(projected) -> bool:
     return any(
         item.result_mode
         in {"book_evidence", "web_evidence", "weather_evidence"}

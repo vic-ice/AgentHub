@@ -26,18 +26,28 @@ from app.services.recommendation_signals import RecommendationSignalCreate
 from app.services.book_search import search_and_cache_books_with_status
 from app.services.book_search import BookSearchCacheResult
 from app.services.books.book_identity import normalize_book_work_title
+from app.services.research.candidate_quality import (
+    candidate_topic_supported,
+    is_book_catalog_url,
+)
 from app.services.external_capabilities.contracts import (
     BookEvidence,
+    BookEvidenceFacet,
     BookRecommendationItem,
     BookSearchInput,
     BookThemeCoverage,
     ExternalEvidenceSource,
 )
+from app.services.evidence_strategy import EvidenceFacet
 from app.services.external_search import SearchRequest, get_search_gateway
 from app.services.recommendation_constraints import (
     build_personalized_recommendation_constraints,
 )
 from app.services.recommendation_projection import RecommendationProjector
+
+
+BALANCED_ENRICHMENT_DEADLINE_SECONDS = 15.0
+DEEP_ENRICHMENT_DEADLINE_SECONDS = 18.0
 
 
 class RecommendationService:
@@ -177,6 +187,20 @@ class RecommendationService:
         )
         books = _filter_lookup_candidates(books, request)
         books, request_exclusions = _exclude_request_titles(books, request)
+        request_exclusions = list(
+            dict.fromkeys(
+                [
+                    *(
+                        str(item)
+                        for item in result.metadata.get(
+                            "excluded_candidate_titles",
+                            [],
+                        )
+                    ),
+                    *request_exclusions,
+                ]
+            )
+        )
         projection_payload: dict[str, Any] = {}
         if request.mode == "recommendation" and user_id is not None and books:
             projection = await RecommendationProjector(self.session).project_books(
@@ -252,6 +276,11 @@ class RecommendationService:
                 "filters_applied": filters_applied,
                 "limitations": limitations,
                 "enrichment": enrichment_metadata,
+                "evidence_strategy": (
+                    request.evidence_strategy.model_dump(mode="json")
+                    if request.evidence_strategy is not None
+                    else None
+                ),
                 "personalization": {
                     "enabled": (
                         request.mode == "recommendation" and user_id is not None
@@ -285,42 +314,101 @@ class RecommendationService:
         )
         per_query_limit = min(
             10,
-            max(3, (candidate_limit + len(discovery_queries) - 1) // len(discovery_queries) + 2),
+            max(
+                3,
+                request.limit + min(len(request.excluded_titles), 3),
+                (
+                    candidate_limit + len(discovery_queries) - 1
+                )
+                // len(discovery_queries)
+                + 2,
+            ),
         )
-        results = [
-            await search_and_cache_books_with_status(
+        results: list[BookSearchCacheResult] = []
+        excluded_candidate_titles: list[str] = []
+        for query_index, discovery_query in enumerate(discovery_queries):
+            title_match = (
+                re.search(r"《([^》]{1,100})》", discovery_query)
+                if request.candidate_titles
+                else None
+            )
+            raw_result = await search_and_cache_books_with_status(
                 self.session,
-                query=discovery_queries[0],
-                limit=(candidate_limit if len(discovery_queries) == 1 else per_query_limit),
+                query=discovery_query,
+                limit=(
+                    candidate_limit
+                    if len(discovery_queries) == 1
+                    else per_query_limit
+                ),
                 force_external=(
                     strict_year_filter or request.mode == "recommendation"
                 ),
-                federated_discovery=(request.mode == "recommendation"),
+                # Multi-theme recommendations use the structured catalog for
+                # every branch.  A single broad request retains federated
+                # discovery, while an empty catalog branch still has the
+                # search-gateway fallback in book_search.py.
+                # Exact model-authored candidate titles already have a strict
+                # canonical catalog identity to verify. Running a federated
+                # web search for every exact title adds latency and noise but
+                # no extra admission authority; broad supplemental queries
+                # retain federation for recall.
+                federated_discovery=(
+                    request.mode == "recommendation" and title_match is None
+                ),
             )
-        ]
-        if len(discovery_queries) > 1 and not results[0].books:
+            raw_books = list(raw_result.books)
+            if title_match:
+                expected_title = normalize_book_work_title(title_match.group(1))
+                raw_books = [
+                    book
+                    for book in raw_books
+                    if normalize_book_work_title(book.title) == expected_title
+                ]
+            verified = _filter_verified_constraints(
+                raw_books,
+                request,
+                candidate_theme_by_id={
+                    _book_mapping_key(book): discovery_query
+                    for book in raw_books
+                },
+            )
+            verified, removed = _exclude_request_titles(verified, request)
+            excluded_candidate_titles.extend(removed)
             results.append(
-                await search_and_cache_books_with_status(
-                    self.session,
-                    query=discovery_queries[1],
-                    limit=per_query_limit,
-                    force_external=True,
-                    federated_discovery=True,
+                replace(
+                    raw_result,
+                    books=verified,
+                    metadata={
+                        **raw_result.metadata,
+                        "query_index": query_index,
+                        "candidate_count_after_verified_filters": len(verified),
+                    },
                 )
             )
+            admitted_titles = {
+                normalize_book_work_title(book.title)
+                for item in results
+                for book in item.books
+                if normalize_book_work_title(book.title)
+            }
+            if len(admitted_titles) >= request.limit:
+                break
         result = _merge_discovery_results(
             results,
             query=effective_query,
             limit=candidate_limit,
             discovery_queries=discovery_queries,
         )
-        return result, _filter_verified_constraints(
-            list(result.books),
-            request,
-            candidate_theme_by_id=dict(
-                result.metadata.get("candidate_theme_by_id") or {}
-            ),
+        result = replace(
+            result,
+            metadata={
+                **result.metadata,
+                "excluded_candidate_titles": list(
+                    dict.fromkeys(excluded_candidate_titles)
+                ),
+            },
         )
+        return result, list(result.books)
 
 
 def _discovery_queries(
@@ -335,22 +423,63 @@ def _discovery_queries(
     user's natural-language message.
     """
 
-    if (
-        request.mode != "recommendation"
-        or not request.themes
-        or request.theme_match == "all"
-    ):
-        return [effective_query]
-    themes = [
-        " ".join(str(theme or "").split()).strip()
-        for theme in request.themes
-        if str(theme or "").strip()
+    excluded = {
+        normalize_book_work_title(title)
+        for title in [*request.reference_titles, *request.excluded_titles]
+        if normalize_book_work_title(title)
+    }
+    candidate_titles = [
+        str(title).strip()
+        for title in request.candidate_titles
+        if str(title or "").strip()
+        and normalize_book_work_title(title) not in excluded
     ]
-    supplemental = " OR ".join(themes)
-    queries = [effective_query]
-    if supplemental and supplemental.casefold() != effective_query.casefold():
-        queries.append(supplemental[:300])
-    return queries[:2]
+    if request.mode == "recommendation" and candidate_titles:
+        exact_queries = [
+            f"《{title}》 作者 出版社 内容简介"[:160]
+            for title in candidate_titles[: request.limit]
+        ]
+        if len(candidate_titles) >= request.limit:
+            return exact_queries
+        # A semantic controller may return fewer entities than the requested
+        # result count. Keep those exact lookups, then recover recall from the
+        # user's own reference works. No brackets are used here so the exact-
+        # candidate filter does not collapse these supplemental searches back
+        # onto the reference title itself (which is excluded from publication).
+        supplemental = [
+            f"类似 {str(title).strip()} 的书 推荐"[:120]
+            for title in request.reference_titles[:3]
+            if str(title or "").strip()
+        ]
+        return list(dict.fromkeys([*exact_queries, *supplemental]))[:6]
+
+    # Keep a model-authored semantic query intact. When the Controller timed
+    # out, the safe fallback intentionally has no inferred themes; expand only
+    # the user's explicit reference titles so recall does not collapse around
+    # one long prompt or around hard-coded category labels.
+    fallback_query = (
+        "类似"
+        + "、".join(
+            f"《{str(title).strip()}》"
+            for title in request.reference_titles
+            if str(title or "").strip()
+        )
+        + "的书 推荐"
+    )
+    if (
+        request.mode == "recommendation"
+        and not request.themes
+        and request.reference_titles
+        and " ".join(effective_query.split()).casefold()
+        == " ".join(fallback_query.split()).casefold()
+    ):
+        anchor_queries = [
+            f"类似《{title}》的书 推荐"[:120]
+            for title in request.reference_titles[:3]
+            if str(title or "").strip()
+        ]
+        return list(dict.fromkeys([*anchor_queries, effective_query]))[:4]
+    return [effective_query]
 
 
 def _merge_discovery_results(
@@ -456,8 +585,17 @@ def _theme_coverage(
     if request.mode != "recommendation" or not request.themes:
         return []
     counts = {theme: 0 for theme in request.themes}
+    mapping = dict(
+        discovery_metadata.get("candidate_theme_by_id") or {}
+    )
     for book in books:
-        for theme in _matching_themes(book, request):
+        for theme in _admitted_theme_matches(
+            book,
+            request,
+            discovery_query=str(
+                mapping.get(_book_mapping_key(book)) or ""
+            ),
+        ):
             counts[theme] += 1
     if request.response_depth == "quick":
         complete_at = 1
@@ -497,12 +635,18 @@ async def _recommendation_items(
         ).items()
     }
     def theme_for(book: Book) -> str:
-        matched = _matching_themes(book, request)
+        discovery_query = mapping.get(_book_mapping_key(book), "")
+        matched = _admitted_theme_matches(
+            book,
+            request,
+            discovery_query=discovery_query,
+        )
         if matched:
             return " × ".join(matched)
-        return mapping.get(_book_mapping_key(book), "")
+        return discovery_query
     if (
-        request.mode == "lookup"
+        not books
+        or request.mode == "lookup"
         or request.response_depth == "quick"
         or not enable_external_enrichment
     ):
@@ -516,11 +660,20 @@ async def _recommendation_items(
         return items, []
 
     gateway = gateway or get_search_gateway()
-    provider_budget = 3 if request.response_depth == "deep" else 1
+    provider_budget = 3 if request.response_depth == "deep" else 2
     semaphore = asyncio.Semaphore(3)
+    search_semaphore = asyncio.Semaphore(6)
+    strategy_facets = (
+        request.evidence_strategy.active_facets(
+            limit=4 if request.response_depth == "deep" else 2
+        )
+        if request.evidence_strategy is not None
+        else []
+    )
     enrichment_count = min(
         len(books),
-        4 if request.response_depth == "deep" else 2,
+        request.limit,
+        6 if request.response_depth == "deep" else 5,
     )
     books_to_enrich = books[:enrichment_count]
 
@@ -531,12 +684,38 @@ async def _recommendation_items(
                 theme=theme_for(book),
                 gateway=gateway,
                 provider_budget=provider_budget,
+                evidence_facets=strategy_facets,
+                search_semaphore=search_semaphore,
             )
 
-    results = await asyncio.gather(
-        *(enrich(book) for book in books_to_enrich),
-        return_exceptions=True,
+    tasks = [
+        asyncio.create_task(enrich(book))
+        for book in books_to_enrich
+    ]
+    deadline = (
+        DEEP_ENRICHMENT_DEADLINE_SECONDS
+        if request.response_depth == "deep"
+        else BALANCED_ENRICHMENT_DEADLINE_SECONDS
     )
+    done: set[asyncio.Task] = set()
+    pending: set[asyncio.Task] = set(tasks)
+    try:
+        done, pending = await asyncio.wait(tasks, timeout=deadline)
+    finally:
+        outstanding = [task for task in tasks if not task.done()]
+        for task in outstanding:
+            task.cancel()
+        if outstanding:
+            await asyncio.gather(*outstanding, return_exceptions=True)
+    def completed_result(task: asyncio.Task):
+        if task not in done or task.cancelled():
+            return TimeoutError("recommendation enrichment deadline exceeded")
+        try:
+            return task.result()
+        except Exception as exc:
+            return exc
+
+    results = [completed_result(task) for task in tasks]
     items: list[BookRecommendationItem] = []
     metadata: list[dict[str, Any]] = []
     for book, raw in zip(books_to_enrich, results, strict=True):
@@ -547,6 +726,9 @@ async def _recommendation_items(
                 {
                     "title": str(book.title or ""),
                     "status": "unavailable",
+                    "error_type": (
+                        "timeout" if isinstance(raw, TimeoutError) else "error"
+                    ),
                     "providers": [],
                     "source_domains": [],
                 }
@@ -566,25 +748,63 @@ async def _enrich_recommendation_book(
     theme: str,
     gateway,
     provider_budget: int,
+    evidence_facets: list[EvidenceFacet] | None = None,
+    search_semaphore: asyncio.Semaphore | None = None,
 ) -> tuple[BookRecommendationItem, dict[str, Any]]:
     title = " ".join(str(book.title or "").split()).strip()
     authors = [str(item).strip() for item in (book.authors or []) if str(item).strip()]
     author_hint = authors[0] if authors else ""
-    query = " ".join(
-        item
-        for item in [f"《{title}》", author_hint, "内容简介", "适合读者"]
-        if item
-    )[:300]
-    result = await gateway.search(
-        SearchRequest(
-            query=query,
-            max_results=5,
-            detail="deep" if provider_budget >= 3 else "standard",
-            language="zh",
-            zone="cn",
-            strategy="federated",
-            provider_budget=provider_budget,
+    facets = list(evidence_facets or [])
+    if not facets:
+        # This is a provider-safe fallback, not a genre template. The semantic
+        # Controller normally supplies the decision-specific evidence facets.
+        facets = [
+            EvidenceFacet(
+                name="核心适配证据",
+                purpose="核验该候选与用户问题的实际关联及主要取舍",
+                query_terms=[],
+                preferred_source_types=[],
+                importance="high",
+                candidate_specific=True,
+            )
+        ]
+    search_semaphore = search_semaphore or asyncio.Semaphore(3)
+
+    async def search_facet(facet: EvidenceFacet):
+        facet_terms = " ".join(
+            [
+                *facet.query_terms,
+                *facet.preferred_source_types,
+            ]
         )
+        query = " ".join(
+            item
+            for item in [
+                f"《{title}》",
+                author_hint,
+                facet.name,
+                facet.purpose,
+                facet_terms,
+            ]
+            if item
+        )[:300]
+        async with search_semaphore:
+            result = await gateway.search(
+                SearchRequest(
+                    query=query,
+                    max_results=5,
+                    detail="deep" if provider_budget >= 3 else "standard",
+                    language="zh",
+                    zone="cn",
+                    strategy="federated",
+                    provider_budget=provider_budget,
+                )
+            )
+        return facet, query, result
+
+    facet_results = await asyncio.gather(
+        *(search_facet(facet) for facet in facets),
+        return_exceptions=True,
     )
     base = _book_source(book)
     evidence_sources = [base] if base is not None else []
@@ -599,47 +819,81 @@ async def _enrich_recommendation_book(
         summaries.append(base_summary)
     providers: list[str] = []
     domains: list[str] = []
-    for hit in result.hits:
-        if not _hit_matches_book(hit.title, hit.snippet or hit.content, title):
+    grouped_facets: list[BookEvidenceFacet] = []
+    outcomes: list[str] = []
+    queries: list[str] = []
+    for raw_result in facet_results:
+        if isinstance(raw_result, Exception):
             continue
-        url = str(hit.url or "").strip()
-        canonical = _canonical_public_url(url)
-        if not canonical or canonical in seen_urls:
-            continue
-        seen_urls.add(canonical)
-        snippet = _clean_catalog_description(hit.snippet or hit.content)
-        evidence_sources.append(
-            ExternalEvidenceSource(
+        facet, query, result = raw_result
+        outcomes.append(result.outcome)
+        queries.append(query)
+        facet_sources: list[ExternalEvidenceSource] = []
+        for hit in result.hits:
+            hit_text = (
+                hit.content
+                if provider_budget >= 3 and str(hit.content or "").strip()
+                else hit.snippet or hit.content
+            )
+            if not _hit_matches_book(hit.title, hit_text, title):
+                continue
+            url = str(hit.url or "").strip()
+            canonical = _canonical_public_url(url)
+            if not canonical or canonical in seen_urls:
+                continue
+            seen_urls.add(canonical)
+            snippet = _clean_catalog_description(hit_text)
+            source = ExternalEvidenceSource(
                 title=str(hit.title or title).strip()[:300],
                 url=url[:2000],
                 snippet=snippet[:1000],
                 published_date=str(hit.published_date or "")[:64],
+                evidence_facet=facet.name,
+                source_role=", ".join(facet.preferred_source_types)[:100],
+            )
+            evidence_sources.append(source)
+            facet_sources.append(source)
+            if snippet and snippet not in summaries:
+                summaries.append(snippet)
+            provider = str(hit.provider or "").strip()
+            if provider and provider not in providers:
+                providers.append(provider)
+            domain = urlsplit(url).netloc.casefold()
+            if domain and domain not in domains:
+                domains.append(domain)
+            if len(facet_sources) >= 4 or len(evidence_sources) >= 18:
+                break
+        grouped_facets.append(
+            BookEvidenceFacet(
+                name=facet.name,
+                purpose=facet.purpose,
+                sources=facet_sources,
             )
         )
-        if snippet and snippet not in summaries:
-            summaries.append(snippet)
-        provider = str(hit.provider or "").strip()
-        if provider and provider not in providers:
-            providers.append(provider)
-        domain = urlsplit(url).netloc.casefold()
-        if domain and domain not in domains:
-            domains.append(domain)
-        if len(evidence_sources) >= 5:
+        if len(evidence_sources) >= 18:
             break
     item = _base_recommendation_item(book, theme=theme).model_copy(
         update={
             "summary": _merge_admitted_summaries(summaries),
             "evidence_sources": evidence_sources,
-            "evidence_provider_count": len(providers),
+            "evidence_facets": grouped_facets,
+            "evidence_provider_count": min(3, len(providers)),
         }
     )
     return item, {
         "title": title,
-        "status": result.outcome,
+        "status": (
+            "found"
+            if any(outcome == "found" for outcome in outcomes)
+            else outcomes[0]
+            if outcomes
+            else "unavailable"
+        ),
         "providers": providers,
         "source_domains": domains,
         "source_count": len(evidence_sources),
-        "search_strategy": result.metadata.get("search_strategy", ""),
+        "evidence_facets": [item.name for item in grouped_facets],
+        "evidence_queries": queries,
     }
 
 
@@ -691,11 +945,17 @@ def _canonical_public_url(value: object) -> str:
         return ""
     if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
         return ""
+    path = parsed.path.rstrip("/") or "/"
+    if (
+        parsed.netloc.casefold().endswith("book.douban.com")
+        and re.fullmatch(r"/subject/\d+", path)
+    ):
+        path += "/"
     return urlunsplit(
         (
             parsed.scheme.casefold(),
             parsed.netloc.casefold(),
-            parsed.path.rstrip("/") or "/",
+            path,
             "",
             "",
         )
@@ -720,6 +980,10 @@ def _clean_catalog_description(value: object) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
+    if re.search(r"我要写书评|(?:^|\s)短评(?:\s|$)|写书评", raw):
+        return ""
+    if re.search(r"(?:作品情報|商品情報).{0,120}ISBN", raw, re.IGNORECASE):
+        return ""
 
     candidates: list[str] = []
     for match in re.finditer(
@@ -728,17 +992,18 @@ def _clean_catalog_description(value: object) -> str:
         flags=re.DOTALL,
     ):
         cleaned = " ".join(match.group(1).split()).strip(" ·#;；")
-        if len(cleaned) >= 20:
+        if len(cleaned) >= 20 and not _looks_like_author_biography(cleaned):
             candidates.append(cleaned)
 
     for match in re.finditer(
-        r"(?:^|\n)\s*#{0,2}\s*(?:内容简介|作品简介|图书简介)\s*[:：]?\s*"
-        r"(.+?)(?=\n\s*##\s|\Z)",
+        r"(?:内容简介|作品简介|图书简介|本书简介)\s*[:：]?\s*"
+        r"(.+?)(?=(?:#{0,3}\s*)?(?:作者简介|作者介绍|创作者简介|"
+        r"译者简介|目录|原文摘录|短评|书评)\s*[:：]?|\Z)",
         raw,
         flags=re.IGNORECASE | re.DOTALL,
     ):
         cleaned = " ".join(match.group(1).split()).strip(" ·#;；")
-        if len(cleaned) >= 20:
+        if len(cleaned) >= 20 and not _looks_like_author_biography(cleaned):
             candidates.append(cleaned)
 
     if candidates:
@@ -749,12 +1014,41 @@ def _clean_catalog_description(value: object) -> str:
                     text,
                 )
             )
-            return min(len(text), 700) - navigation_hits * 250
+            biography_hits = len(
+                re.findall(
+                    r"作者简介|作者介绍|出生于|毕业于|任职于|代表作",
+                    text,
+                )
+            )
+            return (
+                min(len(text), 700)
+                - navigation_hits * 250
+                - biography_hits * 350
+            )
 
         return max(candidates, key=score)[:700]
 
     compact = " ".join(raw.split()).strip(" ·#;；")
-    if re.search(r"我要写书评|(?:^|\s)短评(?:\s|$)|写书评", compact):
+    compact = re.split(
+        r"投诉建议|举报不良信息|使用百度前必读|百度百科合作平台|"
+        r"京ICP证|京公网安备|常用服务|馆藏查询|委托借还",
+        compact,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ·#;；+-")
+    compact = re.split(
+        r"(?:#{0,3}\s*)?(?:作者简介|作者介绍|创作者简介|译者简介)\s*[:：]?",
+        compact,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ·#;；")
+    compact = re.split(
+        r"(?:#{0,3}\s*)?(?:目录|原文摘录|短评|书评)\s*[:：]?",
+        compact,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ·#;；")
+    if len(compact) < 20 or _looks_like_author_biography(compact):
         return ""
     chapter_hits = len(
         re.findall(r"第[一二三四五六七八九十百\d]+章|/\s*\d{3}(?:\s|$)", compact)
@@ -765,6 +1059,25 @@ def _clean_catalog_description(value: object) -> str:
         re.findall(r"购买|商城|图书馆|书单|人在读|人读过|人想读", compact)
     )
     return "" if navigation_hits >= 2 else compact[:700]
+
+
+def _looks_like_author_biography(value: str) -> bool:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return False
+    if re.match(
+        r"^(?:作者|著者|译者|出版社|出版年|出版时间|ISBN|页数|定价)\s*[:：]",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(r"作者简介|作者介绍|创作者简介|译者简介", text):
+        return True
+    biography_signals = re.findall(
+        r"出生于|生于|毕业于|任职于|现任|教授|作家|著有|代表作|创立",
+        text,
+    )
+    return len(biography_signals) >= 2
 
 
 def _merge_admitted_summaries(values: list[str]) -> str:
@@ -882,7 +1195,12 @@ def _exclude_request_titles(
     kept: list[Book] = []
     removed: list[str] = []
     for book in books:
-        if normalize_book_work_title(book.title) in excluded:
+        candidate_title = normalize_book_work_title(book.title)
+        if candidate_title in excluded or any(
+            len(excluded_title) >= 4
+            and candidate_title.startswith(excluded_title)
+            for excluded_title in excluded
+        ):
             removed.append(str(book.title or "").strip())
             continue
         kept.append(book)
@@ -897,6 +1215,21 @@ def _filter_verified_constraints(
 ) -> list[Book]:
     filtered: list[Book] = []
     for book in books:
+        if (
+            request.mode == "recommendation"
+            and not request.candidate_titles
+            and is_book_catalog_url(book.source_url)
+            and not candidate_topic_supported(
+            objective=request.query,
+            themes=request.themes,
+            candidate_title=str(book.title or ""),
+            evidence_texts=[
+                str(book.summary or ""),
+                " ".join(str(item or "") for item in (book.tags or [])),
+            ],
+            )
+        ):
+            continue
         if (
             request.publication_year_from is not None
             or request.publication_year_to is not None
@@ -914,7 +1247,15 @@ def _filter_verified_constraints(
                 and year > request.publication_year_to
             ):
                 continue
-        theme_matches = _matching_themes(book, request)
+        discovery_query = str(
+            (candidate_theme_by_id or {}).get(_book_mapping_key(book))
+            or ""
+        )
+        theme_matches = _admitted_theme_matches(
+            book,
+            request,
+            discovery_query=discovery_query,
+        )
         if request.mode == "recommendation" and request.themes:
             satisfies_theme_contract = (
                 len(theme_matches) == len(request.themes)
@@ -980,6 +1321,19 @@ def _matching_themes(book: Book, request: BookSearchInput) -> list[str]:
         for theme in request.themes
         if _matches_structured_theme(book, theme=theme)
     ]
+
+
+def _admitted_theme_matches(
+    book: Book,
+    request: BookSearchInput,
+    *,
+    discovery_query: str,
+) -> list[str]:
+    del discovery_query
+    # Query provenance is not evidence that an individual catalog suggestion
+    # matches that query.  Only candidate-owned title/summary/tag metadata may
+    # satisfy a theme contract; sparse suggestions remain discovery leads.
+    return _matching_themes(book, request)
 
 
 def _has_explicit_audience_conflict(

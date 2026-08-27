@@ -24,6 +24,8 @@ class TrustedReceiptSource(AgentCoreModel):
     url: str = Field(min_length=1, max_length=2_000)
     snippet: str = Field(default="", max_length=1_000)
     published_date: str = Field(default="", max_length=64)
+    evidence_facet: str = Field(default="", max_length=80)
+    source_role: str = Field(default="", max_length=100)
 
 
 class TrustedReceiptContext(AgentCoreModel):
@@ -160,6 +162,7 @@ class ControllerContextSnapshot(AgentCoreModel):
 class ControllerModelRequest(AgentCoreModel):
     phase: Literal["decision", "synthesis"] = "decision"
     model_name: str = Field(min_length=1, max_length=256)
+    thinking_mode: bool = False
     current_user_message: str = Field(min_length=1, max_length=32_000)
     context: ControllerContextSnapshot = Field(
         default_factory=ControllerContextSnapshot

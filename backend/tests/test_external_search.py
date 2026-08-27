@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 import unittest
 
 from app.services.external_search import (
@@ -82,6 +84,29 @@ class _RaisingProvider:
         raise RuntimeError(f"{self.name} exploded")
 
 
+class _SlowProvider:
+    def __init__(self, name: str, delay: float) -> None:
+        self.name = name
+        self.delay = delay
+
+    async def search(self, request: SearchRequest) -> SearchResult:
+        await asyncio.sleep(self.delay)
+        return SearchResult(
+            outcome="found",
+            provider=self.name,
+            query=request.query,
+            effective_query=request.query,
+            hits=[
+                SearchHit(
+                    title="late",
+                    url=f"https://{self.name}.example/late",
+                    snippet="late result",
+                    provider=self.name,
+                )
+            ],
+        )
+
+
 class SearchPolicyTests(unittest.TestCase):
     def test_default_registry_exposes_anonymous_anysearch(self) -> None:
         reset_provider_registry()
@@ -157,6 +182,95 @@ class SearchPolicyTests(unittest.TestCase):
 
 
 class SearchGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_federated_search_keeps_complete_fast_success_without_laggard(self) -> None:
+        gateway = SearchGateway(
+            {
+                "tavily": _FakeProvider(
+                    "tavily",
+                    "found",
+                    url="https://fast.example/result",
+                ),
+                "ddgs": _SlowProvider("ddgs", delay=5.0),
+            }
+        )
+        started = time.perf_counter()
+        result = await gateway.search(
+            SearchRequest(
+                query="fast partial success",
+                strategy="federated",
+                provider_budget=2,
+                max_results=1,
+            )
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(result.outcome, "found")
+        self.assertEqual([hit.provider for hit in result.hits], ["tavily"])
+        self.assertLess(elapsed, 2.5)
+        self.assertTrue(
+            any(
+                attempt.error_type == "laggard_cancelled"
+                for attempt in result.attempts
+            )
+        )
+
+    async def test_federated_search_waits_briefly_when_recall_is_low(self) -> None:
+        gateway = SearchGateway(
+            {
+                "tavily": _FakeProvider(
+                    "tavily",
+                    "found",
+                    url="https://fast.example/result",
+                ),
+                "ddgs": _SlowProvider("ddgs", delay=0.1),
+            }
+        )
+        result = await gateway.search(
+            SearchRequest(
+                query="recall-aware portfolio",
+                strategy="federated",
+                provider_budget=2,
+                max_results=5,
+            )
+        )
+
+        self.assertEqual(result.outcome, "found")
+        self.assertEqual(
+            [hit.provider for hit in result.hits],
+            ["tavily", "ddgs"],
+        )
+
+    async def test_gateway_enforces_include_and_exclude_domains(self) -> None:
+        gateway = SearchGateway(
+            {
+                "tavily": _FakeProvider(
+                    "tavily",
+                    "found",
+                    url="https://blocked.example/result",
+                ),
+                "ddgs": _FakeProvider(
+                    "ddgs",
+                    "found",
+                    url="https://sub.allowed.example/result",
+                ),
+            }
+        )
+        result = await gateway.search(
+            SearchRequest(
+                query="domain constrained",
+                strategy="federated",
+                provider_budget=2,
+                include_domains=["allowed.example"],
+                exclude_domains=["blocked.example"],
+            )
+        )
+
+        self.assertEqual(result.outcome, "found")
+        self.assertEqual(
+            [hit.url for hit in result.hits],
+            ["https://sub.allowed.example/result"],
+        )
+
     async def test_federated_search_merges_providers_in_balanced_order(self) -> None:
         tavily = _FakeProvider(
             "tavily", "found", url="https://one.example/a"
@@ -241,7 +355,11 @@ class SearchGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tavily_failure_falls_back_to_ddgs(self) -> None:
         tavily = _FakeProvider("tavily", "unavailable")
-        ddgs = _FakeProvider("ddgs", "found")
+        ddgs = _FakeProvider(
+            "ddgs",
+            "found",
+            url="https://example.test/ddgs-result",
+        )
         gateway = SearchGateway(
             {"tavily": tavily, "ddgs": ddgs}
         )
@@ -278,7 +396,11 @@ class SearchGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway = SearchGateway(
             {
                 "tavily": _RaisingProvider("tavily"),
-                "anysearch": _FakeProvider("anysearch", "found"),
+                "anysearch": _FakeProvider(
+                    "anysearch",
+                    "found",
+                    url="https://example.test/anysearch-result",
+                ),
             }
         )
         result = await gateway.search(

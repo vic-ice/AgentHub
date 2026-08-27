@@ -103,6 +103,8 @@ class BookCapabilityContractTests(unittest.TestCase):
                 "authors",
                 "audience",
                 "reference_titles",
+                "candidate_titles",
+                "evidence_strategy",
                 "excluded_titles",
                 "publication_year_from",
                 "publication_year_to",

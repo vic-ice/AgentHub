@@ -17,6 +17,9 @@ from app.services.agent_core.capabilities import CapabilityRegistry
 from app.services.agent_core.core_capabilities import (
     CoreCapabilityAvailability,
 )
+from app.services.external_capabilities.availability import (
+    ExternalCapabilityAvailability,
+)
 from app.services.agent_core.controller_client import (
     PLAN_TASK_TOOL,
     ControllerClient,
@@ -84,8 +87,14 @@ class _BoundModel:
         return self.response
 
 
+class _FailingBoundModel(_BoundModel):
+    async def ainvoke(self, messages):
+        self.messages = messages
+        raise TimeoutError("selected model timed out")
+
+
 class ControllerClientTests(unittest.IsolatedAsyncioTestCase):
-    def test_default_factory_defers_thinking_mode_to_model_config(self) -> None:
+    def test_default_factory_explicitly_disables_thinking_by_default(self) -> None:
         model = object()
         with patch(
             "app.services.agent_core.controller_client.get_llm",
@@ -94,7 +103,245 @@ class ControllerClientTests(unittest.IsolatedAsyncioTestCase):
             result = _default_model_factory("configured-controller")
 
         self.assertIs(result, model)
-        get_llm.assert_called_once_with("configured-controller")
+        get_llm.assert_called_once_with(
+            "configured-controller",
+            thinking_mode=False,
+        )
+
+    def test_default_factory_honors_explicit_thinking_request(self) -> None:
+        with patch(
+            "app.services.agent_core.controller_client.get_llm",
+            return_value=object(),
+        ) as get_llm:
+            _default_model_factory(
+                "configured-controller",
+                thinking_mode=True,
+            )
+        get_llm.assert_called_once_with(
+            "configured-controller",
+            thinking_mode=True,
+        )
+
+    async def test_explicit_search_cannot_be_bypassed_by_direct_model_answer(self) -> None:
+        model = _BoundModel(AIMessage(content="我直接凭记忆回答。"))
+        registry = CapabilityRegistry(
+            availability=ExternalCapabilityAvailability(
+                web_search=True,
+                book_search=True,
+            )
+        )
+        output = await ControllerClient(
+            registry=registry,
+            model_factory=lambda _name: model,
+        ).decide(
+            ControllerModelRequest(
+                model_name="test-controller",
+                current_user_message="请搜索本周人工智能的重要更新",
+            )
+        )
+
+        self.assertEqual(output.mode, "capability_proposals")
+        self.assertEqual(output.tool_calls[0].name, "web_search")
+        self.assertIn("本周人工智能", output.tool_calls[0].arguments["query"])
+
+    async def test_explicit_book_recommendation_uses_book_owner(self) -> None:
+        model = _BoundModel(AIMessage(content="我直接推荐三本。"))
+        registry = CapabilityRegistry(
+            availability=ExternalCapabilityAvailability(
+                web_search=True,
+                book_search=True,
+            )
+        )
+        output = await ControllerClient(
+            registry=registry,
+            model_factory=lambda _name: model,
+        ).decide(
+            ControllerModelRequest(
+                model_name="test-controller",
+                current_user_message="请推荐三本人工智能入门书",
+            )
+        )
+
+        self.assertEqual(output.mode, "capability_proposals")
+        self.assertEqual(output.tool_calls[0].name, "book_search")
+        self.assertEqual(model.tool_choice, "auto")
+        self.assertEqual(
+            [schema["function"]["name"] for schema in model.schemas],
+            ["book_search"],
+        )
+        parameters = model.schemas[0]["function"]["parameters"]
+        self.assertIn("evidence_strategy", parameters["required"])
+        self.assertEqual(
+            parameters["$defs"]["EvidenceStrategy"]["required"],
+            ["facets"],
+        )
+        self.assertEqual(
+            output.tool_calls[0].arguments["mode"],
+            "recommendation",
+        )
+
+    async def test_book_owner_uses_reference_anchors_without_speculative_themes(self) -> None:
+        model = _BoundModel(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "book_search",
+                        "args": {
+                            "query": "类似参考书的新书",
+                            "mode": "recommendation",
+                            "themes": [],
+                            "reference_titles": ["非暴力沟通", "小狗钱钱"],
+                        },
+                        "id": "call-books",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        )
+        registry = CapabilityRegistry(
+            availability=ExternalCapabilityAvailability(
+                web_search=True,
+                book_search=True,
+            )
+        )
+
+        output = await ControllerClient(
+            registry=registry,
+            model_factory=lambda _name: model,
+        ).decide(
+            ControllerModelRequest(
+                model_name="test-controller",
+                current_user_message=(
+                    "请推荐几本类似《非暴力沟通》《小狗钱钱》的新书，"
+                    "请用表格列出推荐理由。"
+                ),
+            )
+        )
+
+        arguments = output.tool_calls[0].arguments
+        self.assertEqual(
+            arguments["query"],
+            "类似《非暴力沟通》、《小狗钱钱》的书 推荐",
+        )
+        self.assertEqual(arguments["themes"], [])
+        self.assertEqual(
+            arguments["excluded_titles"],
+            ["非暴力沟通", "小狗钱钱"],
+        )
+
+    async def test_outside_shelf_recommendation_cannot_degrade_to_shelf_read(self) -> None:
+        model = _BoundModel(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "bookshelf_read",
+                        "args": {
+                            "scope": "current",
+                            "statuses": [],
+                            "evaluations": [],
+                            "query": "",
+                            "limit": 20,
+                        },
+                        "id": "call-shelf",
+                        "type": "tool_call",
+                    },
+                    {
+                        "name": "book_search",
+                        "args": {
+                            "query": "类似参考书的新书",
+                            "mode": "recommendation",
+                            "evidence_strategy": {
+                                "facets": [{"name": ""}]
+                            },
+                        },
+                        "id": "call-books",
+                        "type": "tool_call",
+                    },
+                ],
+            )
+        )
+        registry = CapabilityRegistry(
+            availability=ExternalCapabilityAvailability(
+                web_search=True,
+                book_search=True,
+            )
+        )
+
+        output = await ControllerClient(
+            registry=registry,
+            model_factory=lambda _name: model,
+        ).decide(
+            ControllerModelRequest(
+                model_name="test-controller",
+                current_user_message=(
+                    "请推荐几本我书架之外的新书，类似《非暴力沟通》"
+                    "和《小狗钱钱》。"
+                ),
+            )
+        )
+
+        self.assertEqual([call.name for call in output.tool_calls], ["book_search"])
+        arguments = output.tool_calls[0].arguments
+        self.assertEqual(arguments["mode"], "recommendation")
+        self.assertEqual(
+            arguments["reference_titles"],
+            ["非暴力沟通", "小狗钱钱"],
+        )
+        self.assertNotIn("evidence_strategy", arguments)
+
+    async def test_explicit_search_falls_back_when_selected_model_fails(self) -> None:
+        model = _FailingBoundModel(AIMessage(content=""))
+        registry = CapabilityRegistry(
+            availability=ExternalCapabilityAvailability(
+                web_search=True,
+                book_search=True,
+            )
+        )
+
+        output = await ControllerClient(
+            registry=registry,
+            model_factory=lambda _name: model,
+        ).decide(
+            ControllerModelRequest(
+                model_name="slow-controller",
+                current_user_message="请联网查找本周人工智能的重要更新",
+            )
+        )
+
+        self.assertEqual(output.mode, "capability_proposals")
+        self.assertEqual(output.tool_calls[0].name, "web_search")
+
+    async def test_book_fallback_uses_compact_reference_query(self) -> None:
+        model = _FailingBoundModel(AIMessage(content=""))
+        registry = CapabilityRegistry(
+            availability=ExternalCapabilityAvailability(
+                web_search=True,
+                book_search=True,
+            )
+        )
+
+        output = await ControllerClient(
+            registry=registry,
+            model_factory=lambda _name: model,
+        ).decide(
+            ControllerModelRequest(
+                model_name="slow-controller",
+                current_user_message=(
+                    "请推荐几本类似《非暴力沟通》《小狗钱钱》的书，"
+                    "请用Markdown表格列出作者和推荐理由。"
+                ),
+            )
+        )
+
+        arguments = output.tool_calls[0].arguments
+        self.assertEqual(arguments["query"], "类似《非暴力沟通》、《小狗钱钱》的书 推荐")
+        self.assertNotIn("Markdown", arguments["query"])
+        self.assertEqual(
+            arguments["reference_titles"],
+            ["非暴力沟通", "小狗钱钱"],
+        )
 
     async def test_whole_conversation_is_sent_and_direct_answer_is_parsed(
         self,

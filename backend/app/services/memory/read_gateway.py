@@ -34,11 +34,16 @@ class MemoryReadGateway:
 
     async def current_versions(self, *, user_id: UUID, limit: int = 100):
         """Authoritative current version heads for API/controller consumers."""
+        from app.services.memory.current_projection import (
+            collapse_semantic_current,
+        )
         from app.services.memory.version_store import MemoryVersionStore
 
-        return await MemoryVersionStore(self.session).list_current(
-            user_id=user_id,
-            limit=limit,
+        return collapse_semantic_current(
+            await MemoryVersionStore(self.session).list_current(
+                user_id=user_id,
+                limit=limit,
+            )
         )
 
     async def history_versions(self, *, user_id: UUID, limit: int = 100):
@@ -50,17 +55,36 @@ class MemoryReadGateway:
             limit=limit,
         )
 
+    async def history_versions_by_key(
+        self,
+        *,
+        user_id: UUID,
+        memory_key: str,
+    ):
+        """Read one complete version chain without a user-wide scan limit."""
+        from app.services.memory.version_store import MemoryVersionStore
+
+        return await MemoryVersionStore(self.session).history(
+            user_id=user_id,
+            memory_key=memory_key,
+        )
+
     async def current_versions_by_keys(
         self,
         *,
         user_id: UUID,
         memory_keys: list[str] | tuple[str, ...],
     ):
+        from app.services.memory.current_projection import (
+            collapse_semantic_current,
+        )
         from app.services.memory.version_store import MemoryVersionStore
 
-        return await MemoryVersionStore(self.session).list_current_by_memory_keys(
-            user_id=user_id,
-            memory_keys=memory_keys,
+        return collapse_semantic_current(
+            await MemoryVersionStore(self.session).list_current_by_memory_keys(
+                user_id=user_id,
+                memory_keys=memory_keys,
+            )
         )
 
     async def profile_memories(

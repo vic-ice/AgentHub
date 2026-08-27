@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -66,6 +67,22 @@ async def _run(content: str, model_uuid: str) -> dict:
         assert "CurrentMemory was used" not in answer, answer
         assert "长期记忆" not in answer, answer
         assert custom.get("research_status") in {"completed", "failed"}, custom
+        from app.services.publication_safety import (
+            contains_internal_reasoning,
+            markdown_table_columns,
+            table_contract_satisfied,
+        )
+        from app.services.research.candidate_quality import (
+            is_book_catalog_url,
+        )
+        from app.services.research.search_policy import (
+            is_book_recommendation_request,
+            requested_book_count,
+        )
+
+        assert table_contract_satisfied(answer, request=content), answer
+        assert not contains_internal_reasoning(answer), answer
+        assert "广东社会科学" not in answer, answer
 
         async with database.session() as session:
             run = await session.get(ResearchRunRecord, run_id)
@@ -82,11 +99,64 @@ async def _run(content: str, model_uuid: str) -> dict:
         assert run is not None, custom
         assert run.user_id == user_id and run.thread_id == thread_id, run
         assert run.mode == "deep_research", run.mode
-        assert run.status != "active", run.status
+        assert run.status == "completed", run.status
         assert int(step_count or 0) > 0, step_count
         assert int(evidence_count or 0) == int(
             custom.get("research_evidence_count") or 0
         ), (evidence_count, custom)
+        metadata = run.metadata_json or {}
+        published_candidate_count = int(
+            metadata.get("published_verified_candidate_count") or 0
+        )
+        catalog_urls = list(
+            dict.fromkeys(
+                url.rstrip(".,;:!?)")
+                for url in re.findall(r"https?://[^\s)\]>]+", answer)
+                if is_book_catalog_url(url.rstrip(".,;:!?)"))
+            )
+        )
+        if is_book_recommendation_request(content):
+            required_candidate_count = max(
+                4,
+                min(requested_book_count(content), 10),
+            )
+            assert metadata.get("book_recommendation_required") is True, metadata
+            assert metadata.get("catalog_candidate_round_completed") is True, metadata
+            assert published_candidate_count >= required_candidate_count, metadata
+            # Catalog links are enrichment evidence, not an allowlist for the
+            # model''s recommendation knowledge. A run may responsibly cover
+            # the requested portfolio while only some candidates have a
+            # dedicated catalog page in the retrieved evidence. Keep this as
+            # an observed coverage metric instead of turning an external-site
+            # availability problem into a publication failure.
+            assert metadata.get("objective_satisfied") is True, metadata
+            axes = {
+                key: bool(metadata.get(key))
+                for key in (
+                    "research_sufficient",
+                    "publication_safe",
+                    "answer_quality_pass",
+                    "delivery_succeeded",
+                )
+            }
+            if not all(axes.values()):
+                print(
+                    json.dumps(
+                        {
+                            "quality_axes": axes,
+                            "answer_preview": answer[:4000],
+                            "report_writer_attempts": metadata.get(
+                                "report_writer_attempts", []
+                            ),
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                )
+            assert axes["research_sufficient"], metadata
+            assert axes["publication_safe"], metadata
+            assert axes["answer_quality_pass"], metadata
+            assert axes["delivery_succeeded"], metadata
         return {
             "status": "passed",
             "research_mode": run.mode,
@@ -95,6 +165,23 @@ async def _run(content: str, model_uuid: str) -> dict:
             "step_count": int(step_count or 0),
             "evidence_count": int(evidence_count or 0),
             "answer_chars": len(answer),
+            "quality_status": custom.get("research_quality_status"),
+            "research_sufficient": bool(metadata.get("research_sufficient")),
+            "publication_safe": bool(metadata.get("publication_safe")),
+            "answer_quality_pass": bool(metadata.get("answer_quality_pass")),
+            "delivery_succeeded": bool(metadata.get("delivery_succeeded")),
+            "objective_satisfied": bool(metadata.get("objective_satisfied")),
+            "deadline_exhausted": bool(metadata.get("deadline_exhausted")),
+            "published_verified_candidate_count": published_candidate_count,
+            "catalog_candidate_round_completed": bool(
+                metadata.get("catalog_candidate_round_completed")
+            ),
+            "objective_task_type": metadata.get("objective_task_type"),
+            "quality_decision_version": metadata.get("quality_decision_version"),
+            "table_columns": markdown_table_columns(answer),
+            "catalog_urls": catalog_urls,
+            "catalog_evidence_coverage_count": len(catalog_urls),
+            "answer_preview": answer[:2000],
         }
     finally:
         async with database.session() as session:
@@ -113,7 +200,7 @@ async def _main(content: str, model_uuid: str) -> int:
     await init_database_connection()
     try:
         result = await _run(content, model_uuid)
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        print(json.dumps(result, ensure_ascii=True, sort_keys=True))
         return 0
     finally:
         await dispose_database()

@@ -4,6 +4,7 @@ import json
 import re
 
 from app.services.memory.guardrails import guard_memory_read_query
+from app.services.memory.current_projection import collapse_semantic_current
 from app.services.memory.version_contracts import (
     MemorySearchReceipt,
     MemoryVersionRecord,
@@ -137,11 +138,11 @@ class VersionedMemorySearch:
         request: SearchMemoryRequest,
     ) -> list[MemoryVersionRecord]:
         if request.scope == "current":
-            return [
+            return collapse_semantic_current(
                 record
                 for record in records
                 if record.superseded_by is None and not record.is_tombstone
-            ]
+            )
 
         chains: dict[str, list[MemoryVersionRecord]] = {}
         for record in records:

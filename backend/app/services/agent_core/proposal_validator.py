@@ -275,6 +275,12 @@ def _coalesce_recommendation_owner(
                 field="authors",
                 limit=10,
             ),
+            "candidate_titles": _merge_structured_lists(
+                searches,
+                field="candidate_titles",
+                limit=10,
+                excluded_keys=theme_exclusions,
+            ),
             "audience": _merge_text_values(audiences, limit=120),
             "reference_titles": reference_titles,
             "excluded_titles": excluded_titles,

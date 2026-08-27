@@ -210,7 +210,8 @@ def normalize_douban_suggestions(payload: Any, *, limit: int) -> list[dict]:
                 "url": f"https://book.douban.com/subject/{match.group(1)}/",
                 "author_name": author[:300],
                 "pic": str(item.get("pic") or "").strip()[:1000],
-                "published_date": str(item.get("year") or "").strip()[:64],
+                "published_date": "",
+                "book_published_date": str(item.get("year") or "").strip()[:64],
                 "snippet": f"作者：{author}" if author else "",
             }
         )

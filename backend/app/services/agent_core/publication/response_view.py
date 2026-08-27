@@ -14,6 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.agent_core.publication.contracts import ReceiptEvidenceBundle
 from app.services.external_capabilities.contracts import BookEvidence, WebEvidence
+from app.services.user_answer_contracts import (
+    UserAnswerBrief,
+    build_user_answer_brief,
+)
+from app.services.evidence_strategy import EvidenceStrategy
 
 
 class AnswerSourceView(BaseModel):
@@ -27,6 +32,7 @@ class AnswerSourceView(BaseModel):
     theme: str = ""
     cover_url: str = ""
     supporting_sources: list["AnswerCitationView"] = Field(default_factory=list)
+    evidence_facets: list["AnswerEvidenceFacetView"] = Field(default_factory=list)
 
 
 class AnswerCitationView(BaseModel):
@@ -35,6 +41,16 @@ class AnswerCitationView(BaseModel):
     title: str
     url: str
     summary: str = ""
+    evidence_facet: str = ""
+    source_role: str = ""
+
+
+class AnswerEvidenceFacetView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    purpose: str = ""
+    sources: list[AnswerCitationView] = Field(default_factory=list)
 
 
 class AnswerCoverageView(BaseModel):
@@ -56,11 +72,15 @@ class ExternalAnswerView(BaseModel):
     web: list[AnswerSourceView] = Field(default_factory=list)
     response_depth: Literal["quick", "balanced", "deep"] = "balanced"
     coverage: list[AnswerCoverageView] = Field(default_factory=list)
+    user_answer_brief: UserAnswerBrief | None = None
+    evidence_strategy: EvidenceStrategy | None = None
     receipt_refs: list[str] = Field(default_factory=list)
 
 
 def project_external_answer_view(
     evidence: Sequence[ReceiptEvidenceBundle],
+    *,
+    user_request: str = "",
 ) -> ExternalAnswerView | None:
     books: list[AnswerSourceView] = []
     web: list[AnswerSourceView] = []
@@ -72,6 +92,7 @@ def project_external_answer_view(
     recognized_books = False
     response_depth: Literal["quick", "balanced", "deep"] = "balanced"
     coverage: list[AnswerCoverageView] = []
+    evidence_strategy: EvidenceStrategy | None = None
 
     for bundle in evidence:
         for action in bundle.receipt.actions:
@@ -104,6 +125,12 @@ def project_external_answer_view(
                     AnswerCoverageView.model_validate(item.model_dump(mode="json"))
                     for item in payload.coverage
                 ]
+                raw_strategy = payload.metadata.get("evidence_strategy")
+                if isinstance(raw_strategy, dict):
+                    try:
+                        evidence_strategy = EvidenceStrategy.model_validate(raw_strategy)
+                    except Exception:
+                        evidence_strategy = None
                 target = books
                 if payload.items:
                     for item in payload.items:
@@ -129,9 +156,29 @@ def project_external_answer_view(
                                         title=source.title.strip() or source.url,
                                         url=source.url.strip(),
                                         summary=" ".join(source.snippet.split()).strip(),
+                                        evidence_facet=source.evidence_facet.strip(),
+                                        source_role=source.source_role.strip(),
                                     )
                                     for source in item.evidence_sources
                                     if source.url.strip()
+                                ],
+                                evidence_facets=[
+                                    AnswerEvidenceFacetView(
+                                        name=facet.name,
+                                        purpose=facet.purpose,
+                                        sources=[
+                                            AnswerCitationView(
+                                                title=source.title.strip() or source.url,
+                                                url=source.url.strip(),
+                                                summary=" ".join(source.snippet.split()).strip(),
+                                                evidence_facet=source.evidence_facet.strip(),
+                                                source_role=source.source_role.strip(),
+                                            )
+                                            for source in facet.sources
+                                            if source.url.strip()
+                                        ],
+                                    )
+                                    for facet in item.evidence_facets
                                 ],
                             )
                         )
@@ -178,6 +225,36 @@ def project_external_answer_view(
         web=web[:10],
         response_depth=response_depth,
         coverage=coverage,
+        user_answer_brief=(
+            build_user_answer_brief(
+                user_request,
+                task_type=answer_type,
+                decision_dimensions=list(
+                    dict.fromkeys(
+                        [
+                            *(item.theme for item in coverage if item.theme),
+                            *(
+                                facet.name
+                                for facet in (
+                                    evidence_strategy.facets
+                                    if evidence_strategy is not None
+                                    else []
+                                )
+                            ),
+                        ]
+                    )
+                ),
+                critical_questions=(
+                    evidence_strategy.comparison_questions
+                    if evidence_strategy is not None
+                    else []
+                ),
+                answer_depth=response_depth,
+            )
+            if user_request.strip()
+            else None
+        ),
+        evidence_strategy=evidence_strategy,
         receipt_refs=list(dict.fromkeys(refs)),
     )
 
@@ -185,6 +262,7 @@ def project_external_answer_view(
 __all__ = [
     "AnswerSourceView",
     "AnswerCitationView",
+    "AnswerEvidenceFacetView",
     "AnswerCoverageView",
     "ExternalAnswerView",
     "project_external_answer_view",

@@ -682,7 +682,13 @@ def _output_status(output: Any) -> tuple[str, str]:
         return "waiting", error
     if status in {"failed", "error", "timeout", "unavailable"}:
         return "failed", error or status
-    if status in {"skipped", "empty_result"}:
+    # A typed read completed successfully even when its business result is
+    # empty.  Keeping it completed/admitted lets the publication layer render
+    # an honest "nothing found" answer instead of misreporting an execution
+    # failure or inviting another search loop.
+    if status == "empty_result":
+        return "completed", ""
+    if status == "skipped":
         return "skipped", error or status
     return "completed", ""
 

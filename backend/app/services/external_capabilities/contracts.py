@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Literal
 
 from pydantic import (
@@ -9,6 +10,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from app.services.evidence_strategy import EvidenceStrategy
 
 
 class ExternalCapabilityInput(BaseModel):
@@ -92,11 +95,9 @@ class BookSearchInput(ExternalCapabilityInput):
         default_factory=list,
         max_length=6,
         description=(
-            "Independent catalog-discovery themes already understood from the "
-            "user's request. Each item is the shortest useful catalog subject "
-            "noun phrase, not prose and not a combined multi-theme query. "
-            "RecommendationService may retrieve each theme "
-            "inside the same owner call; lookup mode leaves this empty."
+            "Only subjects or moods explicitly stated by the user. Never infer "
+            "themes from comparison titles, and leave this empty when the user "
+            "only supplied example books."
         ),
     )
     theme_match: Literal["any", "all"] = Field(
@@ -113,9 +114,8 @@ class BookSearchInput(ExternalCapabilityInput):
         default="",
         max_length=120,
         description=(
-            "Target reader already understood from the user's request. For "
-            "recommendations always populate it: preserve any stated age, life "
-            "stage or profession, otherwise use a neutral general-reader value."
+            "Target reader explicitly stated by the user, such as an age, life "
+            "stage or profession. Leave empty when no audience was stated."
         ),
     )
     reference_titles: list[str] = Field(
@@ -124,6 +124,22 @@ class BookSearchInput(ExternalCapabilityInput):
         description=(
             "Books supplied by the user as comparison anchors. They shape "
             "discovery but are never recommendation candidates."
+        ),
+    )
+    candidate_titles: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "Model-proposed recommendation leads to verify against public book "
+            "pages. Never include reference_titles or excluded_titles here."
+        ),
+    )
+    evidence_strategy: EvidenceStrategy | None = Field(
+        default=None,
+        description=(
+            "Model-authored evidence portfolio for this particular decision. "
+            "Choose facets and source roles from the user's real goal; do not "
+            "apply a fixed template based on genre."
         ),
     )
     excluded_titles: list[str] = Field(
@@ -150,11 +166,28 @@ class BookSearchInput(ExternalCapabilityInput):
     def normalize_text(cls, value: Any) -> str:
         return " ".join(str(value or "").split())
 
+    @field_validator("evidence_strategy", mode="before")
+    @classmethod
+    def normalize_evidence_strategy(cls, value: Any) -> Any:
+        # Some OpenAI-compatible providers serialize nested tool arguments as
+        # a JSON string even though the advertised schema is an object.
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return value
+            return parsed
+        return value
+
     @field_validator(
         "genres",
         "themes",
         "authors",
         "reference_titles",
+        "candidate_titles",
         "excluded_titles",
         mode="before",
     )
@@ -178,6 +211,11 @@ class BookSearchInput(ExternalCapabilityInput):
         )[:40]
         self.reference_titles = references
         self.excluded_titles = exclusions
+        self.candidate_titles = [
+            title
+            for title in self.candidate_titles
+            if title not in exclusions
+        ][:10]
         return self
 
 
@@ -211,6 +249,18 @@ class ExternalEvidenceSource(BaseModel):
     url: str = Field(min_length=1, max_length=2_000)
     snippet: str = Field(default="", max_length=1_000)
     published_date: str = Field(default="", max_length=64)
+    evidence_facet: str = Field(default="", max_length=80)
+    source_role: str = Field(default="", max_length=100)
+
+
+class BookEvidenceFacet(BaseModel):
+    """Evidence for one model-selected decision facet of a candidate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+    purpose: str = Field(default="", max_length=240)
+    sources: list[ExternalEvidenceSource] = Field(default_factory=list, max_length=6)
 
 
 class BookThemeCoverage(BaseModel):
@@ -235,8 +285,9 @@ class BookRecommendationItem(BaseModel):
     published_date: str = Field(default="", max_length=64)
     evidence_sources: list[ExternalEvidenceSource] = Field(
         default_factory=list,
-        max_length=5,
+        max_length=18,
     )
+    evidence_facets: list[BookEvidenceFacet] = Field(default_factory=list, max_length=8)
     evidence_provider_count: int = Field(default=0, ge=0, le=3)
 
 
@@ -314,6 +365,7 @@ class ResearchReportEvidence(BaseModel):
 
 __all__ = [
     "BookEvidence",
+    "BookEvidenceFacet",
     "BookRecommendationItem",
     "BookSearchInput",
     "BookThemeCoverage",

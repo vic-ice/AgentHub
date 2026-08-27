@@ -170,6 +170,7 @@ class ReviewerTests(unittest.TestCase):
         review = self._review(state, payload={"verdict": "maybe"})
         self.assertEqual(review.provider, "deterministic")
         self.assertEqual(review.verdict, "sufficient")
+        self.assertEqual(review.stop_reason, "rule_evidence_satisfied")
 
     def test_model_cannot_mark_sufficient_while_evidence_gaps_remain(self):
         state = _state(
@@ -256,7 +257,7 @@ class ReviewerTests(unittest.TestCase):
                 "conflicts": ["c" + str(i) for i in range(10)],
             },
         )
-        self.assertEqual(review.verdict, "budget_exhausted")
+        self.assertEqual(review.verdict, "insufficient")
         self.assertLessEqual(len(review.missing_questions), 5)
         self.assertLessEqual(len(review.next_subquestions), 3)
         self.assertLessEqual(len(review.conflicts), 5)
@@ -288,6 +289,37 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(task.purpose, "reviewer_gap")
         self.assertEqual(task.query, "《机器学习》难度分级 初学者")
         self.assertEqual(task.include_url_prefixes, [])
+
+    def test_meta_review_gap_is_compiled_into_topic_search_terms(self):
+        task = self._plan(
+            objective="有什么深度学习书籍推荐",
+            round_index=2,
+            budget=BUDGET,
+            previous_assessment=None,
+            pending_subquestions=["已核验的推荐候选数量不足，需要继续验证同类图书。"],
+            used_queries=set(),
+        )
+        self.assertIsNotNone(task)
+        self.assertIn("深度学习", task.query)
+        self.assertIn("经典教材", task.query)
+        self.assertIn("PyTorch", task.query)
+        self.assertNotIn("数量不足", task.query)
+
+    def test_catalog_batch_verifies_up_to_eight_discovered_candidates(self):
+        titles = {f"候选书 {index}": f"候选书 {index} 作者 {index}" for index in range(8)}
+        task = self._plan(
+            objective="推荐机器学习入门书",
+            round_index=2,
+            budget=BUDGET,
+            previous_assessment=None,
+            pending_subquestions=[],
+            used_queries=set(),
+            candidate_hints=titles,
+            prefer_catalog_batch=True,
+        )
+        self.assertIsNotNone(task)
+        self.assertTrue(task.metadata["candidate_catalog_batch"])
+        self.assertEqual(len(task.metadata["candidate_titles"]), 8)
 
     def test_used_subquestion_is_skipped(self):
         used = self._normalize("已搜过的子问题")
@@ -383,6 +415,219 @@ class ReportWorkspaceProjectionTests(unittest.TestCase):
 
 
 class FreeformRenderTests(unittest.TestCase):
+    def test_book_report_structure_accepts_one_table_and_one_route(self):
+        from app.services.research.publication.report_writer import (
+            _report_structure_contract,
+        )
+
+        body = (
+            "如果目标是先建立代码直觉，我会先选《Python深度学习》；"
+            "如果更看重逐步推导，则先选《动手学深度学习》。\n\n"
+            "## 对比与取舍\n\n"
+            "| 书名 | 在方案中的角色 | 适合的目标 | 核心取舍 | 依据 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 《Python深度学习》 | 建立代码直觉 | 快速理解训练流程 | 理论展开较少 | [1] |\n"
+            "| 《动手学深度学习》 | 补齐实现细节 | 边学边练 | 内容覆盖较宽 | [2] |\n\n"
+            + "选择时应围绕已有基础、希望优先获得的能力以及可以接受的理论密度来判断。"
+            * 16
+            + "\n\n## 阅读顺序\n\n"
+            "1. 用《Python深度学习》建立模型训练的整体认识。\n"
+            "2. 能独立解释训练流程后，用《动手学深度学习》补充实现与练习。"
+        )
+
+        ok, details = _report_structure_contract(
+            body,
+            objective="推荐深度学习书籍并安排阅读顺序",
+            evidence=[],
+        )
+
+        self.assertTrue(ok, details)
+
+    def test_book_report_structure_rejects_duplicated_prose_block(self):
+        from app.services.research.publication.report_writer import (
+            _report_structure_contract,
+        )
+
+        repeated = (
+            "《Python深度学习》适合先建立代码直觉，但理论推导较少；"
+            "选择时要结合已有编程基础，并用原始资料核对版本差异与练习范围。"
+        )
+        body = (
+            "先按目标选择，不需要把所有候选都从头读完。\n\n"
+            "## 对比与取舍\n\n"
+            "| 书名 | 角色 | 取舍 | 依据 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 《Python深度学习》 | 入门 | 理论较少 | [1] |\n\n"
+            f"{repeated}\n\n{repeated}\n\n"
+            "## 怎么选\n\n先确认目标，再根据证据选择。"
+        )
+
+        ok, details = _report_structure_contract(
+            body,
+            objective="推荐深度学习书籍",
+            evidence=[],
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("candidate_descriptions_repeated", details["reasons"])
+        self.assertTrue(details["repeated_content_blocks"])
+
+    def test_book_report_structure_rejects_heading_noise_and_precision(self):
+        from app.services.research.publication.report_writer import (
+            _report_structure_contract,
+        )
+
+        body = (
+            "# 深度学习路线 📚\n\n"
+            "## 先说结论\n《Python深度学习》是必读。\n\n---\n\n"
+            "### 《Python深度学习》\n评分 9.4 分，建议学习 4-6 周。\n\n"
+            "## 对比\n| 书名 | 结论 |\n| --- | --- |\n"
+            "| 《Python深度学习》 | 首选 [1] |\n\n"
+            "## 阅读路线\n再次阅读《Python深度学习》，最后复习《Python深度学习》。"
+            + "补充说明。" * 120
+        )
+
+        ok, details = _report_structure_contract(
+            body,
+            objective="推荐深度学习书籍并安排阅读顺序",
+            evidence=[],
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("unsupported_precision_or_consensus", details["reasons"])
+
+    def test_verified_book_may_be_repeated_after_one_bound_citation(self):
+        from app.services.research.publication.report_writer import (
+            _book_candidate_contract_satisfied,
+        )
+
+        evidence = [
+            {
+                "source_id": "s1",
+                "source_title": "深度学习 (豆瓣)",
+                "source_url": "https://book.douban.com/subject/27087503/",
+                "claim": "《深度学习》系统介绍神经网络与深度学习理论。",
+            }
+        ]
+        body = (
+            "建议把《深度学习》放在路线后半段。\n\n"
+            "| 书名 | 定位 |\n| --- | --- |\n"
+            "| 《深度学习》 | 系统理解神经网络理论 [1] |"
+        )
+
+        self.assertTrue(
+            _book_candidate_contract_satisfied(
+                body,
+                objective="推荐深度学习书籍并安排阅读顺序",
+                evidence=evidence,
+            )
+        )
+
+    def test_unverified_book_still_fails_candidate_contract(self):
+        from app.services.research.publication.report_writer import (
+            _book_candidate_contract_satisfied,
+        )
+
+        evidence = [
+            {
+                "source_id": "s1",
+                "source_title": "深度学习 (豆瓣)",
+                "source_url": "https://book.douban.com/subject/27087503/",
+                "claim": "《深度学习》系统介绍神经网络与深度学习理论。",
+            }
+        ]
+
+        self.assertFalse(
+            _book_candidate_contract_satisfied(
+                "推荐《并不存在的深度学习书》作为第一本 [1]。",
+                objective="推荐深度学习书籍并安排阅读顺序",
+                evidence=evidence,
+            )
+        )
+
+    def test_catalog_claim_title_alias_is_accepted(self):
+        from app.services.research.publication.report_writer import (
+            _book_candidate_contract_satisfied,
+        )
+
+        evidence = [
+            {
+                "source_id": "s1",
+                "source_title": "Deep Learning with Python (豆瓣)",
+                "source_url": "https://book.douban.com/subject/30293801/",
+                "claim": "《Deep Learning with Python》中文译名为《Python深度学习》。",
+            }
+        ]
+
+        self.assertTrue(
+            _book_candidate_contract_satisfied(
+                "建议先读《Python深度学习》，建立代码直觉 [1]。",
+                objective="推荐深度学习书籍并安排阅读顺序",
+                evidence=evidence,
+            )
+        )
+
+    def test_unique_edition_variant_is_rewritten_to_catalog_title(self):
+        from app.services.research.publication.report_writer import (
+            _book_candidate_contract_satisfied,
+            _canonicalize_verified_book_titles,
+        )
+
+        evidence = [
+            {
+                "source_id": "s1",
+                "source_title": "Deep Learning with Python, Third Edition (豆瓣)",
+                "source_url": "https://book.douban.com/subject/37210135/",
+                "claim": "《Deep Learning with Python, Third Edition》以 Python 代码讲解深度学习。",
+            }
+        ]
+        body, rewrites = _canonicalize_verified_book_titles(
+            "先读《Deep Learning with Python, 3rd Ed.》建立实践直觉 [1]。",
+            objective="推荐深度学习书籍并安排阅读顺序",
+            evidence=evidence,
+        )
+
+        self.assertIn("《Deep Learning with Python, Third Edition》", body)
+        self.assertEqual(len(rewrites), 1)
+        self.assertTrue(
+            _book_candidate_contract_satisfied(
+                body,
+                objective="推荐深度学习书籍并安排阅读顺序",
+                evidence=evidence,
+            )
+        )
+
+    def test_missing_verified_book_is_appended_with_its_own_citation(self):
+        from app.services.research.publication.report_writer import (
+            _ensure_verified_candidate_coverage,
+        )
+
+        evidence = [
+            {
+                "source_id": "s1",
+                "source_title": "深度学习 (豆瓣)",
+                "source_url": "https://book.douban.com/subject/27087503/",
+                "claim": "《深度学习》系统介绍神经网络与深度学习理论。",
+            },
+            {
+                "source_id": "s2",
+                "source_title": "动手学深度学习 (豆瓣)",
+                "source_url": "https://book.douban.com/subject/34991536/",
+                "claim": "《动手学深度学习》结合 PyTorch 代码与神经网络实践。",
+            },
+        ]
+        body = "首选 **《深度学习》**，适合系统理解理论基础。 [1]"
+
+        rendered = _ensure_verified_candidate_coverage(
+            body,
+            objective="有什么深度学习书籍推荐",
+            evidence=evidence,
+        )
+
+        self.assertEqual(rendered.count("《深度学习》"), 1)
+        self.assertIn("《动手学深度学习》", rendered)
+        self.assertIn("[2]", rendered)
+
     def test_freeform_extracts_and_gates(self):
         from app.services.research.publication.report_writer import (
             _render_freeform,
@@ -469,8 +714,24 @@ class FreeformRenderTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(cited, ["s1"])
         self.assertNotIn("模型伪造来源", rendered)
-        self.assertEqual(rendered.count("### 🔗 参考来源"), 1)
+        self.assertEqual(rendered.count("## 参考来源"), 1)
         self.assertNotIn("## 研究结论", rendered)
+
+    def test_recommendation_evidence_column_is_normalized(self):
+        from app.services.research.publication.report_writer import (
+            _normalize_recommendation_evidence_column,
+        )
+
+        body = (
+            "## 对比与取舍\n\n"
+            "| 书名 | 核心取舍 | 依据 |\n"
+            "| --- | --- | --- |\n"
+            "| 《小狗钱钱》 | 偏故事化 [2][3] | |\n\n"
+            "## 怎么选\n\n按目标选择。"
+        )
+        normalized = _normalize_recommendation_evidence_column(body)
+
+        self.assertIn("| 《小狗钱钱》 | 偏故事化 | [2] [3] |", normalized)
 
     def test_malformed_source_url_and_its_citation_are_not_published(self):
         from app.services.research.publication.report_writer import (
@@ -503,6 +764,403 @@ class FreeformRenderTests(unittest.TestCase):
         self.assertIn("https://example.com/source", rendered)
         self.assertNotIn("%E5%85%B3%E", rendered)
         self.assertNotIn("[2]", rendered)
+
+
+class ReportWriterSafetyTests(unittest.TestCase):
+    class _SequenceModel:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.prompts = []
+
+        async def ainvoke(self, prompt):
+            self.prompts.append(prompt)
+            index = min(len(self.prompts) - 1, len(self.responses) - 1)
+            return type("Response", (), {"content": self.responses[index]})()
+
+    class _TimeoutModel:
+        async def ainvoke(self, _prompt):
+            raise TimeoutError()
+
+    class _PartialStreamingModel:
+        async def astream(self, _prompt):
+            from langchain_core.messages import AIMessageChunk
+
+            yield AIMessageChunk(content="# 已完成部分\n\n这是超时前已经收到的可靠正文 [1]。")
+            raise TimeoutError()
+
+    class _BothInvocationModesModel:
+        def __init__(self):
+            self.ainvoke_called = False
+            self.astream_called = False
+
+        async def ainvoke(self, _prompt):
+            self.ainvoke_called = True
+            return type("Response", (), {"content": "最终答案"})()
+
+        async def astream(self, _prompt):
+            self.astream_called = True
+            yield type("Chunk", (), {"content": "不应使用"})()
+
+    def _report(self, *, objective="推荐一些 AI 入门书"):
+        from app.services.research.report import (
+            ResearchReport,
+            ResearchReportSource,
+        )
+        from app.services.research.verifier import (
+            ClaimAdmissionDecision,
+            VerifierAdmissionResult,
+        )
+
+        run_id = uuid.uuid4()
+        evidence_id = uuid.uuid4()
+        claim = "《人工智能：一种现代方法》被该来源列入人工智能入门推荐书单。"
+        decision = ClaimAdmissionDecision(
+            claim=claim,
+            status="admitted",
+            evidence_ids=[evidence_id],
+            quality="medium",
+            reason_codes=["supported_by_evidence"],
+            provenance_valid=True,
+            content_quality=1.0,
+            query_relevance=1.0,
+            corroborated=True,
+            publishable=True,
+        )
+        verification = VerifierAdmissionResult(
+            run_id=run_id,
+            decisions=[decision],
+            admitted_claims=[decision],
+            ready_for_final_answer=True,
+        )
+        return ResearchReport(
+            run_id=run_id,
+            user_id=uuid.uuid4(),
+            objective=objective,
+            run_status="active",
+            report_status="verified",
+            verified_claims=[decision],
+            sources=[
+                ResearchReportSource(
+                    evidence_id=evidence_id,
+                    source_title="人工智能：一种现代方法 (豆瓣)",
+                    source_url="https://book.douban.com/subject/1/",
+                    quality="medium",
+                    relevance=5,
+                    research_round=1,
+                    claim=claim,
+                )
+            ],
+            verification=verification,
+        )
+
+    def _write(self, responses, *, objective="推荐一些 AI 入门书"):
+        from app.services.research.publication.report_writer import (
+            write_research_report,
+        )
+
+        model = self._SequenceModel(responses)
+        with mock.patch(
+            "app.infra.llm.get_llm",
+            return_value=model,
+        ), mock.patch(
+            "app.services.research.publication.report_writer.report_completed_step",
+            new=mock.AsyncMock(),
+        ), mock.patch(
+            "app.services.research.publication.report_writer.report_model_completion",
+            new=mock.AsyncMock(),
+        ), mock.patch(
+            "app.services.research.publication.report_writer.record_model_failure",
+        ), mock.patch(
+            "app.services.research.publication.report_writer.record_model_success",
+        ):
+            result = asyncio.run(
+                write_research_report(
+                    self._report(objective=objective),
+                    model_id="writer-model",
+                )
+            )
+        return result, model
+
+    def test_plain_string_internal_reasoning_is_not_published(self):
+        leaked = (
+            "我需要先理解用户需求：用户想要人工智能入门书籍。\n"
+            "接下来我将分析证据、规划结构并检查约束。材料 [1] 可以使用，"
+            "但我还需要决定先写哪些内容以及如何组织最终回复。"
+        )
+        result, model = self._write([leaked, leaked])
+
+        self.assertEqual(len(model.prompts), 2)
+        self.assertEqual(result.status, "fallback")
+        self.assertEqual(result.provider, "deterministic")
+        self.assertNotIn("我需要先理解用户需求", result.report_markdown)
+        self.assertTrue(
+            all(
+                item["error"] == "internal_reasoning_detected"
+                for item in result.metadata["attempts"]
+            )
+        )
+
+    def test_streaming_timeout_preserves_received_report_text(self):
+        from app.services.research.publication.report_writer import (
+            _invoke_report_model,
+            _message_text,
+        )
+
+        response, timed_out = asyncio.run(
+            _invoke_report_model(
+                self._PartialStreamingModel(),
+                "prompt",
+                timeout_seconds=1,
+            )
+        )
+
+        self.assertTrue(timed_out)
+        self.assertIn("超时前已经收到", _message_text(response))
+
+    def test_publication_prefers_bounded_non_stream_invocation(self):
+        from app.services.research.publication.report_writer import (
+            _invoke_report_model,
+            _message_text,
+        )
+
+        model = self._BothInvocationModesModel()
+        response, timed_out = asyncio.run(
+            _invoke_report_model(model, "prompt", timeout_seconds=1)
+        )
+
+        self.assertFalse(timed_out)
+        self.assertTrue(model.ainvoke_called)
+        self.assertFalse(model.astream_called)
+        self.assertEqual(_message_text(response), "最终答案")
+
+    def test_timeout_is_not_misreported_as_missing_markdown(self):
+        from app.services.research.publication.report_writer import (
+            write_research_report,
+        )
+
+        with mock.patch(
+            "app.infra.llm.get_llm",
+            return_value=self._TimeoutModel(),
+        ), mock.patch(
+            "app.services.research.publication.report_writer.report_completed_step",
+            new=mock.AsyncMock(),
+        ), mock.patch(
+            "app.services.research.publication.report_writer.report_model_completion",
+            new=mock.AsyncMock(),
+        ), mock.patch(
+            "app.services.research.publication.report_writer.record_model_failure",
+        ):
+            result = asyncio.run(
+                write_research_report(
+                    self._report(),
+                    model_id="writer-model",
+                )
+            )
+
+        self.assertEqual(result.status, "fallback")
+        self.assertEqual(result.error, "TimeoutError")
+        self.assertEqual(result.metadata["failure_cause"], "timeout")
+
+    def test_thinking_only_response_uses_deterministic_fallback(self):
+        thinking_only = [
+            {"type": "thinking", "thinking": "planning the report..."},
+            {"type": "thinking", "thinking": "checking constraints... [1]"},
+        ]
+        result, model = self._write([thinking_only, thinking_only])
+
+        self.assertEqual(len(model.prompts), 2)
+        self.assertEqual(result.status, "fallback")
+        self.assertEqual(result.provider, "deterministic")
+        self.assertNotIn("planning the report", result.report_markdown)
+        self.assertTrue(
+            all(
+                item["error"] == "thinking_only_response"
+                for item in result.metadata["attempts"]
+            )
+        )
+
+    def test_render_gate_failure_cannot_be_reported_as_synthesized(self):
+        uncited = (
+            "这是模型生成但没有任何正文引用的草稿。"
+            "它的长度足以通过旧版最低字符门槛，却无法证明其中的推荐来自哪条材料。"
+            "发布器必须拒绝它，而不能仅仅因为清洗后的正文非空就标记为成功。"
+        )
+        result, model = self._write([uncited, uncited])
+
+        self.assertEqual(len(model.prompts), 2)
+        self.assertEqual(result.status, "fallback")
+        self.assertNotEqual(result.status, "synthesized")
+        self.assertNotIn("这是模型生成但没有任何正文引用的草稿", result.report_markdown)
+        self.assertTrue(
+            all(not item["ok"] for item in result.metadata["attempts"])
+        )
+
+    def test_explicit_table_contract_keeps_safe_model_answer_after_repair(self):
+        no_table = (
+            "我建议先从一本覆盖基础概念的入门书开始，再根据学习目标补充专题读物。"
+            "现有资料明确把《人工智能：一种现代方法》列入人工智能入门推荐书单 [1]。"
+            "这段正文有有效引用且长度充足，但没有按用户明确要求提供表格。"
+        )
+        result, model = self._write(
+            [no_table, no_table],
+            objective="请用表格推荐一些 AI 入门书，并列出适合人群和取舍",
+        )
+
+        from app.services.publication_safety import markdown_table_present
+
+        self.assertEqual(len(model.prompts), 2)
+        self.assertIn("previous draft was rejected", model.prompts[1])
+        self.assertEqual(result.status, "synthesized")
+        self.assertEqual(result.provider, "runtime_llm")
+        self.assertFalse(markdown_table_present(result.report_markdown))
+        self.assertIn("这段正文有有效引用", result.report_markdown)
+        self.assertTrue(result.metadata["publication_safe"])
+        self.assertFalse(result.metadata["answer_quality_pass"])
+        self.assertTrue(
+            result.metadata["attempts"][-1]["accepted_with_quality_warning"]
+        )
+        self.assertEqual(
+            result.metadata["published_verified_candidate_count"],
+            1,
+        )
+        self.assertEqual(
+            result.metadata["published_verified_candidate_titles"],
+            ["人工智能：一种现代方法"],
+        )
+
+    def test_book_table_fallback_never_projects_editorial_title_as_book(self):
+        from app.services.research.publication.report_writer import (
+            _fallback_markdown,
+        )
+        from app.services.research.report import (
+            ResearchReport,
+            ResearchReportSource,
+        )
+        from app.services.research.verifier import (
+            ClaimAdmissionDecision,
+            VerifierAdmissionResult,
+        )
+
+        run_id = uuid.uuid4()
+        article_id = uuid.uuid4()
+        catalog_id = uuid.uuid4()
+        article_title = "人工智能入门书籍推荐零基础新手篇 - 博学谷"
+        article_claim = "文章把《深度学习》列为机器学习与神经网络入门读物。"
+        catalog_claim = "《深度学习》系统介绍机器学习、神经网络和深度学习基础。"
+        decisions = [
+            ClaimAdmissionDecision(
+                claim=article_claim,
+                status="admitted",
+                evidence_ids=[article_id],
+                quality="medium",
+                reason_codes=["supported_by_evidence"],
+                provenance_valid=True,
+                content_quality=1.0,
+                query_relevance=1.0,
+                corroborated=False,
+                publishable=True,
+            ),
+            ClaimAdmissionDecision(
+                claim=catalog_claim,
+                status="admitted",
+                evidence_ids=[catalog_id],
+                quality="high",
+                reason_codes=["supported_by_evidence"],
+                provenance_valid=True,
+                content_quality=1.0,
+                query_relevance=1.0,
+                corroborated=True,
+                publishable=True,
+            ),
+        ]
+        verification = VerifierAdmissionResult(
+            run_id=run_id,
+            decisions=decisions,
+            admitted_claims=decisions,
+            ready_for_final_answer=True,
+        )
+        report = ResearchReport(
+            run_id=run_id,
+            user_id=uuid.uuid4(),
+            objective=(
+                "推荐人工智能入门书，请用 Markdown 表格，列为："
+                "书名、作者、适合人群、推荐理由、局限"
+            ),
+            run_status="active",
+            report_status="verified",
+            verified_claims=decisions,
+            sources=[
+                ResearchReportSource(
+                    evidence_id=article_id,
+                    source_title=article_title,
+                    source_url="https://example.com/ai-book-list",
+                    quality="medium",
+                    relevance=5,
+                    research_round=1,
+                    claim=article_claim,
+                ),
+                ResearchReportSource(
+                    evidence_id=catalog_id,
+                    source_title="深度学习 (豆瓣)",
+                    source_url="https://book.douban.com/subject/27087503/",
+                    quality="high",
+                    relevance=5,
+                    research_round=2,
+                    claim=catalog_claim,
+                ),
+            ],
+            verification=verification,
+        )
+
+        rendered = _fallback_markdown(report, language="zh-CN")
+
+        self.assertIn(
+            "| 书名 | 作者 | 适合人群 | 推荐理由 | 局限 |",
+            rendered,
+        )
+        self.assertIn(
+            "[《深度学习》](https://book.douban.com/subject/27087503/)",
+            rendered,
+        )
+        self.assertNotIn(article_title, rendered)
+        self.assertIn("系统介绍机器学习", rendered)
+        self.assertNotIn("列为机器学习与神经网络入门读物", rendered)
+
+    def test_book_table_fallback_reports_insufficient_without_catalog_entity(self):
+        report = self._report(
+            objective=(
+                "推荐人工智能入门书，请用 Markdown 表格，列为："
+                "书名、作者、适合人群、推荐理由、局限"
+            )
+        )
+        report.sources[0].source_title = "人工智能入门书单推荐"
+        report.sources[0].source_url = "https://example.com/ai-reading-list"
+
+        from app.services.research.publication.report_writer import (
+            _fallback_markdown,
+        )
+
+        rendered = _fallback_markdown(report, language="zh-CN")
+
+        self.assertIn("暂无可核验书目", rendered)
+        self.assertNotIn("人工智能入门书单推荐", rendered)
+
+    def test_bibliographic_metadata_is_not_used_as_recommendation_reason(self):
+        from app.services.research.publication.report_writer import (
+            _candidate_reason,
+        )
+
+        reason = _candidate_reason(
+            {"candidate_title": "零基础学机器学习"},
+            claim=(
+                "《零基础学机器学习》，作者为黄佳，"
+                "由人民邮电出版社出版，出版时间为2020年。"
+            ),
+            zh=True,
+        )
+
+        self.assertIn("入门定位", reason)
+        self.assertNotIn("出版社", reason)
 
 
 class ResearchDeliveryStatusTests(unittest.TestCase):

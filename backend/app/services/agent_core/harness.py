@@ -13,9 +13,7 @@ from app.services.agent_core.proposal_validator import ProposalValidator
 from app.services.agent_core.publisher import ResponsePublisher
 from app.services.agent_core.shadow import ShadowValidator
 from app.services.agent_runtime.contracts import (
-    ActionPlan,
     ExecutionContext,
-    PlanReceipt,
 )
 from app.services.agent_runtime.runtime import SystemRuntime
 from app.services.tasks.draft_validator import TaskPlanDraftValidator
@@ -108,9 +106,14 @@ class AgentCoreHarness:
             context=context,
             user_input=user_input,
         )
+        # response_mode=model always belongs to a later model publication
+        # step, even when every capability action failed. A failed model-mode
+        # receipt is still intermediate state; sending it to the deterministic
+        # receipt renderer violates the publication contract and masks the
+        # original capability failure.
         answer = (
             None
-            if _requires_model_synthesis(plan, receipt)
+            if plan.response_mode == "model"
             else self._publisher.publish_receipt(plan, receipt)
         )
         return AgentCoreTurnResult(
@@ -120,14 +123,3 @@ class AgentCoreHarness:
             receipt=receipt,
             answer=answer,
         )
-
-
-def _requires_model_synthesis(
-    plan: ActionPlan,
-    receipt: PlanReceipt,
-) -> bool:
-    return (
-        plan.response_mode == "model"
-        and receipt.status in {"completed", "partial"}
-        and any(action.status == "completed" for action in receipt.actions)
-    )

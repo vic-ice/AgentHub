@@ -18,12 +18,19 @@ class WebSearchReceiptSanitizer:
         request: WebSearchInput,
         result: SearchResult,
     ) -> WebEvidence:
-        hits = _clean_hits(result.hits, limit=request.max_results)
+        hits = _clean_hits(
+            result.hits,
+            limit=request.max_results,
+            detail=request.detail,
+        )
         sources = [
             ExternalEvidenceSource(
                 title=_bounded(hit.title, 300),
                 url=_bounded(hit.url, 2_000),
-                snippet=_bounded(hit.snippet, 1_000),
+                snippet=_bounded(
+                    _hit_evidence_text(hit, detail=request.detail),
+                    1_000,
+                ),
                 published_date=_bounded(hit.published_date, 64),
             )
             for hit in hits
@@ -48,7 +55,12 @@ class WebSearchReceiptSanitizer:
         )
 
 
-def _clean_hits(hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
+def _clean_hits(
+    hits: list[SearchHit],
+    *,
+    limit: int,
+    detail: str = "standard",
+) -> list[SearchHit]:
     """Drop junk/duplicate search hits before they reach the model.
 
     Chat Search shares the same conservative quality gate and content-
@@ -62,7 +74,7 @@ def _clean_hits(hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
         if not url or url.lower() in seen_urls:
             continue
         garbage, _reason = check_content_garbage(
-            f"{hit.title} {hit.snippet}",
+            f"{hit.title} {_hit_evidence_text(hit, detail=detail)}",
             min_chars=None,
         )
         if garbage:
@@ -73,8 +85,25 @@ def _clean_hits(hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
             break
     return dedup_by_content(
         kept,
-        text_of=lambda hit: f"{hit.title} {hit.snippet}",
+        text_of=lambda hit: (
+            f"{hit.title} {_hit_evidence_text(hit, detail=detail)}"
+        ),
     )[:limit]
+
+
+def _hit_evidence_text(hit: SearchHit, *, detail: str) -> str:
+    snippet = " ".join(str(hit.snippet or "").split())
+    content = " ".join(str(hit.content or "").split())
+    if detail == "deep" and content:
+        garbage, _reason = check_content_garbage(content, min_chars=None)
+        if not garbage:
+            if snippet and snippet.casefold() not in content.casefold():
+                # Provider snippets are usually query-focused; keep that
+                # passage first, then add bounded page context instead of
+                # replacing the relevant excerpt with the page introduction.
+                return f"{snippet} {content}"
+            return content
+    return snippet or content
 
 
 def _bounded(value: str, limit: int) -> str:

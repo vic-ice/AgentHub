@@ -105,6 +105,7 @@ class ControllerRequestBuilder:
         )
         return ControllerModelRequest(
             model_name=model_name,
+            thinking_mode=bool(user_input.thinking_mode),
             current_user_message=user_input.content,
             context=assembled.snapshot,
             timeout_seconds=max(

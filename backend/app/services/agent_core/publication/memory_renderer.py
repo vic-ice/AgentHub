@@ -55,13 +55,52 @@ def render_memory_mutation(output: dict) -> str:
         return "我已经记得：" + "；".join(labels) + "，无需重复保存。"
 
     lines: list[str] = []
-    for mutation in mutations:
+    consumed: set[int] = set()
+    for name_index, mutation in enumerate(mutations):
+        if str(mutation.get("status") or "") != "created":
+            continue
+        version = mutation.get("version")
+        version_payload = version if isinstance(version, dict) else {}
+        entity, name = _entity_name_parts(version_payload)
+        if not entity or not name:
+            continue
+        possession_index = next(
+            (
+                index
+                for index, candidate in enumerate(mutations)
+                if index != name_index
+                and str(candidate.get("status") or "") == "created"
+                and _same_text(
+                    _possession_entity(candidate.get("version")),
+                    entity,
+                )
+            ),
+            None,
+        )
+        if possession_index is None:
+            continue
+        consumed.update({name_index, possession_index})
+        lines.append(f"记住了：你有{entity}，名字叫{name}。")
+
+    for mutation_index, mutation in enumerate(mutations):
+        if mutation_index in consumed:
+            continue
         mutation_status = str(mutation.get("status") or "")
         version = mutation.get("version")
         previous = mutation.get("previous")
         version_payload = version if isinstance(version, dict) else {}
         new_label = _value_label(version_payload)
         if mutation_status == "revised" and isinstance(previous, dict):
+            entity, new_name = _entity_name_parts(version_payload)
+            previous_entity, old_name = _entity_name_parts(previous)
+            if new_name and old_name and (entity or previous_entity):
+                target = entity or previous_entity
+                lines.append(
+                    f"我已经记得：{target}的名字是{new_name}。"
+                    if _same_text(old_name, new_name)
+                    else f"已把{target}的名字从“{old_name}”更新为“{new_name}”。"
+                )
+                continue
             old_label = _value_label(previous)
             kind = _fact_kind(version_payload)
             if new_label and old_label:
@@ -82,7 +121,7 @@ def render_memory_mutation(output: dict) -> str:
             else:
                 lines.append(f"记住了：{new_label}。")
     if lines:
-        return "\n".join(lines)
+        return "\n".join(dict.fromkeys(lines))
     return "已根据你的最新表述更新长期记忆。"
 
 
@@ -318,7 +357,7 @@ def _fact_kind(version: dict) -> str:
         return "喜好"
     if schema_key == "relationship.entity":
         return "关系"
-    if schema_key == "entity.name":
+    if _entity_name_parts(version)[1]:
         return "实体名称"
     if schema_key == "instruction.behavior":
         return "行为约定"
@@ -368,9 +407,8 @@ def _value_label(version: dict, *, with_subject: bool = True) -> str:
             "disliked": "不喜欢",
             "not_interested": "不感兴趣",
         }.get(evaluation, evaluation)
-    if schema_key == "entity.name":
-        entity = str(value.get("entity") or "").strip()
-        name = str(value.get("name") or "").strip()
+    entity, name = _entity_name_parts(version)
+    if entity and name:
         return f"{entity}的名字是{name}" if entity and name else ""
     if predicate in {"name", "identity", "self_reported_name"}:
         return str(value.get("name") or "").strip()
@@ -396,6 +434,49 @@ def _value_label(version: dict, *, with_subject: bool = True) -> str:
         if label:
             return label
     return str(version.get("evidence_quote") or "").strip()
+
+
+def _entity_name_parts(version: Any) -> tuple[str, str]:
+    if not isinstance(version, dict):
+        return "", ""
+    value = version.get("value") if isinstance(version.get("value"), dict) else {}
+    schema_key = str(version.get("schema_key") or "").strip()
+    predicate = str(
+        version.get("predicate") or value.get("predicate") or ""
+    ).strip().casefold()
+    if schema_key != "entity.name" and predicate not in {
+        "entity_name",
+        "entity.name",
+    }:
+        return "", ""
+    return (
+        str(value.get("entity") or "").strip(),
+        str(value.get("name") or "").strip(),
+    )
+
+
+def _possession_entity(version: Any) -> str:
+    if not isinstance(version, dict):
+        return ""
+    value = version.get("value") if isinstance(version.get("value"), dict) else {}
+    schema_key = str(version.get("schema_key") or "").strip()
+    predicate = str(
+        version.get("predicate") or value.get("predicate") or ""
+    ).strip().casefold()
+    if schema_key != "possession.entity" and predicate not in {
+        "has",
+        "have",
+        "own",
+        "possess",
+    }:
+        return ""
+    return str(value.get("entity") or "").strip()
+
+
+def _same_text(left: Any, right: Any) -> bool:
+    return "".join(str(left or "").split()).casefold() == "".join(
+        str(right or "").split()
+    ).casefold()
 
 
 def _short_date(value: Any) -> str:

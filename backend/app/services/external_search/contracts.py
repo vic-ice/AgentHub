@@ -35,7 +35,7 @@ class SearchRequest(BaseModel):
     language: str = ""
     zone: Literal["cn", "intl"] | None = None
     category: SearchCategory = "general"
-    round_index: int = Field(default=1, ge=1, le=3)
+    round_index: int = Field(default=1, ge=1, le=4)
     strategy: SearchStrategy = "failover"
     provider_budget: int = Field(
         default=3,

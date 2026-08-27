@@ -40,7 +40,11 @@ from app.services.book_search import (
     search_external_book_candidates,
 )
 from app.services.book_search_contracts import BookCandidateSearchResult
-from app.services.books.recommendation_service import RecommendationService
+from app.services.books.recommendation_service import (
+    RecommendationService,
+    _clean_catalog_description,
+    _discovery_queries,
+)
 from app.services.books.douban_catalog import (
     DoubanCatalogProvider,
     catalog_query_backoffs,
@@ -270,6 +274,51 @@ class RecommendationProposalTests(unittest.TestCase):
 
 
 class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_catalog_description_drops_search_page_chrome(self) -> None:
+        self.assertEqual(
+            _clean_catalog_description(
+                "投诉建议 举报不良信息 使用百度前必读 百科协议 京ICP证030173号"
+            ),
+            "",
+        )
+
+    def test_fallback_recommendation_expands_only_explicit_reference_titles(self) -> None:
+        request = BookSearchInput(
+            query="类似《非暴力沟通》、《小狗钱钱》的书 推荐",
+            mode="recommendation",
+            reference_titles=["非暴力沟通", "小狗钱钱"],
+            excluded_titles=["非暴力沟通", "小狗钱钱"],
+        )
+
+        self.assertEqual(
+            _discovery_queries(request=request, effective_query=request.query),
+            [
+                "类似《非暴力沟通》的书 推荐",
+                "类似《小狗钱钱》的书 推荐",
+                "类似《非暴力沟通》、《小狗钱钱》的书 推荐",
+            ],
+        )
+
+    def test_sparse_model_candidates_are_supplemented_from_reference_titles(self) -> None:
+        request = BookSearchInput(
+            query="类似《非暴力沟通》、《小狗钱钱》的书 推荐",
+            mode="recommendation",
+            limit=3,
+            candidate_titles=["人性的弱点", "富爸爸穷爸爸"],
+            reference_titles=["非暴力沟通", "小狗钱钱"],
+            excluded_titles=["非暴力沟通", "小狗钱钱"],
+        )
+
+        self.assertEqual(
+            _discovery_queries(request=request, effective_query=request.query),
+            [
+                "《人性的弱点》 作者 出版社 内容简介",
+                "《富爸爸穷爸爸》 作者 出版社 内容简介",
+                "类似 非暴力沟通 的书 推荐",
+                "类似 小狗钱钱 的书 推荐",
+            ],
+        )
+
     async def test_candidate_fusion_deduplicates_editions_and_canonical_urls(self) -> None:
         candidates = [
             Book(
@@ -341,7 +390,7 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.include_domains, ["book.douban.com"])
         self.assertEqual(request.include_url_prefixes, [])
 
-    async def test_recommendation_discovery_fuses_catalog_and_search_gateway(self) -> None:
+    async def test_recommendation_discovery_prefers_semantic_web_results(self) -> None:
         gateway = AsyncMock()
         gateway.search.return_value = SearchResult(
             outcome="found",
@@ -385,7 +434,7 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(
             [item["title"] for item in result.candidates],
-            ["目录候选", "网页发现候选"],
+            ["网页发现候选"],
         )
         request = gateway.search.await_args.args[0]
         self.assertEqual(request.strategy, "federated")
@@ -726,7 +775,7 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(evidence.theme_match, "all")
         self.assertEqual(evidence.items[0].theme, "沟通 × 理财")
 
-    async def test_multiple_semantic_themes_only_fallback_after_zero_result(self) -> None:
+    async def test_multiple_semantic_themes_keep_one_semantic_query(self) -> None:
         communication = Book(
             title="沟通候选",
             authors=["甲"],
@@ -746,18 +795,11 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
             raw_data={},
         )
         search = AsyncMock(
-            side_effect=[
-                BookSearchCacheResult(
-                    query="轻松提升沟通和金钱观",
-                    status="empty_result",
-                    books=[],
-                ),
-                BookSearchCacheResult(
-                    query="沟通技巧 OR 金钱观",
-                    status="ok",
-                    books=[communication, finance],
-                ),
-            ]
+            return_value=BookSearchCacheResult(
+                query="轻松提升沟通和金钱观",
+                status="ok",
+                books=[communication, finance],
+            )
         )
         request = BookSearchInput(
             query="轻松提升沟通和金钱观",
@@ -775,11 +817,12 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
                 user_id=None,
             )
 
-        self.assertEqual(search.await_count, 2)
+        self.assertEqual(search.await_count, 1)
         self.assertEqual(
-            [call.kwargs["query"] for call in search.await_args_list],
-            ["轻松提升沟通和金钱观", "沟通技巧 OR 金钱观"],
+            search.await_args.kwargs["query"],
+            "轻松提升沟通和金钱观",
         )
+        self.assertTrue(search.await_args.kwargs["federated_discovery"])
         self.assertEqual(
             [source.title for source in evidence.sources],
             ["沟通候选", "财商候选"],
@@ -794,7 +837,166 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             evidence.metadata["discovery"]["discovery_strategy"],
-            "semantic_theme_fanout_round_robin",
+            "single_query",
+        )
+
+    async def test_exact_candidates_use_catalog_fast_path_and_stop_at_limit(self) -> None:
+        def result_for(query: str) -> BookSearchCacheResult:
+            title = query.split("》", 1)[0].lstrip("《")
+            return BookSearchCacheResult(
+                query=query,
+                status="ok",
+                books=[
+                    Book(
+                        title=title,
+                        authors=["作者"],
+                        source_name="douban",
+                        source_url=(
+                            "https://book.douban.com/subject/"
+                            f"{1000000 + len(search.await_args_list)}/"
+                        ),
+                        raw_data={},
+                    )
+                ],
+            )
+
+        search = AsyncMock(
+            side_effect=lambda _session, **kwargs: result_for(kwargs["query"])
+        )
+        request = BookSearchInput(
+            query="精准候选书目",
+            mode="recommendation",
+            candidate_titles=["候选一", "候选二", "候选三", "候选四"],
+            limit=3,
+        )
+
+        with patch(
+            "app.services.books.recommendation_service.search_and_cache_books_with_status",
+            search,
+        ):
+            evidence = await RecommendationService(AsyncMock()).search(
+                request,
+                user_id=None,
+            )
+
+        self.assertEqual(search.await_count, 3)
+        self.assertEqual(evidence.candidate_count, 3)
+        self.assertTrue(
+            all(
+                call.kwargs["federated_discovery"] is False
+                for call in search.await_args_list
+            )
+        )
+
+    async def test_filtered_theme_coverage_comes_from_one_semantic_discovery(self) -> None:
+        communication = Book(
+            title="沟通方法",
+            authors=["甲"],
+            tags=[],
+            summary="系统讲解沟通技巧、倾听和冲突处理方法。",
+            source_name="douban",
+            source_url="https://book.example/communication-gap",
+            raw_data={},
+        )
+        finance = Book(
+            title="金钱观入门",
+            authors=["乙"],
+            tags=[],
+            summary="帮助普通读者理解金钱观和长期理财决策。",
+            source_name="douban",
+            source_url="https://book.example/finance-gap",
+            raw_data={},
+        )
+        search = AsyncMock(
+            return_value=BookSearchCacheResult(
+                query="提升沟通能力和金钱观",
+                status="ok",
+                books=[communication, finance],
+            )
+        )
+        request = BookSearchInput(
+            query="提升沟通能力和金钱观",
+            mode="recommendation",
+            themes=["沟通技巧", "金钱观"],
+            response_depth="quick",
+            limit=4,
+        )
+
+        with patch(
+            "app.services.books.recommendation_service.search_and_cache_books_with_status",
+            search,
+        ):
+            evidence = await RecommendationService(AsyncMock()).search(
+                request,
+                user_id=None,
+            )
+
+        self.assertEqual(search.await_count, 1)
+        self.assertEqual(
+            search.await_args.kwargs["query"],
+            "提升沟通能力和金钱观",
+        )
+        self.assertEqual(
+            [item.title for item in evidence.items],
+            ["沟通方法", "金钱观入门"],
+        )
+        self.assertEqual(
+            [(item.theme, item.status) for item in evidence.coverage],
+            [("沟通技巧", "complete"), ("金钱观", "complete")],
+        )
+
+    async def test_sparse_catalog_candidate_is_not_verified_by_query_provenance(self) -> None:
+        broad_sparse = Book(
+            title="宽泛目录候选",
+            authors=["甲"],
+            tags=[],
+            summary="作者：甲",
+            source_name="douban",
+            source_url="https://book.example/broad-sparse",
+            raw_data={},
+        )
+        supplemental_sparse = Book(
+            title="补搜目录候选",
+            authors=["乙"],
+            tags=[],
+            summary="作者：乙",
+            source_name="douban",
+            source_url="https://book.example/supplemental-sparse",
+            raw_data={},
+        )
+        search = AsyncMock(
+            return_value=BookSearchCacheResult(
+                query="提升沟通能力和金钱观",
+                status="ok",
+                books=[broad_sparse, supplemental_sparse],
+            )
+        )
+        request = BookSearchInput(
+            query="提升沟通能力和金钱观",
+            mode="recommendation",
+            themes=["沟通技巧", "金钱观"],
+            response_depth="quick",
+            limit=4,
+        )
+
+        with patch(
+            "app.services.books.recommendation_service.search_and_cache_books_with_status",
+            search,
+        ):
+            evidence = await RecommendationService(AsyncMock()).search(
+                request,
+                user_id=None,
+            )
+
+        self.assertEqual(search.await_count, 1)
+        self.assertEqual(evidence.items, [])
+        self.assertNotIn(
+            "宽泛目录候选",
+            [source.title for source in evidence.sources],
+        )
+        self.assertEqual(
+            [(item.theme, item.status) for item in evidence.coverage],
+            [("沟通技巧", "missing"), ("金钱观", "missing")],
         )
 
     async def test_catalog_themes_are_not_polluted_by_audience_prose(self) -> None:
@@ -821,7 +1023,10 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
                 user_id=None,
             )
 
-        self.assertEqual(search.await_args.kwargs["query"], "财商理财")
+        self.assertEqual(
+            search.await_args.kwargs["query"],
+            "适合普通读者的财商读物",
+        )
         self.assertEqual(evidence.coverage[0].status, "missing")
 
     async def test_owner_enriches_catalog_candidate_from_federated_sources(self) -> None:
@@ -931,13 +1136,43 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
             [item.title for item in evidence.items],
             ["候选1", "候选2", "候选3"],
         )
-        self.assertEqual(gateway.search.await_count, 2)
+        self.assertEqual(gateway.search.await_count, 3)
         self.assertTrue(
             all(
-                call.args[0].provider_budget == 1
+                call.args[0].provider_budget == 2
                 for call in gateway.search.await_args_list
             )
         )
+
+    async def test_empty_candidates_skip_enrichment_without_error(self) -> None:
+        cache = BookSearchCacheResult(
+            query="没有匹配项的主题",
+            status="empty_result",
+            books=[],
+        )
+        gateway = AsyncMock()
+        request = BookSearchInput(
+            query="没有匹配项的主题",
+            mode="recommendation",
+            response_depth="balanced",
+            limit=3,
+        )
+
+        with patch(
+            "app.services.books.recommendation_service.search_and_cache_books_with_status",
+            AsyncMock(return_value=cache),
+        ):
+            evidence = await RecommendationService(
+                AsyncMock(),
+                search_gateway=gateway,
+                enable_external_enrichment=True,
+            ).search(request, user_id=None)
+
+        self.assertEqual(evidence.status, "empty_result")
+        self.assertEqual(evidence.items, [])
+        self.assertEqual(evidence.sources, [])
+        gateway.search.assert_not_awaited()
+
     async def test_publication_year_is_sent_to_discovery_and_verified(self) -> None:
         old = Book(
             title="旧候选",
@@ -1028,6 +1263,69 @@ class RecommendationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("购买纸质书", snippet)
         self.assertNotIn("图书馆", snippet)
         self.assertNotIn("第一章", snippet)
+
+    async def test_author_biography_is_not_admitted_as_catalog_description(self) -> None:
+        book = Book(
+            title="财商入门书",
+            authors=["示例作者"],
+            tags=[],
+            summary=(
+                "作者：示例作者 作者简介 示例作者出生于某地，"
+                "毕业于某大学，现任企业家并著有多部作品。"
+            ),
+            source_name="douban",
+            source_url="https://book.example/money",
+            raw_data={},
+        )
+        cache_result = BookSearchCacheResult(
+            query="财商入门书",
+            status="ok",
+            books=[book],
+        )
+        with patch(
+            "app.services.books.recommendation_service.search_and_cache_books_with_status",
+            AsyncMock(return_value=cache_result),
+        ):
+            evidence = await RecommendationService(AsyncMock()).search(
+                BookSearchInput(query="财商入门书", mode="lookup", limit=5),
+                user_id=None,
+            )
+
+        self.assertEqual(evidence.sources[0].snippet, "作者：示例作者")
+        self.assertNotIn("出生于", evidence.sources[0].snippet)
+
+    async def test_inline_content_section_survives_author_biography_cleanup(self) -> None:
+        book = Book(
+            title="人工智能入门",
+            authors=["示例作者"],
+            tags=[],
+            summary=(
+                "作者简介 示例作者出生于某地并任职于某大学。 "
+                "内容简介 本书通过案例讲解人工智能基础知识，"
+                "并为初学者提供循序渐进的练习。 作者介绍 其他资料"
+            ),
+            source_name="douban",
+            source_url="https://book.example/ai",
+            raw_data={},
+        )
+        cache_result = BookSearchCacheResult(
+            query="人工智能入门",
+            status="ok",
+            books=[book],
+        )
+        with patch(
+            "app.services.books.recommendation_service.search_and_cache_books_with_status",
+            AsyncMock(return_value=cache_result),
+        ):
+            evidence = await RecommendationService(AsyncMock()).search(
+                BookSearchInput(query="人工智能入门", mode="lookup", limit=5),
+                user_id=None,
+            )
+
+        snippet = evidence.sources[0].snippet
+        self.assertIn("通过案例讲解人工智能基础知识", snippet)
+        self.assertNotIn("出生于", snippet)
+        self.assertNotIn("其他资料", snippet)
 
     async def test_lookup_keeps_exact_title_and_drops_review_snippets(self) -> None:
         exact = Book(

@@ -115,6 +115,14 @@ def _candidate_to_book_data(candidate: dict[str, str]) -> dict:
             # the book's publication. Keep the provenance distinct so a web
             # index timestamp can never satisfy a publication-year filter.
             "source_published_date": candidate.get("published_date", ""),
+            "book_published_date": candidate.get(
+                "book_published_date",
+                "",
+            ),
+            "publication_year": candidate.get(
+                "book_published_date",
+                "",
+            ),
             "cover_source_url": cover_url or "",
         },
     }
@@ -167,8 +175,11 @@ async def search_external_book_candidates(
     # engine pages broaden recall and later enrich the selected identities, but
     # page-title fragments must not outrank normalized catalog records merely
     # because a provider returned first.
+    # Web search supplies semantic relevance. The autocomplete catalog is only
+    # an identity fallback when no concrete subject page was discovered; using
+    # it to fill remaining slots introduces unrelated prefix matches.
     books = _merge_candidate_payloads(
-        [*catalog_books, *web_books],
+        web_books if web_books else catalog_books,
         limit=limit,
     )
     duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -364,15 +375,22 @@ async def search_cached_books(
         select(Book)
         .where(or_(*predicates))
         .order_by(Book.last_seen_at.desc(), Book.updated_at.desc())
-        .limit(max(1, min(limit * 5, 50)))
+        # Keep the existing bounded candidate ceiling, but do not let a small
+        # caller limit allow dirty or duplicate cache rows to crowd out valid
+        # public book records before application-level validation.
+        .limit(50)
     )
     scored = [
         (_cache_match_score(book, terms), book)
         for book in result.scalars().all()
+        if _book_public_source_url(book)
     ]
     scored = [(score, book) for score, book in scored if score > 0]
     scored.sort(key=lambda item: (item[0], item[1].last_seen_at), reverse=True)
-    return [book for _, book in scored[: max(1, limit)]]
+    return _merge_book_candidates(
+        [book for _, book in scored],
+        max(1, limit),
+    )
 
 
 def _merge_book_candidates(books: list[Book], limit: int) -> list[Book]:

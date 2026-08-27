@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 from uuid import UUID
 
@@ -30,7 +31,9 @@ class ResearchReportSource(BaseModel):
     published_date: str = ""
     quality: str = "unknown"
     relevance: int = 3
+    research_round: int = 0
     claim: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResearchReportMemoryContext(BaseModel):
@@ -174,23 +177,46 @@ async def _build_memory_context(user_id: UUID) -> ResearchReportMemoryContext:
 def _candidate_claims_from_evidence(
     evidence: list[ResearchEvidence],
 ) -> list[ClaimForVerification]:
-    claims: list[ClaimForVerification] = []
+    grouped: dict[str, dict[str, Any]] = {}
+    quality_rank = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
     for item in evidence:
         if item.id is None:
             continue
-        claims.append(
-            ClaimForVerification(
-                claim=item.claim,
-                evidence_ids=[item.id],
-                quality=item.quality,
-                metadata={
+        key = re.sub(
+            r"[^\w\u4e00-\u9fff]+",
+            "",
+            str(item.claim or "").casefold(),
+        )
+        if not key:
+            continue
+        group = grouped.setdefault(
+            key,
+            {
+                "claim": item.claim,
+                "evidence_ids": [],
+                "quality": item.quality,
+                "metadata": {
                     "source_title": item.source_title,
                     "source_url": item.source_url,
                     "source_type": item.source_type,
                 },
-            )
+            },
         )
-    return claims
+        group["evidence_ids"].append(item.id)
+        if quality_rank.get(str(item.quality).lower(), 0) > quality_rank.get(
+            str(group["quality"]).lower(),
+            0,
+        ):
+            group["quality"] = item.quality
+    return [
+        ClaimForVerification(
+            claim=group["claim"],
+            evidence_ids=list(dict.fromkeys(group["evidence_ids"])),
+            quality=group["quality"],
+            metadata=group["metadata"],
+        )
+        for group in grouped.values()
+    ]
 
 
 def _sources_from_evidence(
@@ -214,7 +240,9 @@ def _sources_from_evidence(
                 published_date=_evidence_published_date(item),
                 quality=item.quality,
                 relevance=item.relevance,
+                research_round=_evidence_research_round(item),
                 claim=item.claim,
+                metadata=dict(item.metadata or {}),
             )
         )
     return sources
@@ -232,6 +260,23 @@ def _evidence_published_date(evidence: ResearchEvidence) -> str:
         or record_metadata.get("published_date")
         or ""
     ).strip()
+
+
+def _evidence_research_round(evidence: ResearchEvidence) -> int:
+    metadata = evidence.metadata if isinstance(evidence.metadata, dict) else {}
+    source_record = metadata.get("source_record")
+    source_record = source_record if isinstance(source_record, dict) else {}
+    record_metadata = source_record.get("metadata")
+    record_metadata = (
+        record_metadata if isinstance(record_metadata, dict) else {}
+    )
+    value = (
+        record_metadata.get("research_round")
+        or source_record.get("research_round")
+        or metadata.get("research_round")
+        or 0
+    )
+    return max(0, int(value)) if isinstance(value, int) else 0
 
 
 def _report_status(

@@ -54,6 +54,11 @@ def canonical_book_source_url(value: Any) -> str:
         return ""
     parsed = urlsplit(raw)
     path = parsed.path.rstrip("/") or "/"
+    if (
+        parsed.netloc.casefold().endswith("book.douban.com")
+        and re.fullmatch(r"/subject/\d+", path)
+    ):
+        path += "/"
     return urlunsplit(
         (parsed.scheme.casefold(), parsed.netloc.casefold(), path, parsed.query, "")
     )

@@ -14,6 +14,12 @@ from app.services.external_search.contracts import (
 from app.services.external_search.policy import provider_order
 
 
+FEDERATED_SEARCH_DEADLINE_SECONDS = 20.0
+FEDERATED_DIVERSITY_GRACE_SECONDS = 1.25
+FEDERATED_PARTIAL_RECALL_GRACE_SECONDS = 4.0
+FEDERATED_MIN_USEFUL_HITS = 3
+
+
 class SearchGateway:
     """Own provider execution policy for one typed search request.
 
@@ -112,15 +118,10 @@ class SearchGateway:
         ordered = provider_order(request, previously_used=previously_used)[
             : request.provider_budget
         ]
-        executions = await asyncio.gather(
-            *(
-                _execute_provider(
-                    provider_name,
-                    providers.get(provider_name),
-                    request,
-                )
-                for provider_name in ordered
-            )
+        executions = await _execute_federated_portfolio(
+            ordered,
+            providers=providers,
+            request=request,
         )
         attempts: list[SearchAttempt] = []
         found: list[SearchResult] = []
@@ -259,6 +260,110 @@ async def _execute_provider(
     )
 
 
+async def _execute_federated_portfolio(
+    ordered: tuple[str, ...] | list[str],
+    *,
+    providers: Mapping[str, SearchProvider],
+    request: SearchRequest,
+) -> list[SearchResult]:
+    """Keep fast usable results instead of waiting for every lagging provider."""
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + FEDERATED_SEARCH_DEADLINE_SECONDS
+    tasks = {
+        name: asyncio.create_task(
+            _execute_provider(name, providers.get(name), request)
+        )
+        for name in ordered
+    }
+    results: dict[str, SearchResult] = {}
+    first_found_at: float | None = None
+    try:
+        while tasks:
+            now = loop.time()
+            remaining = deadline - now
+            merged_hit_count = len(
+                _merge_provider_hits(
+                    list(results.values()),
+                    limit=request.max_results,
+                )
+            )
+            if first_found_at is not None:
+                minimum_useful = min(
+                    request.max_results,
+                    FEDERATED_MIN_USEFUL_HITS,
+                )
+                grace = (
+                    FEDERATED_DIVERSITY_GRACE_SECONDS
+                    if merged_hit_count >= minimum_useful
+                    else FEDERATED_PARTIAL_RECALL_GRACE_SECONDS
+                )
+                remaining = min(
+                    remaining,
+                    first_found_at + grace - now,
+                )
+            if remaining <= 0:
+                break
+            done, _pending = await asyncio.wait(
+                tuple(tasks.values()),
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                break
+            for task in done:
+                name = next(
+                    provider_name
+                    for provider_name, candidate in tasks.items()
+                    if candidate is task
+                )
+                tasks.pop(name)
+                result = task.result()
+                results[name] = result
+                if result.outcome == "found" and first_found_at is None:
+                    first_found_at = loop.time()
+            merged_hit_count = len(
+                _merge_provider_hits(
+                    list(results.values()),
+                    limit=request.max_results,
+                )
+            )
+            if merged_hit_count >= request.max_results:
+                break
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+    laggard_reason = (
+        "cancelled after another provider returned usable results"
+        if any(result.outcome == "found" for result in results.values())
+        else "federated search deadline exceeded"
+    )
+    for name, task in tasks.items():
+        results[name] = SearchResult(
+            outcome="unavailable",
+            provider=name,
+            query=request.query,
+            effective_query=request.query,
+            attempts=[
+                SearchAttempt(
+                    provider=name,
+                    outcome="unavailable",
+                    error_type=(
+                        "laggard_cancelled"
+                        if first_found_at is not None
+                        else "deadline_exceeded"
+                    ),
+                    error=laggard_reason,
+                )
+            ],
+            error=laggard_reason,
+        )
+    return [results[name] for name in ordered]
+
+
 def _merge_provider_hits(
     results: list[SearchResult],
     *,
@@ -321,6 +426,18 @@ def _apply_business_filters(
     if result.outcome != "found":
         return result
     hits = result.hits
+    if request.include_domains:
+        hits = [
+            hit
+            for hit in hits
+            if _host_matches_any(hit.url, request.include_domains)
+        ]
+    if request.exclude_domains:
+        hits = [
+            hit
+            for hit in hits
+            if not _host_matches_any(hit.url, request.exclude_domains)
+        ]
     if request.include_url_prefixes:
         hits = [
             hit
@@ -362,6 +479,19 @@ def _apply_business_filters(
                 "post_filter_count": 0,
             },
         }
+    )
+
+
+def _host_matches_any(url: str, domains: list[str]) -> bool:
+    try:
+        host = str(urlsplit(str(url or "")).hostname or "").casefold()
+    except ValueError:
+        return False
+    return any(
+        host == domain.casefold()
+        or host.endswith("." + domain.casefold())
+        for domain in domains
+        if domain
     )
 
 

@@ -726,6 +726,64 @@ class AgentCoreHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result.receipt)
         self.assertIsNone(result.answer)
 
+    async def test_failed_model_response_mode_is_still_intermediate(self) -> None:
+        class _ModelCompiler:
+            def compile(self, batch, *, goal):
+                return ActionPlan(
+                    source="controller_proposal",
+                    route_type="fast_path",
+                    intent="model_fallback",
+                    goal=goal,
+                    response_mode="model",
+                    actions=[
+                        PlannedAction(
+                            action_id="book-search",
+                            capability="book_search",
+                            operation="book_search_v1",
+                        )
+                    ],
+                )
+
+        class _Runtime:
+            async def execute(self, plan, *, context, user_input=None):
+                return PlanReceipt(
+                    plan_id=plan.plan_id,
+                    request_id=context.request_id,
+                    route_type=plan.route_type,
+                    intent=plan.intent,
+                    status="failed",
+                    actions=[
+                        ActionReceipt(
+                            action_id="book-search",
+                            capability="book_search",
+                            operation="book_search_v1",
+                            status="failed",
+                            error="book_source_unavailable",
+                            admitted=True,
+                        )
+                    ],
+                )
+
+        class _Publisher:
+            def publish_receipt(self, *args, **kwargs):
+                raise AssertionError(
+                    "failed model-mode receipt reached deterministic publication"
+                )
+
+        result = await AgentCoreHarness(
+            registry=_enabled_registry(),
+            compiler=_ModelCompiler(),  # type: ignore[arg-type]
+            runtime=_Runtime(),  # type: ignore[arg-type]
+            publisher=_Publisher(),  # type: ignore[arg-type]
+        ).run(
+            _conversation_output(),
+            goal="推荐个人成长书籍",
+            context=_context(),
+        )
+
+        self.assertEqual(result.receipt.status, "failed")
+        self.assertIsNone(result.answer)
+
 
 class PublisherTests(unittest.TestCase):
     def test_clarification_requires_no_receipt(self) -> None:

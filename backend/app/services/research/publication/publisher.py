@@ -142,7 +142,7 @@ def _conversational_markdown(
             )
         ]
     if brief.findings:
-        lines.extend(["", f"### {'✨ 值得关注' if zh else '✨ What stands out'}"])
+        lines.extend(["", f"## {'值得关注' if zh else 'What stands out'}"])
         for finding in brief.findings:
             citations = "".join(
                 f" [{citation_number[source_id]}]"
@@ -164,10 +164,10 @@ def _conversational_markdown(
                 )
             lines.append(line)
     if sources:
-        lines.extend(["", f"### {'🔗 参考来源' if zh else '🔗 Sources'}"])
+        lines.extend(["", f"## {'参考来源' if zh else 'Sources'}"])
         lines.extend(_source_lines(sources, zh=zh))
     if brief.limitations:
-        label = "💡 说明" if zh else "💡 A quick note"
+        label = "说明" if zh else "A quick note"
         lines.extend(["", f"> **{label}：** " + "；".join(brief.limitations)])
     return "\n".join(lines).strip()
 

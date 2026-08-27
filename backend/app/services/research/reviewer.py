@@ -25,7 +25,7 @@ from app.services.execution_progress import (
 
 
 RESEARCH_REVIEW_CONTRACT_VERSION = "research-review-v1"
-REVIEW_TIMEOUT_SECONDS = 45
+REVIEW_TIMEOUT_SECONDS = 30
 MAX_MISSING_QUESTIONS = 5
 MAX_NEXT_SUBQUESTIONS = 3
 MAX_CONFLICTS = 5
@@ -47,7 +47,7 @@ class ResearchReview(BaseModel):
 
     result_mode: str = "research_review"
     contract_version: str = RESEARCH_REVIEW_CONTRACT_VERSION
-    round_index: int = Field(ge=1, le=3)
+    round_index: int = Field(ge=1, le=4)
     objective: str = Field(min_length=1, max_length=4_000)
     verdict: ReviewVerdict
     known_summary: str = Field(default="", max_length=2_000)
@@ -75,7 +75,19 @@ def build_evolving_workspace(
 
     facts: list[ConfirmedResearchFact] = []
     seen: set[tuple[str, str]] = set()
-    for item in state.evidence:
+    ranked_evidence = sorted(
+        state.evidence,
+        key=lambda item: (
+            {"high": 3, "medium": 2, "low": 1}.get(
+                str(item.quality or "").lower(),
+                0,
+            ),
+            int(item.relevance or 0),
+            _evidence_round(item),
+        ),
+        reverse=True,
+    )
+    for item in ranked_evidence:
         claim = " ".join(str(item.claim or "").split())[:320]
         url = str(item.source_url or "").strip()
         key = claim.casefold()
@@ -114,6 +126,7 @@ async def review_research_state(
     budget,
     model_id: str = "",
     leads: list[dict[str, Any]] | None = None,
+    research_brief: dict[str, Any] | None = None,
 ) -> ResearchReview:
     """Judge sufficiency and next steps from the evolving workspace.
 
@@ -156,12 +169,14 @@ async def review_research_state(
         budget=budget,
         model_id=selected_model,
         leads=discovery_leads,
+        research_brief=research_brief or {},
     )
     review = _validate_review(
         payload,
         round_index=round_index,
         objective=objective,
         state=state,
+        budget=budget,
     )
     if review is not None:
         review.provider = "runtime_llm"
@@ -200,21 +215,36 @@ def _fallback_review(
     objective: str,
 ) -> ResearchReview:
     gaps = list(state.state.gaps)
-    if not gaps:
-        verdict: ReviewVerdict = "sufficient"
-        stop_reason = "no_gaps_after_rules"
+    # The semantic reviewer guides depth, but availability is not a publication
+    # requirement. Strict deterministic evidence gates may certify coverage
+    # when evidence exists and no gap remains.
+    if state.evidence and not gaps:
+        verdict = "sufficient"
+        stop_reason = "rule_evidence_satisfied"
     elif round_index < int(getattr(budget, "max_search_rounds", 2)):
         verdict = "insufficient"
-        stop_reason = "rule_gaps_pending"
+        stop_reason = (
+            "rule_gaps_pending"
+            if gaps
+            else "semantic_review_unavailable"
+        )
     else:
         verdict = "budget_exhausted"
-        stop_reason = "rule_budget_exhausted"
+        stop_reason = (
+            "rule_budget_exhausted"
+            if gaps
+            else "semantic_review_unavailable_at_budget_end"
+        )
     return ResearchReview(
         round_index=round_index,
         objective=objective,
         verdict=verdict,
         missing_questions=list(gaps)[:MAX_MISSING_QUESTIONS],
-        next_subquestions=[],
+        next_subquestions=[
+            " ".join([objective[:180], str(gap or "")[:100]]).strip()
+            for gap in gaps[:MAX_NEXT_SUBQUESTIONS]
+            if str(gap or "").strip()
+        ],
         conflicts=list(state.state.conflicts)[:MAX_CONFLICTS],
         stop_reason=stop_reason,
         reasons=["rule_fallback"],
@@ -229,6 +259,7 @@ async def _call_reviewer_model(
     budget,
     model_id: str,
     leads: list[dict[str, Any]],
+    research_brief: dict[str, Any],
 ) -> dict[str, Any] | None:
     from app.infra.llm import get_llm
 
@@ -237,6 +268,7 @@ async def _call_reviewer_model(
         round_index=round_index,
         budget=budget,
         leads=leads,
+        research_brief=research_brief,
     )
     started = time.perf_counter()
     response = None
@@ -287,6 +319,7 @@ def _review_prompt(
     round_index: int,
     budget,
     leads: list[dict[str, Any]],
+    research_brief: dict[str, Any],
 ) -> str:
     zh = re.search(r"[\u4e00-\u9fff]", workspace.objective) is not None
     max_rounds = int(getattr(budget, "max_search_rounds", 2))
@@ -307,7 +340,7 @@ def _review_prompt(
     return (
         "You are the reviewer of an ongoing deep research. "
         "Decide whether the user's original question can already be answered "
-        "from the evolving research workspace. "
+        "from the evolving research workspace and the stable research brief. "
         f"{language_rule}\n"
         "- verdict sufficient: the user's question can be answered with "
         "reasonable confidence from current known facts.\n"
@@ -317,8 +350,13 @@ def _review_prompt(
         "are available.\n"
         "- missing_questions must be specific key questions in the user's "
         "language, not generic resource labels like 'missing review'.\n"
+        "- Judge coverage against decision_dimensions and critical_unknowns in "
+        "the research brief. Candidate count alone can never establish a sufficient verdict.\n"
         "- next_subquestions must be directly searchable versions of the "
         "missing questions.\n"
+        "- For a book recommendation, wrap every newly discovered candidate "
+        "title in Chinese title brackets, for example 《Book Title》, so the "
+        "next round can verify that exact entity.\n"
         "- conflicts list only genuine contradictions between known facts "
         "from different sources; if two strong sources disagree, keep the "
         "disagreement instead of picking one.\n"
@@ -334,6 +372,7 @@ def _review_prompt(
         "embedded inside fact content.\n"
         "- Return one JSON object only, no Markdown fences, no explanation.\n\n"
         f"Research round: {round_index}/{max_rounds}\n\n"
+        f"Research brief: {json.dumps(research_brief, ensure_ascii=False)}\n\n"
         f"Workspace: {json.dumps(workspace.model_dump(mode='json'), ensure_ascii=False)}\n\n"
         f"Discovery leads: {json.dumps(leads, ensure_ascii=False)}\n\n"
         f"JSON schema: {json.dumps(schema, ensure_ascii=False)}"
@@ -368,12 +407,18 @@ def _validate_review(
     round_index: int,
     objective: str,
     state: ResearchStateResult,
+    budget,
 ) -> ResearchReview | None:
     if not isinstance(payload, dict):
         return None
     verdict = str(payload.get("verdict") or "").strip().lower()
     if verdict not in {"sufficient", "insufficient", "budget_exhausted"}:
         return None
+    if (
+        verdict == "budget_exhausted"
+        and round_index < int(getattr(budget, "max_search_rounds", 2))
+    ):
+        verdict = "insufficient"
     # The model reviews semantics, but it cannot waive deterministic evidence
     # gaps. Otherwise a weak lead may stop the loop and then be rejected by
     # the final verifier using the very same budget.
@@ -391,6 +436,20 @@ def _validate_review(
         reasons=_string_list(payload.get("reasons"), MAX_REASONS),
         provider="runtime_llm",
     )
+
+
+def _evidence_round(item) -> int:
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    source_record = metadata.get("source_record")
+    if isinstance(source_record, dict):
+        nested = source_record.get("metadata")
+        if isinstance(nested, dict) and isinstance(
+            nested.get("research_round"),
+            int,
+        ):
+            return max(0, nested["research_round"])
+    value = metadata.get("research_round")
+    return max(0, value) if isinstance(value, int) else 0
 
 
 def _clean_leads(value: list[dict[str, Any]] | None) -> list[dict[str, str]]:

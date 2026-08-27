@@ -18,10 +18,18 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.memory.current_projection import (
+    retarget_name_facts_to_current_chains,
+)
 from app.services.memory.classification import derive_domain_kind
-from app.services.memory.entity_resolver import EntityResolver
+from app.services.memory.entity_resolver import (
+    EntityResolver,
+    canonical_entity_name,
+)
+from app.services.memory.model_fact_executor import ModelFactExecutor
 from app.services.memory.version_contracts import (
     CanonicalMemoryFact,
+    MemoryAssertionProposal,
     MemoryVersionCommitCommand,
 )
 from app.services.memory.version_store import MemoryVersionStore
@@ -110,13 +118,24 @@ class MemoryWriteGateway:
         source_kind: str = "user_message",
         raw_text: str,
     ) -> dict[str, Any]:
-        canonical: list[CanonicalMemoryFact] = []
         resolver = EntityResolver(self.session)
-        for fact in facts:
+        bindings, binding_question = await _bind_compiled_entities(
+            facts,
+            resolver=resolver,
+            user_id=user_id,
+        )
+        if binding_question:
+            return {
+                "status": "clarification_required",
+                "clarification_question": binding_question,
+            }
+
+        assertions: list[MemoryAssertionProposal] = []
+        for index, fact in enumerate(facts):
             entity = str(fact.entity or "").strip()
             raw_subject = str(getattr(fact, "subject", "") or "").strip()
             subject = (
-                "user"
+                "self"
                 if not raw_subject
                 or raw_subject.casefold() in {"self", "user", "用户", "我"}
                 else raw_subject
@@ -124,17 +143,6 @@ class MemoryWriteGateway:
             entity_type = str(fact.entity_type or "").strip()
             domain = fact.domain if fact.domain in _DOMAINS else "general"
             kind = fact.kind if fact.kind in _KINDS else "fact"
-            entity_id: UUID | None = None
-            if entity and entity_type:
-                resolved = await resolver.resolve(
-                    user_id=user_id, entity_type=entity_type, name=entity
-                )
-                if resolved.status == "ambiguous":
-                    return {
-                        "status": "clarification_required",
-                        "clarification_question": resolved.question,
-                    }
-                entity_id = resolved.entity_id
             predicate = _predicate(fact)
             value = {
                 **dict(fact.attributes or {}),
@@ -145,31 +153,72 @@ class MemoryWriteGateway:
             }
             if entity and not str(value.get("entity") or "").strip():
                 value["entity"] = entity
-            if entity_type:
-                value["entity_type"] = entity_type
+            resolved = bindings.get(index)
+            resolved_type = str(
+                getattr(resolved, "entity_type", "") or entity_type
+            ).strip()
+            entity_id = getattr(resolved, "entity_id", None)
+            if resolved_type:
+                value["entity_type"] = resolved_type
             if entity_id is not None:
                 value["entity_id"] = str(entity_id)
-            memory_key = (
-                f"entity:{entity_id}:{predicate}"
-                if entity_id is not None
-                else f"{domain}.{kind}:{predicate}"
-            )
-            canonical.append(
-                CanonicalMemoryFact(
-                    schema_key=f"{domain}.{kind}",
-                    memory_key=memory_key,
-                    schema_version=1,
+            evidence = str(
+                getattr(fact, "source_excerpt", "") or raw_text
+            ).strip()
+            assertions.append(
+                MemoryAssertionProposal(
                     subject=subject,
                     predicate=predicate,
                     value=value,
-                    qualifiers={},
-                    evidence_quote=raw_text,
-                    canonical_hash=_hash(value),
+                    qualifiers=(
+                        {"entity_type": resolved_type}
+                        if resolved_type
+                        else {}
+                    ),
+                    evidence_quote=evidence,
+                    domain=domain,
+                    kind=kind,
+                    entity_type=(resolved_type if resolved_type in {
+                        "",
+                        "book",
+                        "person",
+                        "pet",
+                        "object",
+                        "place",
+                        "account",
+                        "project",
+                        "other",
+                    } else "other"),
                 )
             )
-        receipt = await MemoryVersionStore(self.session).commit(
+
+        canonicalized = ModelFactExecutor().prepare(
+            assertions,
+            source_text=raw_text,
+        )
+        if canonicalized.status != "ready":
+            return {
+                "status": canonicalized.status,
+                "clarification_question": canonicalized.clarification_question,
+                "reason_codes": canonicalized.reason_codes,
+            }
+        store = MemoryVersionStore(self.session)
+        canonical_facts = canonicalized.facts
+        if any(
+            fact.schema_key in {
+                "entity.name",
+                "identity.self_reported_name",
+            }
+            for fact in canonical_facts
+        ):
+            current = await store.list_current(user_id=user_id, limit=500)
+            canonical_facts = retarget_name_facts_to_current_chains(
+                canonical_facts,
+                current,
+            )
+        receipt = await store.commit(
             MemoryVersionCommitCommand(
-                facts=canonical,
+                facts=canonical_facts,
                 source_event_id=source_event_id,
                 source_kind=source_kind,
                 receipt_id=receipt_id,
@@ -328,6 +377,43 @@ class MemoryWriteGateway:
             "receipt": receipt_payload,
         }
 
+    async def commit_admin_correction(
+        self,
+        fact: CanonicalMemoryFact,
+        *,
+        target_memory_key: str,
+        user_id: UUID,
+        thread_id: UUID | None,
+        source_event_id: UUID,
+        receipt_id: str,
+    ) -> dict[str, Any]:
+        """Correct the exact fact selected in the administration panel.
+
+        The canonicalizer still validates schema and values, while the
+        server-validated target key preserves the selected version chain.
+        This prevents legacy facts from becoming duplicate new-schema rows.
+        """
+
+        corrected = fact.model_copy(
+            update={"memory_key": str(target_memory_key).strip()}
+        )
+        receipt = await MemoryVersionStore(self.session).commit(
+            MemoryVersionCommitCommand(
+                facts=[corrected],
+                source_event_id=source_event_id,
+                source_kind="admin_action",
+                receipt_id=receipt_id,
+            ),
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+        payload = receipt.model_dump(mode="json")
+        return {
+            "status": "committed",
+            "mutations": payload.get("mutations", []),
+            "receipt": payload,
+        }
+
     async def forget(
         self,
         *,
@@ -353,6 +439,28 @@ class MemoryWriteGateway:
             thread_id=thread_id,
         )
         return {"status": "forgotten", "receipt": receipt.model_dump(mode="json")}
+
+    async def forget_admin_target(
+        self,
+        *,
+        user_id: UUID,
+        thread_id: UUID | None,
+        target_memory_key: str,
+        source_event_id: UUID,
+        receipt_id: str,
+        evidence_quote: str,
+    ) -> dict[str, Any]:
+        """Forget the exact server-validated fact selected by the user."""
+
+        return await self.forget(
+            user_id=user_id,
+            thread_id=thread_id,
+            memory_keys=[str(target_memory_key).strip()],
+            source_event_id=source_event_id,
+            receipt_id=receipt_id,
+            evidence_quote=evidence_quote,
+            source_kind="admin_action",
+        )
 
     async def forget_targets(
         self,
@@ -483,6 +591,75 @@ class MemoryWriteGateway:
             "clarification_question": questions[0] if questions else "",
             "clarification_questions": questions,
         }
+
+
+async def _bind_compiled_entities(
+    facts: list[Any],
+    *,
+    resolver: EntityResolver,
+    user_id: UUID,
+) -> tuple[dict[int, Any], str]:
+    """Bind model-proposed entities without adding semantic interpretation.
+
+    Typed facts are resolved first. Untyped facts with the same entity text
+    reuse that binding, so a named possession's ``has`` and ``entity_name``
+    assertions share one stable entity even when only one assertion carries
+    the optional type. Remaining untyped entities use the resolver's
+    deterministic name-only lookup and fail closed on ambiguity.
+    """
+
+    bindings: dict[int, Any] = {}
+    typed_cache: dict[tuple[str, str], Any] = {}
+    by_name: dict[str, list[Any]] = {}
+
+    for index, fact in enumerate(facts):
+        name = str(getattr(fact, "entity", "") or "").strip()
+        entity_type = str(
+            getattr(fact, "entity_type", "") or ""
+        ).strip().lower()
+        canonical = canonical_entity_name(name)
+        if not canonical or not entity_type:
+            continue
+        cache_key = (canonical, entity_type)
+        resolved = typed_cache.get(cache_key)
+        if resolved is None:
+            resolved = await resolver.resolve(
+                user_id=user_id,
+                entity_type=entity_type,
+                name=name,
+            )
+            if resolved.status == "ambiguous":
+                return {}, resolved.question
+            typed_cache[cache_key] = resolved
+        bindings[index] = resolved
+        matches = by_name.setdefault(canonical, [])
+        if not any(
+            getattr(item, "entity_id", None) == resolved.entity_id
+            for item in matches
+        ):
+            matches.append(resolved)
+
+    for index, fact in enumerate(facts):
+        if index in bindings:
+            continue
+        name = str(getattr(fact, "entity", "") or "").strip()
+        canonical = canonical_entity_name(name)
+        if not canonical:
+            continue
+        batch_matches = by_name.get(canonical, [])
+        if len(batch_matches) == 1:
+            bindings[index] = batch_matches[0]
+            continue
+        resolved = await resolver.resolve(
+            user_id=user_id,
+            entity_type="",
+            name=name,
+        )
+        if resolved.status == "ambiguous":
+            return {}, resolved.question
+        bindings[index] = resolved
+
+    return bindings, ""
 
 
 _DOMAINS = frozenset({"reading", "personal", "possession", "relationship", "plan", "general"})

@@ -91,7 +91,7 @@ export type UserInput = {
 
 // ==================== Memory Types ====================
 
-export type MemoryAdminFact = {
+export type MemoryVersionRecord = {
   schema_key: string
   memory_key: string
   subject: string
@@ -103,6 +103,18 @@ export type MemoryAdminFact = {
   valid_from: string
   valid_to: string | null
   is_tombstone: boolean
+  domain: string
+  kind: string
+}
+
+export type MemoryAdminFact = MemoryVersionRecord & {
+  presentation_key: string
+  category_key: string
+  category_label: string
+  display_value: string
+  can_edit: boolean
+  can_forget: boolean
+  show_evidence: boolean
 }
 
 export type MemoryAdminCurrentResponse = {
@@ -116,6 +128,7 @@ export type MemoryAdminHistoryResponse = {
 
 export type MemoryEditRequest = {
   user_id: string
+  memory_key: string
   predicate: string
   value: Record<string, unknown>
   qualifiers?: Record<string, unknown>
@@ -125,6 +138,7 @@ export type MemoryEditRequest = {
 
 export type MemoryForgetAdminRequest = {
   user_id: string
+  memory_key: string
   predicate: string
   identity?: Record<string, unknown>
   qualifiers?: Record<string, unknown>
@@ -139,8 +153,8 @@ export type MemoryMutationReceipt = {
   mutations: {
     memory_key: string
     status: "created" | "revised" | "noop_duplicate" | "forgotten"
-    version: MemoryAdminFact
-    previous?: MemoryAdminFact | null
+    version: MemoryVersionRecord
+    previous?: MemoryVersionRecord | null
   }[]
 }
 

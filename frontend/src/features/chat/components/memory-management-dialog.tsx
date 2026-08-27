@@ -45,15 +45,16 @@ const POLARITIES = [
 ]
 
 const CATEGORY_ORDER = [
-  "identity.self_reported_name",
-  "identity.preferred_address",
-  "identity.alias",
-  "preference.entity",
-  "possession.entity",
-  "relationship.entity",
-  "instruction.behavior",
-  "feedback.outcome",
-  "temporary.state",
+  "identity",
+  "preference",
+  "possession",
+  "relationship",
+  "agreement",
+  "feedback",
+  "background",
+  "state",
+  "fact",
+  "reading",
 ]
 
 function formatDate(value: string | null): string {
@@ -69,19 +70,95 @@ function formatDate(value: string | null): string {
       })
 }
 
-function categoryLabel(schemaKey: string): string {
+function categoryLabel(categoryKey: string): string {
   const labels: Record<string, string> = {
-    "identity.self_reported_name": "名字",
-    "identity.preferred_address": "称呼",
-    "identity.alias": "别名",
-    "possession.entity": "物品",
-    "preference.entity": "偏好",
-    "relationship.entity": "关系",
-    "instruction.behavior": "约定",
-    "feedback.outcome": "反馈",
-    "temporary.state": "状态",
+    identity: "身份与称呼",
+    preference: "偏好",
+    possession: "物品与宠物",
+    relationship: "关系与名称",
+    agreement: "约定",
+    feedback: "反馈",
+    background: "能力与背景",
+    state: "状态",
+    fact: "其他事实",
+    reading: "阅读记忆",
   }
-  return labels[schemaKey] ?? "其他"
+  return labels[categoryKey] ?? "其他事实"
+}
+
+const READING_STATUS_LABELS: Record<string, string> = {
+  want_to_read: "想读",
+  reading: "在读",
+  read: "已读",
+  dropped: "已放弃",
+}
+
+const READING_EVALUATION_LABELS: Record<string, string> = {
+  liked: "喜欢",
+  neutral: "一般",
+  disliked: "不喜欢",
+  not_interested: "不感兴趣",
+}
+
+function mergeReadingFacts(facts: MemoryAdminFact[]): MemoryAdminFact[] {
+  const ordinary: MemoryAdminFact[] = []
+  const readingGroups = new Map<string, MemoryAdminFact[]>()
+
+  facts.forEach((fact) => {
+    if (fact.category_key !== "reading") {
+      ordinary.push(fact)
+      return
+    }
+    const title = String(fact.value.book_title ?? "").trim()
+    const entityId = String(fact.value.entity_id ?? "").trim()
+    const groupKey = entityId || title.toLocaleLowerCase() || fact.memory_key
+    readingGroups.set(groupKey, [...(readingGroups.get(groupKey) ?? []), fact])
+  })
+
+  const reading = [...readingGroups.entries()].map(([groupKey, group]) => {
+    const ordered = [...group].sort(
+      (left, right) => new Date(right.valid_from).getTime() - new Date(left.valid_from).getTime(),
+    )
+    const newest = ordered[0]
+    const state = ordered.find((fact) => fact.schema_key === "reading.state")
+    const evaluation = ordered.find((fact) => fact.schema_key === "reading.feedback")
+    const title = String(
+      state?.value.book_title ?? evaluation?.value.book_title ?? newest.value.book_title ?? "",
+    ).trim()
+    const status = String(state?.value.reading_status ?? "").trim()
+    const evaluationValue = String(evaluation?.value.evaluation ?? "").trim()
+    const details = [
+      status ? (READING_STATUS_LABELS[status] ?? status) : "",
+      evaluationValue ? (READING_EVALUATION_LABELS[evaluationValue] ?? evaluationValue) : "",
+    ].filter(Boolean)
+
+    return {
+      ...newest,
+      schema_key: "reading.summary",
+      memory_key: `reading.summary:${groupKey}`,
+      presentation_key: "reading.summary",
+      value: {
+        ...newest.value,
+        book_title: title,
+        reading_status: status || null,
+        evaluation: evaluationValue || null,
+      },
+      evidence_quote: "",
+      version_no: Math.max(...ordered.map((fact) => fact.version_no)),
+      display_value: `${title ? `《${title}》` : "阅读记录"}${details.length ? ` · ${details.join(" · ")}` : ""}`,
+      can_edit: false,
+      can_forget: false,
+      show_evidence: false,
+    }
+  })
+
+  return [...ordinary, ...reading].sort(
+    (left, right) => new Date(right.valid_from).getTime() - new Date(left.valid_from).getTime(),
+  )
+}
+
+function presentationKey(fact: MemoryAdminFact): string {
+  return fact.presentation_key || fact.schema_key
 }
 
 function editPredicate(fact: MemoryAdminFact): string {
@@ -95,19 +172,22 @@ function editPredicate(fact: MemoryAdminFact): string {
     "instruction.behavior": "instruction",
     "feedback.outcome": "feedback",
     "temporary.state": "state",
+    "entity.name": "entity_name",
   }
-  return predicates[fact.schema_key] ?? fact.predicate ?? fact.schema_key
+  return predicates[presentationKey(fact)] ?? fact.predicate ?? fact.schema_key
 }
 
 function factValueLabel(fact: MemoryAdminFact): string {
+  if (fact.display_value?.trim()) return fact.display_value.trim()
   const value = fact.value
-  if (fact.schema_key === "identity.self_reported_name") return String(value.name ?? "")
-  if (fact.schema_key === "identity.preferred_address") return String(value.address ?? "")
-  if (fact.schema_key === "identity.alias") return String(value.alias ?? "")
+  const key = presentationKey(fact)
+  if (key === "identity.self_reported_name") return String(value.name ?? "")
+  if (key === "identity.preferred_address") return String(value.address ?? "")
+  if (key === "identity.alias") return String(value.alias ?? "")
 
   const entity = String(value.entity ?? "")
-  if (fact.schema_key === "possession.entity") return entity
-  if (fact.schema_key === "preference.entity") {
+  if (key === "possession.entity") return entity
+  if (key === "preference.entity") {
     const verbs: Record<string, string> = {
       like: "喜欢",
       dislike: "不喜欢",
@@ -117,16 +197,19 @@ function factValueLabel(fact: MemoryAdminFact): string {
     }
     return entity ? `${verbs[String(value.polarity ?? "neutral")] ?? "关注"} ${entity}` : ""
   }
-  if (fact.schema_key === "relationship.entity") {
+  if (key === "relationship.entity") {
     return entity && value.relation ? `${entity}（${String(value.relation)}）` : entity
   }
-  if (fact.schema_key === "instruction.behavior") return String(value.instruction ?? "")
-  if (fact.schema_key === "feedback.outcome") {
+  if (key === "entity.name") {
+    return entity && value.name ? `${entity}叫${String(value.name)}` : entity
+  }
+  if (key === "instruction.behavior") return String(value.instruction ?? "")
+  if (key === "feedback.outcome") {
     return value.target && value.outcome
       ? `${String(value.target)}：${String(value.outcome)}`
       : String(value.target ?? value.outcome ?? "")
   }
-  if (fact.schema_key === "temporary.state") {
+  if (key === "temporary.state") {
     return value.state && value.value
       ? `${String(value.state)} = ${String(value.value)}`
       : String(value.state ?? value.value ?? "")
@@ -157,6 +240,10 @@ function editFieldsFor(fact: MemoryAdminFact): EditField[] {
       { key: "entity", label: "对象", value: String(value.entity ?? "") },
       { key: "relation", label: "关系", value: String(value.relation ?? "") },
     ],
+    "entity.name": [
+      { key: "entity", label: "对象", value: String(value.entity ?? "") },
+      { key: "name", label: "名称", value: String(value.name ?? "") },
+    ],
     "instruction.behavior": [
       { key: "instruction", label: "约定", value: String(value.instruction ?? "") },
     ],
@@ -165,43 +252,49 @@ function editFieldsFor(fact: MemoryAdminFact): EditField[] {
       { key: "outcome", label: "结果", value: String(value.outcome ?? "") },
     ],
     "temporary.state": [
-      { key: "state", label: "状态键", value: String(value.state ?? "") },
-      { key: "value", label: "状态值", value: String(value.value ?? "") },
+      {
+        key: "value",
+        label: String(value.state ?? "") === "skill" ? "技能" : "状态内容",
+        value: String(value.value ?? ""),
+      },
     ],
   }
-  return fields[fact.schema_key] ?? []
+  return fields[presentationKey(fact)] ?? []
 }
 
 function buildEditValue(fact: MemoryAdminFact, values: Record<string, string>): Record<string, unknown> {
-  if (fact.schema_key === "identity.self_reported_name") return { name: values.name }
-  if (fact.schema_key === "identity.preferred_address") return { address: values.address }
-  if (fact.schema_key === "identity.alias") return { alias: values.alias }
-  if (fact.schema_key === "possession.entity") return { entity: values.entity }
-  if (fact.schema_key === "preference.entity") {
+  const key = presentationKey(fact)
+  if (key === "identity.self_reported_name") return { name: values.name }
+  if (key === "identity.preferred_address") return { address: values.address }
+  if (key === "identity.alias") return { alias: values.alias }
+  if (key === "possession.entity") return { entity: values.entity }
+  if (key === "preference.entity") {
     return { entity: values.entity, polarity: values.polarity }
   }
-  if (fact.schema_key === "relationship.entity") {
+  if (key === "relationship.entity") {
     return { entity: values.entity, relation: values.relation }
   }
-  if (fact.schema_key === "instruction.behavior") return { instruction: values.instruction }
-  if (fact.schema_key === "feedback.outcome") {
+  if (key === "entity.name") return { entity: values.entity, name: values.name }
+  if (key === "instruction.behavior") return { instruction: values.instruction }
+  if (key === "feedback.outcome") {
     return { target: values.target, outcome: values.outcome }
   }
-  if (fact.schema_key === "temporary.state") {
-    return { state: values.state, value: values.value }
+  if (key === "temporary.state") {
+    return { state: fact.value.state, value: values.value }
   }
   return fact.value
 }
 
 function forgetIdentity(fact: MemoryAdminFact): Record<string, unknown> {
   const value = fact.value
-  if (["possession.entity", "preference.entity", "relationship.entity"].includes(fact.schema_key)) {
+  const key = presentationKey(fact)
+  if (["possession.entity", "preference.entity", "relationship.entity", "entity.name"].includes(key)) {
     return { entity: String(value.entity ?? "") }
   }
-  if (fact.schema_key === "instruction.behavior") return { instruction: String(value.instruction ?? "") }
-  if (fact.schema_key === "feedback.outcome") return { target: String(value.target ?? "") }
-  if (fact.schema_key === "temporary.state") return { state: String(value.state ?? "") }
-  if (fact.schema_key === "identity.alias") return { alias: String(value.alias ?? "") }
+  if (key === "instruction.behavior") return { instruction: String(value.instruction ?? "") }
+  if (key === "feedback.outcome") return { target: String(value.target ?? "") }
+  if (key === "temporary.state") return { state: String(value.state ?? "") }
+  if (key === "identity.alias") return { alias: String(value.alias ?? "") }
   return {}
 }
 
@@ -219,16 +312,18 @@ export function MemoryManagementDialog({
   const [editValues, setEditValues] = useState<Record<string, string>>({})
   const [openHistory, setOpenHistory] = useState<Set<string>>(new Set())
   const [historyData, setHistoryData] = useState<Record<string, MemoryAdminFact[]>>({})
+  const [historyLoading, setHistoryLoading] = useState<Set<string>>(new Set())
+  const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({})
   const [busyKey, setBusyKey] = useState<string | null>(null)
 
   const sortedFacts = useMemo(
-    () => [...facts].sort((left, right) => new Date(right.valid_from).getTime() - new Date(left.valid_from).getTime()),
+    () => mergeReadingFacts(facts),
     [facts],
   )
 
   const categories = useMemo(() => {
     const counts = new Map<string, number>()
-    sortedFacts.forEach((fact) => counts.set(fact.schema_key, (counts.get(fact.schema_key) ?? 0) + 1))
+    sortedFacts.forEach((fact) => counts.set(fact.category_key, (counts.get(fact.category_key) ?? 0) + 1))
     return [...counts.entries()].sort(([left], [right]) => {
       const leftIndex = CATEGORY_ORDER.indexOf(left)
       const rightIndex = CATEGORY_ORDER.indexOf(right)
@@ -236,8 +331,18 @@ export function MemoryManagementDialog({
     })
   }, [sortedFacts])
 
+  const categoryLabels = useMemo(
+    () => new Map(sortedFacts.map((fact) => [fact.category_key, fact.category_label])),
+    [sortedFacts],
+  )
+
+  const displayCategoryLabel = useCallback(
+    (categoryKey: string) => categoryLabels.get(categoryKey) || categoryLabel(categoryKey),
+    [categoryLabels],
+  )
+
   const visibleFacts = useMemo(
-    () => activeCategory === "all" ? sortedFacts : sortedFacts.filter((fact) => fact.schema_key === activeCategory),
+    () => activeCategory === "all" ? sortedFacts : sortedFacts.filter((fact) => fact.category_key === activeCategory),
     [activeCategory, sortedFacts],
   )
 
@@ -251,6 +356,10 @@ export function MemoryManagementDialog({
     try {
       const result = await getMemoryCurrent(userId)
       setFacts(result.facts)
+      setOpenHistory(new Set())
+      setHistoryData({})
+      setHistoryLoading(new Set())
+      setHistoryErrors({})
     } catch (loadError) {
       setError(formatErrorForDisplay(loadError, "无法读取当前记忆"))
     } finally {
@@ -263,6 +372,12 @@ export function MemoryManagementDialog({
     const timer = window.setTimeout(() => void loadFacts(), 0)
     return () => window.clearTimeout(timer)
   }, [loadFacts, open])
+
+  useEffect(() => {
+    if (activeCategory !== "all" && !categories.some(([key]) => key === activeCategory)) {
+      setActiveCategory("all")
+    }
+  }, [activeCategory, categories])
 
   const startEdit = (fact: MemoryAdminFact) => {
     setEditingKey(fact.memory_key)
@@ -278,6 +393,7 @@ export function MemoryManagementDialog({
     try {
       const receipt = await editMemory({
         user_id: userId,
+        memory_key: fact.memory_key,
         predicate: editPredicate(fact),
         value: buildEditValue(fact, editValues),
         qualifiers: fact.qualifiers,
@@ -311,11 +427,25 @@ export function MemoryManagementDialog({
     }
     setOpenHistory((current) => new Set(current).add(fact.memory_key))
     if (!historyData[fact.memory_key]) {
+      setHistoryLoading((current) => new Set(current).add(fact.memory_key))
+      setHistoryErrors((current) => {
+        const next = { ...current }
+        delete next[fact.memory_key]
+        return next
+      })
       try {
         const result = await getMemoryHistory(userId, fact.memory_key)
         setHistoryData((current) => ({ ...current, [fact.memory_key]: result.versions }))
       } catch (historyError) {
-        setError(formatErrorForDisplay(historyError, "无法读取版本历史"))
+        const message = formatErrorForDisplay(historyError, "无法读取版本历史")
+        setError(message)
+        setHistoryErrors((current) => ({ ...current, [fact.memory_key]: message }))
+      } finally {
+        setHistoryLoading((current) => {
+          const next = new Set(current)
+          next.delete(fact.memory_key)
+          return next
+        })
       }
     }
   }
@@ -327,6 +457,7 @@ export function MemoryManagementDialog({
     try {
       await forgetMemory({
         user_id: userId,
+        memory_key: fact.memory_key,
         predicate: editPredicate(fact),
         identity: forgetIdentity(fact),
         qualifiers: fact.qualifiers,
@@ -368,7 +499,7 @@ export function MemoryManagementDialog({
               onClick={() => setActiveCategory("all")}
               className={`flex min-h-11 w-full items-center justify-between px-3 text-left text-sm transition-colors ${activeCategory === "all" ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:bg-background hover:text-foreground"}`}
             >
-              <span>全部事实</span>
+              <span>全部记忆</span>
               <span className="font-mono text-xs">{sortedFacts.length}</span>
             </button>
             {categories.map(([schemaKey, count]) => (
@@ -378,7 +509,7 @@ export function MemoryManagementDialog({
                 onClick={() => setActiveCategory(schemaKey)}
                 className={`mt-1 flex min-h-11 w-full items-center justify-between px-3 text-left text-sm transition-colors ${activeCategory === schemaKey ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:bg-background hover:text-foreground"}`}
               >
-                <span>{categoryLabel(schemaKey)}</span>
+                <span>{displayCategoryLabel(schemaKey)}</span>
                 <span className="font-mono text-xs">{count}</span>
               </button>
             ))}
@@ -386,7 +517,7 @@ export function MemoryManagementDialog({
 
           <section className="min-w-0 overflow-y-auto" style={{ maxHeight: "68vh" }} data-od-id="memory-fact-list">
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background/95 px-5 py-3 backdrop-blur">
-              <p className="text-sm font-medium">{activeCategory === "all" ? "当前事实" : categoryLabel(activeCategory)}</p>
+              <p className="text-sm font-medium">{activeCategory === "all" ? "当前记忆" : displayCategoryLabel(activeCategory)}</p>
               <p className="font-mono text-xs text-muted-foreground">{visibleFacts.length} 条</p>
             </div>
 
@@ -406,13 +537,18 @@ export function MemoryManagementDialog({
                 const editing = editingKey === fact.memory_key
                 const historyOpen = openHistory.has(fact.memory_key)
                 const versions = historyData[fact.memory_key] ?? []
+                const mergedHistory = new Set(versions.map((version) => version.memory_key)).size > 1
+                const loadingHistory = historyLoading.has(fact.memory_key)
+                const historyError = historyErrors[fact.memory_key]
+                const editInvalid = editFieldsFor(fact).some((field) =>
+                  !(editValues[field.key] ?? field.value).trim(),
+                )
                 return (
                   <article key={fact.memory_key} className="border-b border-border px-5 py-5" data-od-id={`memory-fact-${fact.memory_key}`}>
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant="outline">{categoryLabel(fact.schema_key)}</Badge>
-                          <code className="break-all text-xs text-muted-foreground">{fact.schema_key}</code>
+                          <Badge variant="outline">{fact.category_label || displayCategoryLabel(fact.category_key)}</Badge>
                         </div>
 
                         {editing ? (
@@ -441,7 +577,7 @@ export function MemoryManagementDialog({
                               <Button type="button" variant="outline" onClick={() => setEditingKey(null)} disabled={busyKey === fact.memory_key}>
                                 <X className="size-4" aria-hidden="true" />取消
                               </Button>
-                              <Button type="button" onClick={() => void saveEdit(fact)} disabled={busyKey === fact.memory_key}>
+                              <Button type="button" onClick={() => void saveEdit(fact)} disabled={busyKey === fact.memory_key || editInvalid}>
                                 <Check className="size-4" aria-hidden="true" />保存
                               </Button>
                             </div>
@@ -450,31 +586,41 @@ export function MemoryManagementDialog({
                           <p className="mt-3 break-words text-base font-medium leading-7 text-foreground">{factValueLabel(fact)}</p>
                         )}
 
-                        {fact.evidence_quote && !editing && (
-                          <blockquote className="mt-3 max-w-3xl border-l border-border pl-3 text-sm leading-6 text-muted-foreground">
-                            依据：“{fact.evidence_quote}”
-                          </blockquote>
+                        {fact.show_evidence && fact.evidence_quote && fact.evidence_quote.trim() !== factValueLabel(fact).trim() && !editing && (
+                          <details className="mt-3 max-w-3xl text-sm text-muted-foreground">
+                            <summary className="cursor-pointer select-none hover:text-foreground">来源片段</summary>
+                            <blockquote className="mt-2 border-l border-border pl-3 leading-6">
+                              “{fact.evidence_quote}”
+                            </blockquote>
+                          </details>
                         )}
 
                         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                           <span className="inline-flex items-center gap-1"><Clock3 className="size-3.5" aria-hidden="true" />更新于 {formatDate(fact.valid_from)}</span>
-                          <span className="font-mono">v{fact.version_no}</span>
-                          <span className="font-mono break-all">{fact.memory_key}</span>
+                          {fact.category_key !== "reading" ? <span className="font-mono">v{fact.version_no}</span> : null}
                         </div>
                       </div>
 
                       {!editing && (
                         <div className="flex shrink-0 flex-wrap gap-1">
-                          <Button type="button" variant="ghost" onClick={() => void toggleHistory(fact)} aria-expanded={historyOpen}>
-                            {historyOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                            版本
-                          </Button>
-                          <Button type="button" variant="ghost" onClick={() => startEdit(fact)}>
-                            <Pencil className="size-4" aria-hidden="true" />编辑
-                          </Button>
-                          <Button type="button" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => void handleForget(fact)} disabled={busyKey === fact.memory_key}>
-                            <Trash2 className="size-4" aria-hidden="true" />遗忘
-                          </Button>
+                          {fact.category_key !== "reading" ? (
+                            <Button type="button" variant="ghost" onClick={() => void toggleHistory(fact)} aria-expanded={historyOpen}>
+                              {historyOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                              版本
+                            </Button>
+                          ) : null}
+                          {fact.can_edit ? (
+                            <Button type="button" variant="ghost" onClick={() => startEdit(fact)}>
+                              <Pencil className="size-4" aria-hidden="true" />编辑
+                            </Button>
+                          ) : null}
+                          {fact.can_forget ? (
+                            <Button type="button" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => void handleForget(fact)} disabled={busyKey === fact.memory_key}>
+                              <Trash2 className="size-4" aria-hidden="true" />遗忘
+                            </Button>
+                          ) : fact.category_key === "reading" ? (
+                            <span className="self-center px-2 text-xs text-muted-foreground">在书架中管理</span>
+                          ) : null}
                         </div>
                       )}
                     </div>
@@ -482,15 +628,21 @@ export function MemoryManagementDialog({
                     {historyOpen && (
                       <div className="mt-4 border-t border-border pt-4">
                         <p className="mb-3 text-sm font-medium">版本时间线</p>
-                        {versions.length === 0 ? (
+                        {loadingHistory ? (
                           <p className="text-sm text-muted-foreground">正在读取版本…</p>
+                        ) : historyError ? (
+                          <p className="text-sm text-destructive">{historyError}；收起后可重试。</p>
+                        ) : versions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">暂无版本记录。</p>
                         ) : (
                           <ol className="space-y-3 border-l border-border pl-4">
-                            {versions.map((version) => (
+                            {versions.map((version, versionIndex) => (
                               <li key={`${version.memory_key}-${version.version_no}`} className="relative text-sm">
                                 <span className="absolute -left-[19px] top-1.5 size-2 rounded-full bg-muted-foreground" aria-hidden="true" />
                                 <div className="flex flex-wrap items-baseline justify-between gap-2">
-                                  <span className="font-medium">v{version.version_no} · {factValueLabel(version)}</span>
+                                  <span className="font-medium">
+                                    {mergedHistory ? `记录 ${versionIndex + 1}` : `v${version.version_no}`} · {factValueLabel(version)}
+                                  </span>
                                   <span className="font-mono text-xs text-muted-foreground">{formatDate(version.valid_from)}</span>
                                 </div>
                                 <p className="mt-1 text-xs text-muted-foreground">

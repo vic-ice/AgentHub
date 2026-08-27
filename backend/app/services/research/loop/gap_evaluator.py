@@ -8,6 +8,12 @@ from app.services.research.evidence_quality import (
     source_host,
 )
 from app.services.research.dedup import dedup_by_content
+from app.services.research.candidate_quality import (
+    catalog_book_title,
+    candidate_topic_supported,
+    is_book_catalog_url,
+    normalize_candidate_title,
+)
 from app.services.research.loop.contracts import (
     ResearchGapAssessment,
     ResearchLoopBudget,
@@ -166,6 +172,7 @@ def evaluate_research_evidence_gaps(
     candidate_titles = _verified_recommendation_titles(
         publishable_records,
         expected=loop_budget.recommendation_candidate_titles,
+        objective=objective,
     )
     if publishable_records and loop_budget.min_recommendation_candidates:
         if len(candidate_titles) < loop_budget.min_recommendation_candidates:
@@ -252,37 +259,61 @@ def _verified_recommendation_titles(
     records: list[ResearchSourceRecord],
     *,
     expected: list[str],
+    objective: str,
 ) -> set[str]:
-    observed = {
-        _book_title_key(title)
-        for record in records
-        for title in re.findall(r"《([^》]{1,100})》", record.claim)
-        if _book_title_key(title)
-    }
-    observed.update(
-        key
-        for record in records
-        if (key := _source_book_title_key(record.source_title))
-    )
-    expected_keys = {_book_title_key(title) for title in expected if _book_title_key(title)}
-    if not expected_keys:
-        return observed
-    return {
-        candidate
-        for candidate in expected_keys
-        if any(candidate in title or title in candidate for title in observed)
-    }
+    identities: dict[str, str] = {}
+    for record in records:
+        if not _is_book_entity_record(record):
+            continue
+        # Only the catalog page's own title is an entity identity. A synopsis
+        # may mention comparison titles, sequels or references that do not own
+        # this catalog URL and therefore must not inflate the stop count.
+        source_title = catalog_book_title(
+            record.source_title,
+            source_url=record.source_url,
+        )
+        if key := normalize_candidate_title(source_title):
+            identities[key] = source_title
+
+    observed: set[str] = set()
+    for key, title in identities.items():
+        bound_texts: list[str] = []
+        for record in records:
+            quoted_keys = {
+                normalize_candidate_title(value)
+                for value in re.findall(
+                    r"《([^》]{1,100})》",
+                    " ".join([record.claim, record.excerpt]),
+                )
+            }
+            source_key = normalize_candidate_title(
+                catalog_book_title(
+                    record.source_title,
+                    source_url=record.source_url,
+                )
+            )
+            if key not in quoted_keys and key != source_key:
+                continue
+            bound_texts.extend(
+                [record.source_title, record.claim, record.excerpt]
+            )
+        if candidate_topic_supported(
+            objective=objective,
+            candidate_title=title,
+            evidence_texts=bound_texts,
+        ):
+            observed.add(key)
+
+    # `expected` is the discovery frontier, not an allow-list. Structured
+    # catalog queries can legitimately discover additional exact entities in
+    # the final round. Count every canonical, topic-supported catalog entity;
+    # editorial pages and unrelated catalog records are already excluded above.
+    return observed
 
 
 def _book_title_key(value: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
 
 
-def _source_book_title_key(value: str) -> str:
-    title = re.sub(
-        r"\s*[（(]\s*豆瓣\s*[）)]\s*$",
-        "",
-        str(value or "").strip(),
-        flags=re.IGNORECASE,
-    )
-    return _book_title_key(title)
+def _is_book_entity_record(record: ResearchSourceRecord) -> bool:
+    return is_book_catalog_url(record.source_url)

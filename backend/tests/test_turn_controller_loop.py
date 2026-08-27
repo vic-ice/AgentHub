@@ -563,6 +563,103 @@ class TurnControllerLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(controller.requests), 1)
         self.assertEqual(runtime.calls, 1)
 
+    async def test_book_source_unavailable_falls_back_to_model_markdown(
+        self,
+    ) -> None:
+        class _UnavailableBookHarness:
+            async def run(
+                self,
+                output,
+                *,
+                goal,
+                context,
+                user_input=None,
+            ):
+                plan = ActionPlan(
+                    plan_id="book-unavailable-plan",
+                    source="controller_proposal",
+                    route_type="fast_path",
+                    intent="book_recommendation",
+                    goal=goal,
+                    response_mode="model",
+                    actions=[
+                        PlannedAction(
+                            action_id="book-search",
+                            capability="book_search",
+                            operation="book_search_v1",
+                        )
+                    ],
+                )
+                return AgentCoreTurnResult(
+                    execution_mode="live",
+                    output=output,
+                    plan=plan,
+                    receipt=PlanReceipt(
+                        plan_id=plan.plan_id,
+                        request_id=context.request_id,
+                        route_type=plan.route_type,
+                        intent=plan.intent,
+                        status="failed",
+                        actions=[
+                            ActionReceipt(
+                                action_id="book-search",
+                                capability="book_search",
+                                operation="book_search_v1",
+                                status="failed",
+                                error="book_source_unavailable",
+                                admitted=True,
+                            )
+                        ],
+                    ),
+                )
+
+        controller = _QueuedController(
+            [
+                ControllerOutput(
+                    mode="capability_proposals",
+                    tool_calls=[
+                        ControllerToolCall(
+                            call_id="book-search",
+                            name="book_search",
+                            arguments={"query": "个人成长"},
+                        )
+                    ],
+                ),
+                ControllerOutput(
+                    mode="direct_answer",
+                    text=(
+                        "本次未能完成外部核验，先给你一份基于稳定知识的建议。\n\n"
+                        "## 推荐\n\n- 《金钱心理学》：理解金钱行为。"
+                        "[伪造来源](https://not-admitted.example/book)"
+                    ),
+                ),
+            ]
+        )
+        receipt = await TurnControllerLoop(
+            controller=controller,
+            harness=_UnavailableBookHarness(),
+        ).run(
+            model_request=_request(),
+            context=_context(),
+            goal="推荐个人成长书籍",
+        )
+
+        self.assertEqual(receipt.status, "completed")
+        self.assertEqual(len(controller.requests), 2)
+        self.assertEqual(controller.requests[1].phase, "synthesis")
+        self.assertEqual(
+            receipt.final_answer.publication_mode,
+            "model_knowledge_fallback",
+        )
+        self.assertFalse(receipt.final_answer.receipt_backed)
+        self.assertIn("## 推荐", receipt.final_answer.content)
+        self.assertIn("《金钱心理学》", receipt.final_answer.content)
+        self.assertNotIn("https://", receipt.final_answer.content)
+        self.assertEqual(
+            receipt.final_answer.custom_data["external_evidence_status"],
+            "unavailable",
+        )
+
     async def test_round_limit_stops_without_seventh_call(self) -> None:
         controller = _QueuedController([_tool_output(), _tool_output()])
         harness = _ModelRoundHarness()

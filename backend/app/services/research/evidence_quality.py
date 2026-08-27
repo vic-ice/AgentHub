@@ -8,6 +8,10 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 
 from app.services.research.contracts import normalize_text
+from app.services.research.candidate_quality import (
+    candidate_topic_supported,
+    is_book_catalog_url,
+)
 
 
 MAX_PUBLISHABLE_CLAIM_CHARS = 320
@@ -82,10 +86,21 @@ _PERSONAL_REVIEW_MARKERS = (
     "原文摘录",
 )
 _QUERY_STOP_TERMS = {
+    "有什么",
+    "有啥",
+    "哪些",
+    "好的",
+    "今年",
+    "最新",
+    "近期",
+    "最近",
+    "新书",
+    "值得读",
+    "值得",
+    "读的",
     "一下",
     "帮我",
     "请问",
-    "深度",
     "搜索",
     "研究",
     "查找",
@@ -93,6 +108,11 @@ _QUERY_STOP_TERMS = {
     "看看",
     "关于",
     "一个",
+    "推荐",
+    "书籍",
+    "图书",
+    "书单",
+    "书",
 }
 
 
@@ -177,6 +197,16 @@ def assess_evidence_candidate(
         published_date=normalized_published_date,
     )
     if normalized_query and query_relevance <= 0:
+        reasons.append("query_irrelevant")
+    if (
+        is_book_catalog_url(normalized_url)
+        and re.search(r"图书|书籍|书单|书\b|\bbook", normalized_query.lower())
+        and not candidate_topic_supported(
+            objective=normalized_query,
+            candidate_title=normalized_title,
+            evidence_texts=[normalized_claim],
+        )
+    ):
         reasons.append("query_irrelevant")
     requirement_reasons = _requirement_reasons(
             query=normalized_query,
@@ -296,7 +326,11 @@ def _query_relevance(
         candidate_text=candidate_text,
         published_date=published_date,
     )
-    return max(lexical, semantic)
+    # Generic requirements such as "is a book" or "has a publication date"
+    # cannot establish topical relevance.  Use them only when the request has
+    # no usable subject terms at all; otherwise the subject must actually
+    # occur in the candidate text.
+    return lexical if terms else semantic
 
 
 def _requirement_relevance(

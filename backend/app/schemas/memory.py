@@ -23,6 +23,13 @@ class MemoryAdminFact(BaseModel):
     is_tombstone: bool = False
     domain: str = "general"
     kind: str = "fact"
+    presentation_key: str = "general.fact"
+    category_key: str = "fact"
+    category_label: str = "其他事实"
+    display_value: str = ""
+    can_edit: bool = False
+    can_forget: bool = False
+    show_evidence: bool = True
 
 
 class MemoryAdminCurrentResponse(BaseModel):
@@ -40,6 +47,7 @@ class MemoryEditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_id: UUID
+    memory_key: str | None = Field(default=None, min_length=1, max_length=256)
     predicate: str = Field(min_length=1, max_length=256)
     value: dict[str, Any] = Field(default_factory=dict)
     qualifiers: dict[str, Any] = Field(default_factory=dict)
@@ -58,6 +66,7 @@ class MemoryForgetAdminRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_id: UUID
+    memory_key: str | None = Field(default=None, min_length=1, max_length=256)
     predicate: str = Field(min_length=1, max_length=256)
     identity: dict[str, Any] = Field(default_factory=dict)
     qualifiers: dict[str, Any] = Field(default_factory=dict)

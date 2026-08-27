@@ -6,7 +6,7 @@ import {
   HistoryIcon,
   Loader2,
 } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 
 import { Message, MessageContent } from "@/components/ai/message"
 import { cn } from "@/lib/utils"
@@ -84,6 +84,11 @@ type ChatMessageItemProps = {
 type SourceLink = {
   href: string
   title: string
+}
+
+type DeepResearchQuality = {
+  status: "verified" | "partial" | "insufficient"
+  evidenceCount: number
 }
 
 /**
@@ -164,36 +169,19 @@ function parseSources(message: LocalChatMessage): SourceLink[] {
   return []
 }
 
-/**
- * Parse thinking content from message.
- * Checks multiple sources for compatibility.
- */
-function parseThinkingContent(message: LocalChatMessage): string | null {
-  // 1. Check custom_data.thinking (saved from backend)
-  const thinkingFromCustomData = message.custom_data?.thinking
-  if (typeof thinkingFromCustomData === "string" && thinkingFromCustomData.trim()) {
-    return thinkingFromCustomData.trim()
+function parseDeepResearchQuality(message: LocalChatMessage): DeepResearchQuality | null {
+  if (typeof message.custom_data?.research_run_id !== "string") {
+    return null
   }
-
-  // 2. Check response_metadata.thinking
-  const thinkingFromMetadata = message.response_metadata?.thinking
-  if (typeof thinkingFromMetadata === "string" && thinkingFromMetadata.trim()) {
-    return thinkingFromMetadata.trim()
+  const rawStatus = message.custom_data?.research_quality_status
+  if (rawStatus !== "verified" && rawStatus !== "partial" && rawStatus !== "insufficient") {
+    return null
   }
-
-  // 3. Check reasoning_content
-  const reasoningContent = message.reasoning_content
-  if (typeof reasoningContent === "string" && reasoningContent.trim()) {
-    return reasoningContent.trim()
+  const rawCount = Number(message.custom_data?.research_evidence_count ?? 0)
+  return {
+    status: rawStatus,
+    evidenceCount: Number.isFinite(rawCount) && rawCount >= 0 ? Math.floor(rawCount) : 0,
   }
-
-  // 4. Check custom_data.reasoning
-  const reasoningFromCustomData = message.custom_data?.reasoning
-  if (typeof reasoningFromCustomData === "string" && reasoningFromCustomData.trim()) {
-    return reasoningFromCustomData.trim()
-  }
-
-  return null
 }
 
 /**
@@ -3901,22 +3889,14 @@ export function ChatMessageItem({
   const isAI = message.type === "ai"
   const isTool = message.type === "tool"
   const sources = parseSources(message)
+  const deepResearchQuality =
+    isAI && !isStreaming ? parseDeepResearchQuality(message) : null
   const [copied, setCopied] = useState(false)
 
   // Parse thinking content from message (for history) or use streaming content
-  const historicalThinking = parseThinkingContent(message)
-  const displayThinkingContent = thinkingContent || historicalThinking || ""
-  const hasThinkingContent = Boolean(displayThinkingContent)
-
-  // Ref for thinking content container - auto-scroll during streaming
-  const thinkingContentRef = useRef<HTMLDivElement>(null)
-
-  // Auto-scroll thinking content to bottom when content grows during streaming
-  useEffect(() => {
-    if (isStreaming && thinkingContent && thinkingContentRef.current) {
-      thinkingContentRef.current.scrollTop = thinkingContentRef.current.scrollHeight
-    }
-  }, [isStreaming, thinkingContent])
+  // Internal reasoning is never rendered as answer content. During generation
+  // we expose only a compact activity state; completed history stays clean.
+  const hasThinkingActivity = isStreaming && Boolean(thinkingContent)
 
   // Merge calledTools from streaming with stored tool_info from history
   // For streaming messages, use calledTools; for history messages, use stored tool_info
@@ -3949,6 +3929,10 @@ export function ChatMessageItem({
     isAI && !isStreaming ? parseRecommendationResearchReportResults(allTools) : []
   const recommendationHistoryResults =
     isAI && !isStreaming ? parseRecommendationHistoryResults(allTools) : []
+  // Once a final answer exists it is the publication surface. Structured
+  // operation payloads remain available in Trace instead of competing with
+  // the report below it.
+  const showSupplementalResultPanels = isAI && !message.content.trim()
   const followUpQuestions =
     isAI && !isStreaming
       ? extractFollowUpQuestions(message, calledTools)
@@ -4008,13 +3992,13 @@ export function ChatMessageItem({
   // For AI messages, don't render if there's no content, thinking content, or tool calls
   // This avoids empty bubbles
   // But during streaming with processing state, show the loader even without content
-  if (isAI && !isStreaming && !message.content.trim() && !hasThinkingContent && !hasToolCalls) {
+  if (isAI && !isStreaming && !message.content.trim() && !hasToolCalls) {
     return null
   }
 
   // During streaming, if there's no content, thinking, or tools, return null
   // The center loader (in chat-main-panel.tsx) will show instead
-  if (isAI && isStreaming && !message.content.trim() && !hasThinkingContent && !hasToolCalls) {
+  if (isAI && isStreaming && !message.content.trim() && !hasThinkingActivity && !hasToolCalls) {
     return null
   }
 
@@ -4044,41 +4028,14 @@ export function ChatMessageItem({
             isAI && isStreaming && "rounded-2xl border-primary/10 bg-gradient-to-br from-primary/[0.035] to-transparent",
           )}
         >
-          {/* Sources */}
-          {sources.length > 0 ? (
-            <details className="border-l-2 border-border bg-muted/30 p-3 text-xs mb-3">
-              <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-muted-foreground">
-                <ChevronDown className="size-3" />
-                {t("message.sources", { count: sources.length })}
-              </summary>
-              <div className="mt-2 space-y-1">
-                {sources.map((source) => (
-                  <a
-                    key={source.href}
-                    href={source.href}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block truncate text-primary hover:underline"
-                  >
-                    {source.title}
-                  </a>
-                ))}
-              </div>
-            </details>
-          ) : null}
-
-
-          {/* Thinking content display - show live reasoning and preserved history. */}
-          {isAI && hasThinkingContent ? (
-            <div className="border-l-2 border-border bg-muted/35 p-3 text-xs mb-3">
-              <div className="flex items-center gap-2 mb-2">
+          {/* Show activity without exposing raw model reasoning. */}
+          {isAI && hasThinkingActivity ? (
+            <div className="mb-3 rounded-xl border border-primary/10 bg-primary/[0.035] p-3 text-xs" role="status">
+              <div className="flex items-center gap-2">
                 <BrainIcon className={cn("size-3.5 text-primary", isStreaming && "animate-pulse")} />
                 <span className="font-medium text-muted-foreground">
                   {t("message.thinking") || "Thinking..."}
                 </span>
-              </div>
-              <div ref={thinkingContentRef} className="whitespace-pre-wrap break-words text-muted-foreground max-h-48 overflow-y-auto">
-                {displayThinkingContent}
               </div>
             </div>
           ) : null}
@@ -4136,6 +4093,25 @@ export function ChatMessageItem({
                 )}
                 <MarkdownContent content={message.content} isStreaming={isStreaming} />
                 {isStreaming && <span className="streaming-caret" aria-hidden="true" />}
+                {deepResearchQuality ? (
+                  <div
+                    className={cn(
+                      "mt-4 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                      deepResearchQuality.status === "verified"
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                        : deepResearchQuality.status === "partial"
+                          ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                          : "border-rose-500/25 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+                    )}
+                    role="status"
+                  >
+                    {deepResearchQuality.status === "verified"
+                      ? t("message.researchVerified", { count: deepResearchQuality.evidenceCount })
+                      : deepResearchQuality.status === "partial"
+                        ? t("message.researchPartial", { count: deepResearchQuality.evidenceCount })
+                        : t("message.researchInsufficient")}
+                  </div>
+                ) : null}
               </div>
             ) : null
           ) : isQuotedMessage ? (
@@ -4171,6 +4147,29 @@ export function ChatMessageItem({
             </p>
           )}
 
+          {sources.length > 0 ? (
+            <details className="mt-5 rounded-xl border border-border/70 bg-muted/25 px-3.5 py-3 text-xs">
+              <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-muted-foreground">
+                <ChevronDown className="size-3.5" />
+                {t("message.sources", { count: sources.length })}
+              </summary>
+              <div className="mt-3 grid gap-2 border-t border-border/60 pt-3 sm:grid-cols-2">
+                {sources.map((source, index) => (
+                  <a
+                    key={source.href}
+                    href={source.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex min-w-0 items-start gap-2 rounded-lg border border-border/60 bg-background/70 px-3 py-2 leading-5 text-primary transition-colors hover:border-primary/30 hover:bg-primary/5"
+                  >
+                    <span className="shrink-0 text-muted-foreground">{index + 1}.</span>
+                    <span className="min-w-0 break-words">{source.title}</span>
+                  </a>
+                ))}
+              </div>
+            </details>
+          ) : null}
+
           {isAI && !isStreaming && visibleExecutionSteps.length > 0 ? (
             <details className="mt-4 rounded-xl border border-border/70 bg-muted/25 p-3 md:hidden">
               <summary className="cursor-pointer list-none text-sm font-medium text-foreground">
@@ -4190,7 +4189,7 @@ export function ChatMessageItem({
             </details>
           ) : null}
 
-          {isAI && bookTurnOrchestrationResults.length > 0 ? (
+          {showSupplementalResultPanels && bookTurnOrchestrationResults.length > 0 ? (
             <div className="space-y-3">
               {bookTurnOrchestrationResults.map((result, index) => (
                 <BookTurnOrchestrationPanel
@@ -4201,7 +4200,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && recommendationResearchRunnerResults.length > 0 ? (
+          {showSupplementalResultPanels && recommendationResearchRunnerResults.length > 0 ? (
             <div className="space-y-3">
               {recommendationResearchRunnerResults.map((result, index) => (
                 <RecommendationResearchRunnerPanel
@@ -4212,7 +4211,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && recommendationResearchWorkflowResults.length > 0 ? (
+          {showSupplementalResultPanels && recommendationResearchWorkflowResults.length > 0 ? (
             <div className="space-y-3">
               {recommendationResearchWorkflowResults.map((result, index) => (
                 <RecommendationResearchWorkflowPanel
@@ -4223,7 +4222,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && recommendationResearchReportResults.length > 0 ? (
+          {showSupplementalResultPanels && recommendationResearchReportResults.length > 0 ? (
             <div className="space-y-3">
               {recommendationResearchReportResults.map((result, index) => (
                 <RecommendationResearchReportPanel
@@ -4234,7 +4233,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchFinalAnswerResults.length > 0 ? (
+          {showSupplementalResultPanels && researchFinalAnswerResults.length > 0 ? (
             <div className="space-y-3">
               {researchFinalAnswerResults.map((result, index) => (
                 <ResearchFinalAnswerPanel
@@ -4245,7 +4244,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchReportResults.length > 0 ? (
+          {showSupplementalResultPanels && researchReportResults.length > 0 ? (
             <div className="space-y-3">
               {researchReportResults.map((result, index) => (
                 <ResearchReportPanel
@@ -4256,7 +4255,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchSourceToolResults.length > 0 ? (
+          {showSupplementalResultPanels && researchSourceToolResults.length > 0 ? (
             <div className="space-y-3">
               {researchSourceToolResults.map((result, index) => (
                 <ResearchSourceToolPanel
@@ -4267,7 +4266,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchSourceCollectionResults.length > 0 ? (
+          {showSupplementalResultPanels && researchSourceCollectionResults.length > 0 ? (
             <div className="space-y-3">
               {researchSourceCollectionResults.map((result, index) => (
                 <ResearchSourceCollectionPanel
@@ -4278,7 +4277,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchEvidenceAdmissionResults.length > 0 ? (
+          {showSupplementalResultPanels && researchEvidenceAdmissionResults.length > 0 ? (
             <div className="space-y-3">
               {researchEvidenceAdmissionResults.map((result, index) => (
                 <ResearchEvidenceAdmissionPanel
@@ -4289,7 +4288,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchStateResults.length > 0 ? (
+          {showSupplementalResultPanels && researchStateResults.length > 0 ? (
             <div className="space-y-3">
               {researchStateResults.map((result, index) => (
                 <ResearchStateTimelinePanel
@@ -4300,7 +4299,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchPythonAnalysisResults.length > 0 ? (
+          {showSupplementalResultPanels && researchPythonAnalysisResults.length > 0 ? (
             <div className="space-y-3">
               {researchPythonAnalysisResults.map((result, index) => (
                 <ResearchPythonAnalysisPanel
@@ -4311,7 +4310,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && recommendationHistoryResults.length > 0 ? (
+          {showSupplementalResultPanels && recommendationHistoryResults.length > 0 ? (
             <div className="space-y-3">
               {recommendationHistoryResults.map((result, index) => (
                 <RecommendationHistoryPanel

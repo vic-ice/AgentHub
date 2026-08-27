@@ -29,7 +29,7 @@ ResearchLoopStopReason = Literal[
 
 
 class ResearchLoopBudget(BaseModel):
-    max_search_rounds: int = Field(default=2, ge=1, le=3)
+    max_search_rounds: int = Field(default=2, ge=1, le=4)
     max_results_per_round: int = Field(default=5, ge=1, le=10)
     max_records_per_round: int = Field(default=8, ge=1, le=12)
     min_independent_sources: int = Field(default=1, ge=1, le=5)
@@ -41,7 +41,7 @@ class ResearchLoopBudget(BaseModel):
 class ResearchSearchTask(BaseModel):
     result_mode: str = "research_search_task"
     contract_version: str = RESEARCH_LOOP_CONTRACT_VERSION
-    round_index: int = Field(ge=1, le=3)
+    round_index: int = Field(ge=1, le=4)
     objective: str
     purpose: str = "initial_evidence"
     query: str
@@ -82,7 +82,7 @@ class ResearchRoundSources(BaseModel):
     result_mode: str = "research_round_sources"
     contract_version: str = RESEARCH_LOOP_CONTRACT_VERSION
     status: str = "completed"
-    round_index: int = Field(ge=1, le=3)
+    round_index: int = Field(ge=1, le=4)
     executed: bool = True
     task: ResearchSearchTask
     provider: str = ""
@@ -103,7 +103,7 @@ class ResearchGapAssessment(BaseModel):
     result_mode: str = "research_gap_assessment"
     contract_version: str = RESEARCH_LOOP_CONTRACT_VERSION
     status: str = "completed"
-    round_index: int = Field(ge=1, le=3)
+    round_index: int = Field(ge=1, le=4)
     gaps: list[str] = Field(default_factory=list)
     gap_descriptions: list[str] = Field(default_factory=list)
     satisfied: bool = False

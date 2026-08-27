@@ -4,6 +4,7 @@ import re
 from collections.abc import Sequence
 from urllib.parse import urlsplit, urlunsplit
 
+from app.services.publication_safety import contains_internal_reasoning
 from app.services.agent_core.publication.contracts import (
     ReceiptEvidenceBundle,
 )
@@ -68,6 +69,14 @@ def validate_synthesis(
     # are rejected here, not the presence of a write receipt.
     allowed_urls = _evidence_urls(evidence)
     cleaned = _sanitize_synthesis_urls(cleaned, allowed_urls=allowed_urls)
+    if (
+        _has_admitted_web_search_evidence(evidence)
+        and allowed_urls
+        and not _contains_admitted_url(cleaned, allowed_urls=allowed_urls)
+    ):
+        raise ValueError(
+            "web synthesis must include at least one admitted source citation"
+        )
     admitted_book_titles = _evidence_book_titles(evidence)
     if admitted_book_titles and not any(
         alias in _normalized_title(cleaned)
@@ -81,6 +90,49 @@ def validate_synthesis(
     # model searched (e.g. "26 degrees and sunny"): only reject fabricated
     # URLs, not the absence of a citation.
     return cleaned
+
+
+def validate_model_knowledge_text(text: str) -> str:
+    """Validate an answer produced without usable external evidence.
+
+    Model knowledge remains useful when retrieval is unavailable, but it must
+    not manufacture the appearance of live verification. Preserve Markdown
+    prose while removing every unadmitted URL.
+    """
+
+    cleaned = validate_direct_text(text)
+    cleaned = _sanitize_synthesis_urls(cleaned, allowed_urls=set())
+    return validate_direct_text(cleaned)
+
+
+def _has_admitted_web_search_evidence(
+    evidence: Sequence[ReceiptEvidenceBundle],
+) -> bool:
+    for bundle in evidence:
+        for action in bundle.receipt.actions:
+            if action.operation != "web_search_v2" or action.status != "completed":
+                continue
+            output = action.output if isinstance(action.output, dict) else {}
+            if any(
+                isinstance(item, dict) and str(item.get("url") or "").strip()
+                for item in (output.get("sources") or [])
+            ):
+                return True
+    return False
+
+
+def _contains_admitted_url(text: str, *, allowed_urls: set[str]) -> bool:
+    allowed = {
+        identity
+        for url in allowed_urls
+        if (identity := _public_url_identity(url))
+    }
+    emitted = {
+        identity
+        for match in _URL_RE.finditer(str(text or ""))
+        if (identity := _public_url_identity(match.group(0)))
+    }
+    return bool(allowed.intersection(emitted))
 
 
 def _sanitize_synthesis_urls(text: str, *, allowed_urls: set[str]) -> str:
@@ -208,6 +260,7 @@ def _normalized_title_aliases(value: str) -> list[str]:
 def _reject_technical_text(text: str) -> None:
     if (
         _TECHNICAL_LEAK_RE.search(text)
+        or contains_internal_reasoning(text)
         or _FUNCTION_CALL_ONLY_RE.fullmatch(text)
         or _JSON_TOOL_CALL_ONLY_RE.fullmatch(text)
     ):
@@ -227,5 +280,6 @@ def _clean(text: str) -> str:
 
 __all__ = [
     "validate_direct_text",
+    "validate_model_knowledge_text",
     "validate_synthesis",
 ]
