@@ -9,8 +9,8 @@
 | 项目 | 取证结果 |
 |---|---|
 | Git 分支 | `codex/search-deepresearch-quality` |
-| 生产实现提交 | `054198dd5ff6cd761377066a3cc95daf010f039f` |
-| 后端验证 | `691 passed, 38 subtests passed` |
+| 生产实现提交 | `283db474065eae0d6959122ed1bdf9eeadd42975` |
+| 后端验证 | `693 passed, 38 subtests passed` |
 | 前端验证 | `npm run build` 成功 |
 | 取证日期 | 2026-08-28（Asia/Shanghai） |
 
@@ -79,7 +79,7 @@ Controller 一次输出结构化动作和 `assertions[]`。`compiled_turn_from_a
 |---|---|---|
 | `README.md`、`README.zh.md` | 仍声明分支 `codex/r8-19-memory-arch`；仍把 canonicalizer/write_gate/向量索引写成当前主写链 | 论文以本证据包和当前生产源码为准，不复制该旧链 |
 | `docs/frontend-backend-contract.md` | 仍描述 TurnFactCompiler 预处理、canonicalizer 和 MemoryCommitter | 改为 Controller assertions → 确定性适配 → MemoryWriteGateway → ModelFactExecutor/ReadingService → MemoryVersionStore |
-| `docs/SYSTEM_ARCHITECTURE.md` | 结构大体接近现状，但文首仍保留历史效果裁决 `e746714` | 历史裁决可作为演进背景；论文当前实现必须引用 `054198d` 和本证据包 |
+| `docs/SYSTEM_ARCHITECTURE.md` | 结构大体接近现状，但文首仍保留历史效果裁决 `e746714` | 历史裁决可作为演进背景；论文当前实现必须引用 `283db47` 和本证据包 |
 | `memory-bank/*` | 多处仍写 LangGraph Store + PGVector 是长期记忆主存储 | 当前权威事实是 PostgreSQL `memory_events` 版本链；向量召回只能写成辅助能力 |
 | legacy/deprecated 文件 | `MemoryCommitter`、`write_coordinator.py`、旧 canonicalizer 路径、`TurnFactCompiler._llm_facts()` 仍可能存在 | 只能作为迁移/兼容背景，不得画入当前生产主流程，也不得作为第五章实现代码 |
 | ORM 与 SQL 差异 | ORM 的 `memory_events.source_event_id` 仍声明关联 `conversation_events`，但迁移 031 已删除物理外键以支持多种 provenance | E-R 图不得把它画成强制物理外键；字段表需标为“逻辑来源标识” |
@@ -99,6 +99,6 @@ Controller 一次输出结构化动作和 `assertions[]`。`compiled_turn_from_a
 
 1. 图稿是论文重绘依据；定稿时统一字体、线宽、编号和中文命名。
 2. 字段表以 SQLAlchemy ORM 与现行 SQL 迁移共同核验；迁移覆盖 ORM 时，以数据库迁移后的物理约束为准。
-3. 代码片段的路径和行号以生产实现提交 `054198d` 为准；生产代码后续变化时需要重新核验。
+3. 代码片段的路径和行号以生产实现提交 `283db47` 为准；生产代码后续变化时需要重新核验。
 4. 截图来自真实系统运行过程，仅使用公开测试数据；本包不包含 API Key、Token、Cookie、密码、日志或数据库导出。
 5. 压缩包是论文核验副本，不应反向作为生产部署源。

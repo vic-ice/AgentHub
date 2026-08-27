@@ -5,8 +5,8 @@
 | 项目 | 结果 |
 |---|---|
 | 生产代码分支 | `codex/search-deepresearch-quality` |
-| 生产实现提交 | `054198dd5ff6cd761377066a3cc95daf010f039f` |
-| 后端验证 | `691 passed, 38 subtests passed` |
+| 生产实现提交 | `283db474065eae0d6959122ed1bdf9eeadd42975` |
+| 后端验证 | `693 passed, 38 subtests passed` |
 | 前端验证 | `npm run build` 成功 |
 | 取证日期 | 2026-08-28（Asia/Shanghai） |
 

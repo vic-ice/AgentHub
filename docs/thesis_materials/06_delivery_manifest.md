@@ -5,15 +5,15 @@
 | 项目 | 值 |
 |---|---|
 | 分支 | `codex/search-deepresearch-quality` |
-| 生产实现提交 | `054198dd5ff6cd761377066a3cc95daf010f039f` |
-| 后端测试 | `691 passed, 38 subtests passed` |
+| 生产实现提交 | `283db474065eae0d6959122ed1bdf9eeadd42975` |
+| 后端测试 | `693 passed, 38 subtests passed` |
 | 前端构建 | 成功 |
 
 ## 2. 正式截图校验
 
 | 文件 | 尺寸 | SHA-256 |
 |---|---:|---|
-| `01_chat_multi_action.png` | 1920×1189 | `352a4e74520b0edee204c5127d5f87ac68208f23f07e9a630728f92f2efa1b66` |
+| `01_chat_multi_action.png` | 1920×1189 | `7571552dcfef1454c94913a5c0692fde8f4fcaf449aaa3a56c8306c6c11693e6` |
 | `02_bookshelf_result.png` | 1920×1189 | `f18041cea0b51985374193b5dee8915ef069f985af2a597af3ae95533f49910d` |
 | `03_memory_current.png` | 1920×1189 | `3fff43b22dddbd6e4a7d69b3af8c371bb4f00bdedc65c0b93bf62bb54125fd1b` |
 | `04_personalized_recommendation.png` | 1920×1189 | `5551d189ab75c54025ce68235139a8478bfef5a9537e3a050aa59de9bd8800eb` |
