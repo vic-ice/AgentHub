@@ -13,6 +13,9 @@ from app.services.agent_core.prompt_contracts import ControllerModelRequest
 from app.services.agent_core.publication.contracts import (
     ReceiptEvidenceBundle,
 )
+from app.services.agent_core.publication.response_view import (
+    project_external_answer_view,
+)
 from app.services.agent_core.publication.service import TrustedPublisher
 from app.services.agent_core.receipt_projector import (
     ReceiptContextProjector,
@@ -28,6 +31,10 @@ from app.services.agent_runtime.contracts import ExecutionContext
 
 
 MAX_CONTROLLER_ROUNDS = 6
+_MODEL_KNOWLEDGE_FALLBACK_OPERATIONS = {
+    "book_search_v1",
+    "web_search_v2",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -104,11 +111,101 @@ class TurnControllerLoop:
                     "Controller decision failed for request %s",
                     context.request_id,
                 )
+                fallback = (
+                    self._publisher.publish_evidence_fallback(
+                        evidence=evidence,
+                        user_request=request.current_user_message,
+                    )
+                    if request.phase == "synthesis" and evidence
+                    else None
+                )
+                if fallback is not None:
+                    return TurnReceipt(
+                        status="completed",
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=fallback,
+                    )
                 return _failed_turn(
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
                     content=_controller_failure_message(exc),
+                )
+            if request.phase == "synthesis" and output.mode != "direct_answer":
+                fallback = self._publisher.publish_evidence_fallback(
+                    evidence=evidence,
+                    user_request=request.current_user_message,
+                )
+                if fallback is not None:
+                    return TurnReceipt(
+                        status="completed",
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=fallback,
+                    )
+                return _failed_turn(
+                    request_id=context.request_id,
+                    rounds=rounds,
+                    plan_receipts=plan_receipts,
+                    content="这次查到的内容还没能整理成完整回答，请稍后重试。",
+                )
+            if request.phase == "synthesis":
+                try:
+                    answer = (
+                        self._publisher.publish_synthesis(
+                            output,
+                            evidence=evidence,
+                            user_request=request.current_user_message,
+                        )
+                        if _has_completed_evidence(evidence)
+                        else self._publisher.publish_model_knowledge_fallback(
+                            output
+                        )
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "Controller synthesis rejected for request %s: %s",
+                        context.request_id,
+                        exc,
+                    )
+                    answer = self._publisher.publish_evidence_fallback(
+                        evidence=evidence,
+                        user_request=request.current_user_message,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Trusted synthesis publication failed for request %s",
+                        context.request_id,
+                    )
+                    answer = self._publisher.publish_evidence_fallback(
+                        evidence=evidence,
+                        user_request=request.current_user_message,
+                    )
+                rounds.append(
+                    ControllerRoundReceipt(
+                        round_no=round_no,
+                        output=output,
+                        answer=answer,
+                    )
+                )
+                if answer is not None:
+                    return TurnReceipt(
+                        status=_answer_status(answer),
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=answer,
+                    )
+                return _failed_turn(
+                    request_id=context.request_id,
+                    rounds=rounds,
+                    plan_receipts=plan_receipts,
+                    content=(
+                        "这次找到的内容还不够可靠，我先不贸然给出结论。"
+                    ),
                 )
             try:
                 result = await self._harness.run(
@@ -122,6 +219,22 @@ class TurnControllerLoop:
                     "Agent harness execution failed for request %s",
                     context.request_id,
                 )
+                fallback = (
+                    self._publisher.publish_evidence_fallback(
+                        evidence=evidence,
+                        user_request=request.current_user_message,
+                    )
+                    if request.phase == "synthesis" and evidence
+                    else None
+                )
+                if fallback is not None:
+                    return TurnReceipt(
+                        status="completed",
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=fallback,
+                    )
                 rounds.append(
                     ControllerRoundReceipt(
                         round_no=round_no,
@@ -132,7 +245,7 @@ class TurnControllerLoop:
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
-                    content="本轮执行未能形成可信回执。",
+                    content="这次处理没有顺利完成，请稍后重试。",
                 )
 
             if result.receipt is not None:
@@ -161,12 +274,33 @@ class TurnControllerLoop:
                     answer = self._publisher.publish_synthesis(
                         output,
                         evidence=evidence,
+                        user_request=request.current_user_message,
                     )
                 except Exception:
                     logger.exception(
                         "Trusted synthesis publication failed for request %s",
                         context.request_id,
                     )
+                    fallback = self._publisher.publish_evidence_fallback(
+                        evidence=evidence,
+                        user_request=request.current_user_message,
+                    )
+                    if fallback is not None:
+                        rounds.append(
+                            ControllerRoundReceipt(
+                                round_no=round_no,
+                                output=result.output,
+                                plan=result.plan,
+                                receipt=result.receipt,
+                            )
+                        )
+                        return TurnReceipt(
+                            status="completed",
+                            request_id=context.request_id,
+                            rounds=rounds,
+                            plan_receipts=plan_receipts,
+                            final_answer=fallback,
+                        )
                     rounds.append(
                         ControllerRoundReceipt(
                             round_no=round_no,
@@ -180,8 +314,7 @@ class TurnControllerLoop:
                         rounds=rounds,
                         plan_receipts=plan_receipts,
                         content=(
-                            "本轮综合结果未通过可信发布校验，"
-                            "因此没有发布未经验证的内容。"
+                            "这次找到的内容还不够可靠，我先不贸然给出结论。"
                         ),
                     )
 
@@ -207,20 +340,40 @@ class TurnControllerLoop:
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
-                    content="本轮没有形成可继续处理的计划回执。",
+                    content="这次处理没有得到可继续使用的结果，请稍后重试。",
                 )
             if result.plan.response_mode != "model":
                 return _failed_turn(
                     request_id=context.request_id,
                     rounds=rounds,
                     plan_receipts=plan_receipts,
-                    content="本轮回执缺少确定性的发布结果。",
+                    content="这次处理没有形成完整回答，请稍后重试。",
                 )
             has_completed = any(
                 action.status == "completed"
                 for action in result.receipt.actions
             )
             if not has_completed:
+                if _can_use_model_knowledge_fallback(
+                    result.plan,
+                    result.receipt,
+                ):
+                    projected = self._projector.project(result.receipt)
+                    request = request.model_copy(
+                        update={
+                            "phase": "synthesis",
+                            "context": request.context.model_copy(
+                                update={
+                                    "receipts": [
+                                        *request.context.receipts,
+                                        *projected,
+                                    ][-32:],
+                                    "response_view": None,
+                                }
+                            ),
+                        }
+                    )
+                    continue
                 reason = _first_failure_reason(result.receipt.actions)
                 return _failed_turn(
                     request_id=context.request_id,
@@ -248,6 +401,22 @@ class TurnControllerLoop:
                     plan_receipts=plan_receipts,
                     content="本轮没有可供继续综合的受信结果。",
                 )
+            if (
+                _has_external_result(projected)
+                and not _has_external_evidence(projected)
+            ):
+                fallback = self._publisher.publish_evidence_fallback(
+                    evidence=evidence,
+                    user_request=request.current_user_message,
+                )
+                if fallback is not None:
+                    return TurnReceipt(
+                        status="completed",
+                        request_id=context.request_id,
+                        rounds=rounds,
+                        plan_receipts=plan_receipts,
+                        final_answer=fallback,
+                    )
             receipts = [*request.context.receipts, *projected][-32:]
             research_state = project_research_controller_context(
                 [
@@ -258,15 +427,36 @@ class TurnControllerLoop:
             )
             request = request.model_copy(
                 update={
+                    "phase": (
+                        "synthesis"
+                        if _has_external_evidence(projected)
+                        else request.phase
+                    ),
                     "context": request.context.model_copy(
                         update={
                             "receipts": receipts,
+                            "response_view": project_external_answer_view(
+                                evidence,
+                                user_request=request.current_user_message,
+                            ),
                             "trusted_research_state": research_state,
                         }
                     )
                 }
             )
 
+        fallback = self._publisher.publish_evidence_fallback(
+            evidence=evidence,
+            user_request=request.current_user_message,
+        )
+        if fallback is not None:
+            return TurnReceipt(
+                status="completed",
+                request_id=context.request_id,
+                rounds=rounds,
+                plan_receipts=plan_receipts,
+                final_answer=fallback,
+            )
         return TurnReceipt(
             status="limit_exceeded",
             request_id=context.request_id,
@@ -274,10 +464,49 @@ class TurnControllerLoop:
             plan_receipts=plan_receipts,
             final_answer=PublishedAnswer(
                 status="failed",
-                content="本轮已达到安全控制轮数上限，未继续执行。",
+                content="这次处理没有顺利形成可用回答，请稍后重试。",
                 receipt_backed=False,
             ),
         )
+
+
+def _has_external_evidence(projected) -> bool:
+    return any(
+        item.result_mode
+        in {"book_evidence", "web_evidence", "weather_evidence"}
+        and bool(item.sources or item.facts)
+        for item in projected
+    )
+
+
+def _has_completed_evidence(
+    evidence: list[ReceiptEvidenceBundle],
+) -> bool:
+    return any(
+        action.status == "completed"
+        for bundle in evidence
+        for action in bundle.receipt.actions
+    )
+
+
+def _can_use_model_knowledge_fallback(
+    plan,
+    receipt,
+) -> bool:
+    operations = {action.operation for action in receipt.actions}
+    return bool(
+        plan.response_mode == "model"
+        and operations
+        and operations.issubset(_MODEL_KNOWLEDGE_FALLBACK_OPERATIONS)
+    )
+
+
+def _has_external_result(projected) -> bool:
+    return any(
+        item.result_mode
+        in {"book_evidence", "web_evidence", "weather_evidence"}
+        for item in projected
+    )
 
 
 def _answer_status(answer: PublishedAnswer) -> str:

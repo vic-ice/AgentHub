@@ -151,7 +151,7 @@ export function ChatInput({
 		>
 			<InputGroup
 				className={cn(
-					"focus-within:ring-1 focus-within:ring-ring rounded-2xl",
+					"focus-within:ring-2 focus-within:ring-ring/20 rounded-xl",
 					className,
 				)}
 				{...props}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,26 @@ class ExternalCapabilityPolicyRegistry:
                 f"external capability policy is not registered: {operation}"
             )
         return policy
+
+    def timeout_seconds(
+        self,
+        operation: str,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> float:
+        """Resolve workload-aware time without weakening other capabilities."""
+
+        policy = self.require(operation)
+        if operation != "book_search_v1":
+            return policy.timeout_seconds
+        payload = dict(arguments or {})
+        if str(payload.get("mode") or "recommendation") == "lookup":
+            return policy.timeout_seconds
+        depth = str(payload.get("response_depth") or "balanced")
+        if depth == "deep":
+            return max(policy.timeout_seconds, 75.0)
+        if depth == "balanced":
+            return max(policy.timeout_seconds, 45.0)
+        return policy.timeout_seconds
 
 
 __all__ = [

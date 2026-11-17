@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from collections.abc import AsyncGenerator
 
 from app.schemas.chat import UserInput
@@ -10,6 +11,12 @@ from app.services.agent_core.publication.graph import (
 )
 from app.services.agent_core.publication.stream import TrustedStreamSequencer
 from app.utils.sse import sse, sse_error
+from app.services.execution_progress import (
+    CompletedExecutionStep,
+    ExecutionProgressCollector,
+    attach_progress_to_answer,
+    bind_execution_progress,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -43,6 +50,14 @@ class TrustedControllerStream:
             request_id=user_input.request_id
         )
         yield sse(sequencer.turn_started().model_dump(mode="json"))
+        progress_queue: asyncio.Queue[CompletedExecutionStep] = asyncio.Queue()
+        collector = ExecutionProgressCollector(
+            business_type=(
+                "research" if user_input.research_mode == "deep_research" else "chat"
+            ),
+            callback=progress_queue.put_nowait,
+        )
+
 
         try:
             (
@@ -86,6 +101,8 @@ class TrustedControllerStream:
                 database=database,
                 user_input=user_input,
                 committer=committer,
+                collector=collector,
+                progress_queue=progress_queue,
             ):
                 yield event
             return
@@ -129,12 +146,18 @@ class TrustedControllerStream:
 
         try:
             async with database.session() as session:
-                entry = await entry_service.run(
-                    session,
-                    user_input=user_input,
-                    model_name=model_name,
-                    journal_sequence_watermark=user_event.sequence_no,
-                )
+                with bind_execution_progress(collector):
+                    task = asyncio.create_task(entry_service.run(
+                        session,
+                        user_input=user_input,
+                        model_name=model_name,
+                        journal_sequence_watermark=user_event.sequence_no,
+                    ))
+                async for progress_event in self._stream_task_progress(
+                    task, progress_queue=progress_queue, sequencer=sequencer
+                ):
+                    yield progress_event
+                entry = await task
             if (
                 not entry.handled
                 or entry.message is None
@@ -158,6 +181,7 @@ class TrustedControllerStream:
                 yield event
             return
 
+        answer = attach_progress_to_answer(entry.answer, collector)
         turn = entry.attempt.turn
         graph = (
             self._committer_graph(turn, user_input.request_id)
@@ -172,7 +196,7 @@ class TrustedControllerStream:
                 committed = await committer.commit(
                     session,
                     user_input=user_input,
-                    answer=entry.answer,
+                    answer=answer,
                     turn=turn,
                     model_name=model_name,
                     agent_mode=str(
@@ -192,20 +216,20 @@ class TrustedControllerStream:
             yield "data: [DONE]\n\n"
             return
 
-        if entry.answer.status == "completed":
+        if answer.status == "completed":
             terminal = sequencer.answer_completed(
-                answer=entry.answer,
+                answer=answer,
                 committed=committed,
             )
-        elif entry.answer.status == "clarification_required":
+        elif answer.status == "clarification_required":
             terminal = sequencer.clarification_required(
-                answer=entry.answer,
+                answer=answer,
                 committed=committed,
             )
         else:
             terminal = sequencer.turn_failed(
                 committed=committed,
-                message=_failure_message(entry.answer),
+                message=_failure_message(answer),
             )
         yield sse(terminal.model_dump(mode="json"))
         yield "data: [DONE]\n\n"
@@ -217,13 +241,22 @@ class TrustedControllerStream:
         database,
         user_input: UserInput,
         committer,
+        collector: ExecutionProgressCollector,
+        progress_queue: asyncio.Queue[CompletedExecutionStep],
     ) -> AsyncGenerator[str, None]:
         try:
             from app.services.research.deep_research_runner import (
                 run_deep_research_turn,
             )
 
-            answer = await run_deep_research_turn(user_input)
+            with bind_execution_progress(collector):
+                task = asyncio.create_task(run_deep_research_turn(user_input))
+            async for progress_event in self._stream_task_progress(
+                task, progress_queue=progress_queue, sequencer=sequencer
+            ):
+                yield progress_event
+            answer = await task
+            answer = attach_progress_to_answer(answer, collector)
         except Exception:
             logger.exception(
                 "Deep Research runtime failed for request %s",
@@ -333,6 +366,26 @@ class TrustedControllerStream:
             ).model_dump(mode="json")
         )
         yield "data: [DONE]\n\n"
+
+    @staticmethod
+    async def _stream_task_progress(
+        task: asyncio.Task,
+        *,
+        progress_queue: asyncio.Queue[CompletedExecutionStep],
+        sequencer: TrustedStreamSequencer,
+    ) -> AsyncGenerator[str, None]:
+        while not task.done() or not progress_queue.empty():
+            try:
+                step = await asyncio.wait_for(
+                    progress_queue.get(),
+                    timeout=0.1,
+                )
+            except asyncio.TimeoutError:
+                continue
+            yield sse(
+                sequencer.step_completed(step).model_dump(mode="json")
+            )
+
 
     def _dependencies(self):
         from app.infra.database import get_database

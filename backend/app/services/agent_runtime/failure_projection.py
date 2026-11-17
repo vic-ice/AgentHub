@@ -125,7 +125,7 @@ def project_runtime_failure(
 
 
 def render_research_failure(summary: RuntimeFailureSummary | None) -> str:
-    """Render bounded Markdown while technical detail remains in the trace."""
+    """Render a natural user message while technical detail stays in Trace."""
 
     reason = (
         summary.user_message
@@ -133,12 +133,9 @@ def render_research_failure(summary: RuntimeFailureSummary | None) -> str:
         else "研究执行没有生成最终发布结果。"
     )
     return (
-        "## 研究状态\n"
-        "本次研究未能完成。\n\n"
-        "## 原因\n"
+        "这次深度搜索没能顺利完成。\n\n"
         f"{reason}\n\n"
-        "## 处理原则\n"
-        "由于证据链未闭合，我没有生成未经验证的结论。"
+        "🔄 你可以稍后直接重试；我不会拿不确定的信息凑一个答案。"
     )
 
 

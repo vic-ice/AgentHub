@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:fresh": "vite --force",
+    "dev:local": "vite --host 127.0.0.1 --port 5173 --strictPort --force",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "verify:flowchart-ui": "node scripts/verify_flowchart_ui_acceptance.mjs",

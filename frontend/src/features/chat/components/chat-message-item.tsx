@@ -6,7 +6,7 @@ import {
   HistoryIcon,
   Loader2,
 } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 
 import { Message, MessageContent } from "@/components/ai/message"
 import { cn } from "@/lib/utils"
@@ -15,6 +15,7 @@ import type {
   BookTurnOrchestrationResult,
   BookTurnOrchestrationStep,
   BookTurnPolicy,
+  CompletedExecutionStep,
   LocalChatMessage,
   ResearchClaimAdmissionDecision,
   ResearchEvidence,
@@ -56,10 +57,16 @@ import {
   extractFollowUpQuestions,
   type FollowUpQuestionOption,
 } from "@/features/chat/recommendation-followups"
+import {
+  friendlyStepDetail,
+  friendlyStepTitle,
+  toolDisplay,
+} from "@/features/chat/execution-display"
 
 type ChatMessageItemProps = {
   message: LocalChatMessage
   calledTools?: ToolCallInfo[]
+  executionSteps?: CompletedExecutionStep[]
   isAgentThinking?: boolean
   thinkingContent?: string // Accumulated thinking content (streaming)
   isProcessing?: boolean // Processing, no content received yet (kept for backward compatibility, not used)
@@ -77,6 +84,11 @@ type ChatMessageItemProps = {
 type SourceLink = {
   href: string
   title: string
+}
+
+type DeepResearchQuality = {
+  status: "verified" | "partial" | "insufficient"
+  evidenceCount: number
 }
 
 /**
@@ -157,36 +169,19 @@ function parseSources(message: LocalChatMessage): SourceLink[] {
   return []
 }
 
-/**
- * Parse thinking content from message.
- * Checks multiple sources for compatibility.
- */
-function parseThinkingContent(message: LocalChatMessage): string | null {
-  // 1. Check custom_data.thinking (saved from backend)
-  const thinkingFromCustomData = message.custom_data?.thinking
-  if (typeof thinkingFromCustomData === "string" && thinkingFromCustomData.trim()) {
-    return thinkingFromCustomData.trim()
+function parseDeepResearchQuality(message: LocalChatMessage): DeepResearchQuality | null {
+  if (typeof message.custom_data?.research_run_id !== "string") {
+    return null
   }
-
-  // 2. Check response_metadata.thinking
-  const thinkingFromMetadata = message.response_metadata?.thinking
-  if (typeof thinkingFromMetadata === "string" && thinkingFromMetadata.trim()) {
-    return thinkingFromMetadata.trim()
+  const rawStatus = message.custom_data?.research_quality_status
+  if (rawStatus !== "verified" && rawStatus !== "partial" && rawStatus !== "insufficient") {
+    return null
   }
-
-  // 3. Check reasoning_content
-  const reasoningContent = message.reasoning_content
-  if (typeof reasoningContent === "string" && reasoningContent.trim()) {
-    return reasoningContent.trim()
+  const rawCount = Number(message.custom_data?.research_evidence_count ?? 0)
+  return {
+    status: rawStatus,
+    evidenceCount: Number.isFinite(rawCount) && rawCount >= 0 ? Math.floor(rawCount) : 0,
   }
-
-  // 4. Check custom_data.reasoning
-  const reasoningFromCustomData = message.custom_data?.reasoning
-  if (typeof reasoningFromCustomData === "string" && reasoningFromCustomData.trim()) {
-    return reasoningFromCustomData.trim()
-  }
-
-  return null
 }
 
 /**
@@ -243,6 +238,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function cleanString(value: unknown): string {
   return String(value ?? "").trim()
+}
+
+function parseExecutionProgress(message: LocalChatMessage): CompletedExecutionStep[] {
+  const progress = asRecord(message.custom_data?.execution_progress)
+  if (!progress || !Array.isArray(progress.steps)) return []
+  return progress.steps.filter((item): item is CompletedExecutionStep => {
+    const step = asRecord(item)
+    return Boolean(
+      step
+      && typeof step.step_id === "string"
+      && typeof step.order === "number"
+      && typeof step.title === "string"
+      && typeof step.status === "string"
+    )
+  })
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> | null {
@@ -2374,38 +2384,38 @@ function ResearchSourceCollectionPanel({
   const writesEvidence = asBoolean(result.metadata.writes_evidence)
 
   return (
-    <section className="mt-3 rounded-xl border border-indigo-500/30 bg-indigo-50/70 p-3 text-sm text-indigo-950 dark:bg-indigo-950/20 dark:text-indigo-100">
+    <section className="mt-3 rounded-xl bg-muted/45 p-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
       <div className="flex flex-wrap items-center gap-2">
-        <BrainIcon className="size-4 text-indigo-700 dark:text-indigo-300" />
+        <BrainIcon className="size-4 text-primary" />
         <span className="font-semibold">Research source collection</span>
-        <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-medium text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-100">
+        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
           {researchStatusLabel(result.status)}
         </span>
-        <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.contract_version}
         </span>
         {batch ? (
-          <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+          <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
             {batch.observation_count}/{batch.source_count} observations
           </span>
         ) : null}
       </div>
 
       {result.query ? (
-        <p className="mt-2 text-xs leading-5 text-indigo-900/90 dark:text-indigo-100/85">
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
           {result.query}
         </p>
       ) : null}
 
       <div className="mt-3 flex flex-wrap gap-1.5">
-        <span className="rounded-md border border-indigo-400/40 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+        <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           writes research state: {writesResearchState ? "yes" : "no"}
         </span>
-        <span className="rounded-md border border-indigo-400/40 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+        <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           writes evidence: {writesEvidence ? "yes" : "no"}
         </span>
         {state ? (
-          <span className="rounded-md border border-indigo-400/40 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
             state steps: {state.steps.length}
           </span>
         ) : null}
@@ -3214,32 +3224,32 @@ function RecommendationResearchWorkflowPanel({
   )
 
   return (
-    <section className="mt-3 rounded-xl border border-indigo-500/30 bg-indigo-50/70 p-3 text-sm text-indigo-950 dark:bg-indigo-950/20 dark:text-indigo-100">
+    <section className="mt-3 rounded-xl bg-muted/45 p-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
       <div className="flex flex-wrap items-center gap-2">
-        <BrainIcon className="size-4 text-indigo-700 dark:text-indigo-300" />
+        <BrainIcon className="size-4 text-primary" />
         <span className="font-semibold">Recommendation research workflow</span>
-        <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-medium text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-100">
+        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
           {researchStatusLabel(result.status)}
         </span>
-        <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.ready_to_fuse ? "ready to fuse" : "not ready"}
         </span>
-        <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.fresh_candidate_count}/{result.candidate_count} fresh
         </span>
-        <span className="rounded-full border border-indigo-400/50 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.verified_claim_count} verified claims
         </span>
       </div>
 
       {result.query ? (
-        <p className="mt-2 text-xs leading-5 text-indigo-900/90 dark:text-indigo-100/85">
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
           {result.query}
         </p>
       ) : null}
 
       {result.next_action_hint ? (
-        <p className="mt-2 rounded-lg border border-indigo-400/30 bg-background/70 p-2 text-xs leading-5 text-muted-foreground">
+        <p className="mt-2 rounded-lg bg-background p-2 text-xs leading-5 text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.next_action_hint}
         </p>
       ) : null}
@@ -3254,7 +3264,7 @@ function RecommendationResearchWorkflowPanel({
               {result.recommended_next_tools.slice(0, 6).map((tool) => (
                 <span
                   key={tool}
-                  className="rounded-md border border-indigo-400/40 px-1.5 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-200"
+                  className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]"
                 >
                   {tool}
                 </span>
@@ -3382,26 +3392,26 @@ function RecommendationResearchRunnerPanel({
   const candidateCount = Number(result.metadata.candidate_count ?? result.workflow_after.candidate_count)
 
   return (
-    <section className="mt-3 rounded-xl border border-violet-500/30 bg-violet-50/70 p-3 text-sm text-violet-950 dark:bg-violet-950/20 dark:text-violet-100">
+    <section className="mt-3 rounded-xl bg-muted/45 p-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
       <div className="flex flex-wrap items-center gap-2">
-        <BrainIcon className="size-4 text-violet-700 dark:text-violet-300" />
+        <BrainIcon className="size-4 text-primary" />
         <span className="font-semibold">Recommendation research runner</span>
-        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-800 dark:bg-violet-900/60 dark:text-violet-100">
+        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
           {researchStatusLabel(result.status)}
         </span>
-        <span className="rounded-full border border-violet-400/50 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {runtimeExecuted ? "runtime executed" : "runtime skipped"}
         </span>
-        <span className="rounded-full border border-violet-400/50 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {fusionExecuted ? "fusion executed" : "fusion pending"}
         </span>
-        <span className="rounded-full border border-violet-400/50 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+        <span className="rounded-md bg-background px-2 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           {result.contract_version}
         </span>
       </div>
 
       {result.query ? (
-        <p className="mt-2 text-xs leading-5 text-violet-900/90 dark:text-violet-100/85">
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
           {result.query}
         </p>
       ) : null}
@@ -3446,10 +3456,10 @@ function RecommendationResearchRunnerPanel({
             Before
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <span className="rounded-md border border-violet-400/40 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+            <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
               {researchStatusLabel(result.workflow_before.status)}
             </span>
-            <span className="rounded-md border border-violet-400/40 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+            <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
               {result.workflow_before.ready_to_fuse ? "ready" : "not ready"}
             </span>
           </div>
@@ -3465,10 +3475,10 @@ function RecommendationResearchRunnerPanel({
             After
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <span className="rounded-md border border-violet-400/40 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+            <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
               {researchStatusLabel(result.workflow_after.status)}
             </span>
-            <span className="rounded-md border border-violet-400/40 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-200">
+            <span className="rounded-md bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
               {result.workflow_after.ready_to_fuse ? "ready" : "not ready"}
             </span>
           </div>
@@ -3481,7 +3491,7 @@ function RecommendationResearchRunnerPanel({
       </div>
 
       {result.runtime ? (
-        <p className="mt-3 rounded-lg border border-violet-400/30 bg-background/70 p-2 text-xs text-muted-foreground">
+        <p className="mt-3 rounded-lg bg-background p-2 text-xs text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]">
           Local research runtime: {researchStatusLabel(result.runtime.status)}
           {result.runtime.run_id ? ` (${result.runtime.run_id})` : null}
         </p>
@@ -3866,6 +3876,7 @@ function ResearchReportPanel({
 export function ChatMessageItem({
   message,
   calledTools = [],
+  executionSteps = [],
   thinkingContent = "",
   isStreaming = false,
   isSelected = false,
@@ -3878,26 +3889,21 @@ export function ChatMessageItem({
   const isAI = message.type === "ai"
   const isTool = message.type === "tool"
   const sources = parseSources(message)
+  const deepResearchQuality =
+    isAI && !isStreaming ? parseDeepResearchQuality(message) : null
   const [copied, setCopied] = useState(false)
 
   // Parse thinking content from message (for history) or use streaming content
-  const historicalThinking = parseThinkingContent(message)
-  const displayThinkingContent = thinkingContent || historicalThinking || ""
-  const hasThinkingContent = Boolean(displayThinkingContent)
-
-  // Ref for thinking content container - auto-scroll during streaming
-  const thinkingContentRef = useRef<HTMLDivElement>(null)
-
-  // Auto-scroll thinking content to bottom when content grows during streaming
-  useEffect(() => {
-    if (isStreaming && thinkingContent && thinkingContentRef.current) {
-      thinkingContentRef.current.scrollTop = thinkingContentRef.current.scrollHeight
-    }
-  }, [isStreaming, thinkingContent])
+  // Internal reasoning is never rendered as answer content. During generation
+  // we expose only a compact activity state; completed history stays clean.
+  const hasThinkingActivity = isStreaming && Boolean(thinkingContent)
 
   // Merge calledTools from streaming with stored tool_info from history
   // For streaming messages, use calledTools; for history messages, use stored tool_info
   const allTools = calledTools.length > 0 ? calledTools : parseStoredToolInfo(message)
+  const visibleExecutionSteps = executionSteps.length > 0
+    ? executionSteps
+    : parseExecutionProgress(message)
   const hasToolCalls = allTools.length > 0
   const researchFinalAnswerResults =
     isAI && !isStreaming ? parseResearchFinalAnswerResults(allTools) : []
@@ -3923,6 +3929,10 @@ export function ChatMessageItem({
     isAI && !isStreaming ? parseRecommendationResearchReportResults(allTools) : []
   const recommendationHistoryResults =
     isAI && !isStreaming ? parseRecommendationHistoryResults(allTools) : []
+  // Once a final answer exists it is the publication surface. Structured
+  // operation payloads remain available in Trace instead of competing with
+  // the report below it.
+  const showSupplementalResultPanels = isAI && !message.content.trim()
   const followUpQuestions =
     isAI && !isStreaming
       ? extractFollowUpQuestions(message, calledTools)
@@ -3982,13 +3992,13 @@ export function ChatMessageItem({
   // For AI messages, don't render if there's no content, thinking content, or tool calls
   // This avoids empty bubbles
   // But during streaming with processing state, show the loader even without content
-  if (isAI && !isStreaming && !message.content.trim() && !hasThinkingContent && !hasToolCalls) {
+  if (isAI && !isStreaming && !message.content.trim() && !hasToolCalls) {
     return null
   }
 
   // During streaming, if there's no content, thinking, or tools, return null
   // The center loader (in chat-main-panel.tsx) will show instead
-  if (isAI && isStreaming && !message.content.trim() && !hasThinkingContent && !hasToolCalls) {
+  if (isAI && isStreaming && !message.content.trim() && !hasThinkingActivity && !hasToolCalls) {
     return null
   }
 
@@ -4000,96 +4010,70 @@ export function ChatMessageItem({
       <Message
         from={isUser ? "user" : "assistant"}
         className={cn(
-          "min-w-0 shrink-0 transition-all duration-300",
+          "min-w-0 shrink-0 transition-opacity duration-150",
           isUser
-            ? "w-auto max-w-[72%] items-end ml-0"
-            : "w-full max-w-[85%]",
-          isAI && isSelected && "scale-[1.01]"
+            ? "w-auto max-w-[76%] items-end ml-0"
+            : "w-full max-w-[90%]",
+          isAI && isSelected && "opacity-100"
         )}
       >
         <MessageContent
           className={cn(
-            "max-w-full overflow-visible rounded-3xl px-5 py-3.5 text-[15px] leading-relaxed transition-all duration-300",
+            "max-w-full overflow-visible px-5 py-4 text-[16px] leading-7 transition-[background-color,border-color] duration-150",
             isUser
-              ? "w-fit mr-3 bg-user-bubble text-user-bubble-foreground"
-              : "w-full bg-ai-bubble text-foreground border border-border/50",
+              ? "mr-3 w-fit rounded-[20px] rounded-br-md border border-border/65 bg-user-bubble text-user-bubble-foreground"
+              : "w-full rounded-none border border-transparent bg-transparent text-foreground",
             // Add selected highlight for AI messages
-            isAI && isSelected && [
-              "border-primary/40 shadow-[0_0_0_1px_rgba(var(--primary),0.2),0_0_20px_rgba(var(--primary),0.15)]",
-              "dark:shadow-[0_0_0_1px_rgba(var(--primary),0.3),0_0_30px_rgba(var(--primary),0.2)]"
-            ],
+            isAI && isSelected && "bg-muted/35",
+            isAI && isStreaming && "rounded-2xl border-primary/10 bg-gradient-to-br from-primary/[0.035] to-transparent",
           )}
         >
-          {/* Sources */}
-          {sources.length > 0 ? (
-            <details className="rounded-lg border border-border/80 bg-background/70 p-2 text-xs mb-2">
-              <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-muted-foreground">
-                <ChevronDown className="size-3" />
-                {t("message.sources", { count: sources.length })}
-              </summary>
-              <div className="mt-2 space-y-1">
-                {sources.map((source) => (
-                  <a
-                    key={source.href}
-                    href={source.href}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block truncate text-primary hover:underline"
-                  >
-                    {source.title}
-                  </a>
-                ))}
-              </div>
-            </details>
-          ) : null}
-
-
-          {/* Thinking content display - show live reasoning and preserved history. */}
-          {isAI && hasThinkingContent ? (
-            <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs mb-2">
-              <div className="flex items-center gap-2 mb-2">
+          {/* Show activity without exposing raw model reasoning. */}
+          {isAI && hasThinkingActivity ? (
+            <div className="mb-3 rounded-xl border border-primary/10 bg-primary/[0.035] p-3 text-xs" role="status">
+              <div className="flex items-center gap-2">
                 <BrainIcon className={cn("size-3.5 text-primary", isStreaming && "animate-pulse")} />
                 <span className="font-medium text-muted-foreground">
                   {t("message.thinking") || "Thinking..."}
                 </span>
               </div>
-              <div ref={thinkingContentRef} className="whitespace-pre-wrap break-words text-muted-foreground max-h-48 overflow-y-auto">
-                {displayThinkingContent}
-              </div>
             </div>
           ) : null}
 
-          {/* Tool calls display - ChatGPT style scrolling list */}
+          {/* Main chat shows user-facing activities only; raw payloads stay in Trace. */}
           {isAI && allTools.length > 0 && (isStreaming || !message.content.trim()) ? (
-            <div className="rounded-lg border border-border/60 bg-background/50 p-2 text-xs mb-2 max-h-32 overflow-y-auto">
-              <div className="space-y-1.5">
+            <div className="mb-3 max-h-64 overflow-y-auto rounded-xl border border-border/70 bg-background/65 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="font-medium text-foreground">本轮执行</span>
+                <span className="text-[11px] text-muted-foreground">{allTools.length} 个步骤</span>
+              </div>
+              <div className="space-y-2">
                 {allTools.map((tool, toolIndex) => {
                   const isCalling = tool.status === "calling"
                   const isCompleted = tool.status === "completed"
+                  const display = toolDisplay(tool)
                   return (
                     <div
                       key={tool.id || `tool-${toolIndex}`}
                       className={cn(
-                        "flex items-center gap-2 animate-in slide-in-from-left-2 duration-200",
-                        toolIndex === allTools.length - 1 && isCalling && "bg-primary/5 -mx-1 px-1 rounded"
+                        "rounded-lg border px-3 py-2.5 animate-in slide-in-from-left-2 duration-200",
+                        isCalling ? "border-primary/20 bg-primary/5" : "border-border/60 bg-card/70",
                       )}
                     >
-                      {isCalling ? (
-                        <Loader2 className="size-3 animate-spin text-primary" />
-                      ) : isCompleted ? (
-                        <CheckIcon className="size-3 text-green-500" />
-                      ) : null}
-                      <span className={cn(
-                        "font-medium",
-                        isCalling ? "text-foreground" : "text-muted-foreground"
-                      )}>
-                        {tool.name}
-                      </span>
-                      {isCalling && (
-                        <span className="text-muted-foreground text-[10px] animate-pulse">
-                          {t("message.toolRunning")}
+                      <div className="flex items-center gap-2">
+                        {isCalling ? (
+                          <Loader2 className="size-3.5 animate-spin text-primary" />
+                        ) : isCompleted ? (
+                          <CheckIcon className="size-3.5 text-emerald-600" />
+                        ) : null}
+                        <span className="font-medium text-foreground">{display.title}</span>
+                        <span className="ml-auto text-[10px] text-muted-foreground">
+                          {isCalling ? t("message.toolRunning") : "已完成"}
                         </span>
-                      )}
+                      </div>
+                      <p className="mt-1.5 leading-5 text-muted-foreground">
+                        {isCalling ? `正在处理：${display.input}` : display.result}
+                      </p>
                     </div>
                   )
                 })}
@@ -4100,7 +4084,35 @@ export function ChatMessageItem({
           {/* Main message content */}
           {isAI ? (
             message.content ? (
-              <MarkdownContent content={message.content} isStreaming={isStreaming} />
+              <div className={cn("relative", isStreaming && "streaming-answer") }>
+                {isStreaming && (
+                  <div className="mb-2 flex items-center gap-2 text-[11px] font-medium tracking-wide text-primary/80" role="status">
+                    <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+                    正在生成
+                  </div>
+                )}
+                <MarkdownContent content={message.content} isStreaming={isStreaming} />
+                {isStreaming && <span className="streaming-caret" aria-hidden="true" />}
+                {deepResearchQuality ? (
+                  <div
+                    className={cn(
+                      "mt-4 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                      deepResearchQuality.status === "verified"
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                        : deepResearchQuality.status === "partial"
+                          ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                          : "border-rose-500/25 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+                    )}
+                    role="status"
+                  >
+                    {deepResearchQuality.status === "verified"
+                      ? t("message.researchVerified", { count: deepResearchQuality.evidenceCount })
+                      : deepResearchQuality.status === "partial"
+                        ? t("message.researchPartial", { count: deepResearchQuality.evidenceCount })
+                        : t("message.researchInsufficient")}
+                  </div>
+                ) : null}
+              </div>
             ) : null
           ) : isQuotedMessage ? (
             // Render quoted message with separator - use user_content for display
@@ -4125,17 +4137,59 @@ export function ChatMessageItem({
               {/* Separator line */}
               <Separator className="bg-user-bubble-foreground/30" />
               {/* User content - use user_content from custom_data */}
-              <p className="whitespace-pre-wrap break-words text-sm leading-6">
+              <p className="whitespace-pre-wrap break-words text-[15px] leading-7">
                 {userContent}
               </p>
             </div>
           ) : (
-            <p className="whitespace-pre-wrap break-words text-sm leading-6">
+            <p className="whitespace-pre-wrap break-words text-[15px] leading-7">
               {message.content}
             </p>
           )}
 
-          {isAI && bookTurnOrchestrationResults.length > 0 ? (
+          {sources.length > 0 ? (
+            <details className="mt-5 rounded-xl border border-border/70 bg-muted/25 px-3.5 py-3 text-xs">
+              <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-muted-foreground">
+                <ChevronDown className="size-3.5" />
+                {t("message.sources", { count: sources.length })}
+              </summary>
+              <div className="mt-3 grid gap-2 border-t border-border/60 pt-3 sm:grid-cols-2">
+                {sources.map((source, index) => (
+                  <a
+                    key={source.href}
+                    href={source.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex min-w-0 items-start gap-2 rounded-lg border border-border/60 bg-background/70 px-3 py-2 leading-5 text-primary transition-colors hover:border-primary/30 hover:bg-primary/5"
+                  >
+                    <span className="shrink-0 text-muted-foreground">{index + 1}.</span>
+                    <span className="min-w-0 break-words">{source.title}</span>
+                  </a>
+                ))}
+              </div>
+            </details>
+          ) : null}
+
+          {isAI && !isStreaming && visibleExecutionSteps.length > 0 ? (
+            <details className="mt-4 rounded-xl border border-border/70 bg-muted/25 p-3 md:hidden">
+              <summary className="cursor-pointer list-none text-sm font-medium text-foreground">
+                查看本轮 {visibleExecutionSteps.length} 个执行步骤
+              </summary>
+              <ol className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                {visibleExecutionSteps.map((step, index) => (
+                  <li key={step.step_id} className="flex gap-2 text-xs">
+                    <CheckIcon className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
+                    <div className="min-w-0">
+                      <p className="font-medium text-foreground">{index + 1}. {friendlyStepTitle(step)}</p>
+                      <p className="mt-0.5 leading-5 text-muted-foreground">{friendlyStepDetail(step)}</p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          ) : null}
+
+          {showSupplementalResultPanels && bookTurnOrchestrationResults.length > 0 ? (
             <div className="space-y-3">
               {bookTurnOrchestrationResults.map((result, index) => (
                 <BookTurnOrchestrationPanel
@@ -4146,7 +4200,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && recommendationResearchRunnerResults.length > 0 ? (
+          {showSupplementalResultPanels && recommendationResearchRunnerResults.length > 0 ? (
             <div className="space-y-3">
               {recommendationResearchRunnerResults.map((result, index) => (
                 <RecommendationResearchRunnerPanel
@@ -4157,7 +4211,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && recommendationResearchWorkflowResults.length > 0 ? (
+          {showSupplementalResultPanels && recommendationResearchWorkflowResults.length > 0 ? (
             <div className="space-y-3">
               {recommendationResearchWorkflowResults.map((result, index) => (
                 <RecommendationResearchWorkflowPanel
@@ -4168,7 +4222,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && recommendationResearchReportResults.length > 0 ? (
+          {showSupplementalResultPanels && recommendationResearchReportResults.length > 0 ? (
             <div className="space-y-3">
               {recommendationResearchReportResults.map((result, index) => (
                 <RecommendationResearchReportPanel
@@ -4179,7 +4233,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchFinalAnswerResults.length > 0 ? (
+          {showSupplementalResultPanels && researchFinalAnswerResults.length > 0 ? (
             <div className="space-y-3">
               {researchFinalAnswerResults.map((result, index) => (
                 <ResearchFinalAnswerPanel
@@ -4190,7 +4244,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchReportResults.length > 0 ? (
+          {showSupplementalResultPanels && researchReportResults.length > 0 ? (
             <div className="space-y-3">
               {researchReportResults.map((result, index) => (
                 <ResearchReportPanel
@@ -4201,7 +4255,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchSourceToolResults.length > 0 ? (
+          {showSupplementalResultPanels && researchSourceToolResults.length > 0 ? (
             <div className="space-y-3">
               {researchSourceToolResults.map((result, index) => (
                 <ResearchSourceToolPanel
@@ -4212,7 +4266,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchSourceCollectionResults.length > 0 ? (
+          {showSupplementalResultPanels && researchSourceCollectionResults.length > 0 ? (
             <div className="space-y-3">
               {researchSourceCollectionResults.map((result, index) => (
                 <ResearchSourceCollectionPanel
@@ -4223,7 +4277,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchEvidenceAdmissionResults.length > 0 ? (
+          {showSupplementalResultPanels && researchEvidenceAdmissionResults.length > 0 ? (
             <div className="space-y-3">
               {researchEvidenceAdmissionResults.map((result, index) => (
                 <ResearchEvidenceAdmissionPanel
@@ -4234,7 +4288,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchStateResults.length > 0 ? (
+          {showSupplementalResultPanels && researchStateResults.length > 0 ? (
             <div className="space-y-3">
               {researchStateResults.map((result, index) => (
                 <ResearchStateTimelinePanel
@@ -4245,7 +4299,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && researchPythonAnalysisResults.length > 0 ? (
+          {showSupplementalResultPanels && researchPythonAnalysisResults.length > 0 ? (
             <div className="space-y-3">
               {researchPythonAnalysisResults.map((result, index) => (
                 <ResearchPythonAnalysisPanel
@@ -4256,7 +4310,7 @@ export function ChatMessageItem({
             </div>
           ) : null}
 
-          {isAI && recommendationHistoryResults.length > 0 ? (
+          {showSupplementalResultPanels && recommendationHistoryResults.length > 0 ? (
             <div className="space-y-3">
               {recommendationHistoryResults.map((result, index) => (
                 <RecommendationHistoryPanel

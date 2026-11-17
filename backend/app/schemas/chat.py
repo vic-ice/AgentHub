@@ -254,14 +254,41 @@ class ConversationInfoResponse(BaseModel):
 
 
 class DailyStatsItem(BaseModel):
-    """A single day's conversation + token statistics."""
+    """A single day's persisted turn and provider usage statistics."""
 
     date: str = Field(description="Date in YYYY-MM-DD format")
-    conversation_count: int = Field(description="Number of conversations that day")
+    conversation_count: int = Field(description="Distinct conversations that day")
+    turn_count: int = Field(default=0, description="Persisted turns that day")
+    model_call_count: int = Field(default=0, description="Completed model calls")
     input_tokens: int = Field(default=0, description="Input tokens consumed")
     output_tokens: int = Field(default=0, description="Output tokens consumed")
+    reasoning_tokens: int = Field(default=0, description="Reasoning tokens reported")
+    cached_tokens: int = Field(default=0, description="Cached input tokens reported")
     total_tokens: int = Field(default=0, description="Total tokens consumed")
 
+
+class ConversationTokenStatsResponse(ConversationInDB):
+    """Conversation metadata plus usage reconstructed from authoritative traces."""
+
+    turn_count: int = 0
+    model_call_count: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+
+
+class TokenUsageAggregateItem(BaseModel):
+    """Provider usage aggregated over one requested dimension."""
+
+    dimension: Literal["day", "model", "business"]
+    key: str
+    conversation_count: int = 0
+    turn_count: int = 0
+    model_call_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
 
 # ── Title schemas ───────────────────────────────────────────────────────────
 

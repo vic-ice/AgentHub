@@ -46,10 +46,11 @@ class ResearchVerifier:
         )
         min_independent_sources = self._positive_int(
             payload.budget.get("min_independent_sources_per_claim"),
-            default=self._positive_int(
-                payload.budget.get("min_independent_sources"),
-                default=1,
-            ),
+            # ``min_independent_sources`` is a whole-run coverage threshold.
+            # Applying it to every atomic claim incorrectly downgrades a
+            # catalog-backed book fact merely because another source supports
+            # a different candidate. Per-claim corroboration is opt-in.
+            default=1,
         )
         required_quality = str(
             payload.budget.get("required_evidence_quality") or "medium"

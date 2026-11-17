@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.agent_core.contracts import PublishedAnswer
+from app.services.execution_progress import CompletedExecutionStep
 from app.services.agent_core.publication.contracts import (
     CommittedPublication,
     PublicExecutionGraph,
@@ -24,6 +25,16 @@ class TrustedStreamSequencer:
             raise ValueError("turn.started must be the first event")
         self._started = True
         return self._event("turn.started", {})
+
+    def step_completed(
+        self,
+        step: CompletedExecutionStep,
+    ) -> TrustedStreamEvent:
+        self._require_open()
+        return self._event(
+            "step.completed",
+            {"step": step.model_dump(mode="json")},
+        )
 
     def graph_snapshot(
         self,

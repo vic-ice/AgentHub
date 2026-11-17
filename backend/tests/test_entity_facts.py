@@ -91,6 +91,54 @@ class EntityFactCanonicalizationTests(unittest.TestCase):
         self.assertEqual(result.facts[0].subject, "小猪")
 
 
+
+
+class CompiledAssertionOwnershipTests(unittest.TestCase):
+    def test_self_preference_keeps_user_as_subject_and_value_entity_as_target(self) -> None:
+        from app.services.memory.turn_compiler import compiled_turn_from_assertions
+
+        compiled = compiled_turn_from_assertions(
+            [
+                MemoryAssertionProposal(
+                    subject="self",
+                    predicate="likes",
+                    value={"entity": "喜羊羊", "polarity": "like"},
+                    evidence_quote="我喜欢看喜羊羊",
+                    domain="personal",
+                    kind="preference",
+                    entity_type="other",
+                )
+            ],
+            raw_text="我喜欢看喜羊羊",
+        )
+
+        fact = compiled.facts[0]
+        self.assertEqual(fact.subject, "self")
+        self.assertEqual(fact.entity, "喜羊羊")
+        self.assertEqual(fact.attributes["entity"], "喜羊羊")
+
+    def test_named_entity_keeps_actor_and_preference_target_distinct(self) -> None:
+        from app.services.memory.turn_compiler import compiled_turn_from_assertions
+
+        compiled = compiled_turn_from_assertions(
+            [
+                MemoryAssertionProposal(
+                    subject="小猪",
+                    predicate="likes",
+                    value={"entity": "游泳", "polarity": "like"},
+                    evidence_quote="小猪喜欢游泳",
+                    domain="personal",
+                    kind="preference",
+                    entity_type="other",
+                )
+            ],
+            raw_text="小猪喜欢游泳",
+        )
+
+        fact = compiled.facts[0]
+        self.assertEqual(fact.subject, "小猪")
+        self.assertEqual(fact.entity, "小猪")
+        self.assertEqual(fact.attributes["entity"], "游泳")
 class EntityFactRenderTests(unittest.TestCase):
     def test_mutation_receipt_uses_entity_subject(self) -> None:
         from app.services.agent_core.publication.memory_renderer import (

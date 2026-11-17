@@ -53,7 +53,8 @@ _CONVERSATION_RECALL_RE = re.compile(
 )
 _RECOMMEND_RE = re.compile(
     r"推荐|找(?:一|几|三|些|本|\d)*本?|类似(?:的|作品|读物|书)|"
-    r"有没有.*(?:书|读物|小说|科普)|recommend|suggest",
+    r"有没有.*(?:书|读物|小说|科普)|值得(?:阅读|看|读)|"
+    r"阅读建议|选书|recommend|suggest",
     re.I,
 )
 _BOOK_FIND_RE = re.compile(

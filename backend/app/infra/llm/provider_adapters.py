@@ -95,6 +95,22 @@ class DashScopeAdapter(ProviderAdapter):
 
 
 @dataclass(frozen=True)
+class OpenAICompatibleAdapter(ProviderAdapter):
+    """Propagate the app's thinking switch to compatible gateways.
+
+    Several OpenAI-compatible reasoning gateways default to thinking even
+    when the selected database model is configured with thinking disabled.
+    Without the explicit body flag they may spend the entire planner or
+    publication budget in ``reasoning_content`` and never emit final content.
+    """
+
+    def model_kwargs(self, thinking_mode: bool) -> dict[str, Any]:
+        kwargs = super().model_kwargs(thinking_mode)
+        kwargs["extra_body"] = {"enable_thinking": thinking_mode}
+        return kwargs
+
+
+@dataclass(frozen=True)
 class OpenRouterAdapter(ProviderAdapter):
     """OpenRouter uses reasoning/include_reasoning and reasoning_details."""
 
@@ -124,6 +140,7 @@ class OpenRouterAdapter(ProviderAdapter):
 
 _ADAPTERS: dict[str, ProviderAdapter] = {
     "dashscope": DashScopeAdapter(),
+    "openai-compatible": OpenAICompatibleAdapter(),
     "openrouter": OpenRouterAdapter(),
 }
 

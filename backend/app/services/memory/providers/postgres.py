@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud.book import get_or_create_preference_profile
 from app.models.base import utc_now
 from app.models.book import BookInteraction
-from app.models.memory import MemoryEventRecord
+from app.models.memory import MemoryEntityRecord, MemoryEventRecord
 from app.services.memory.contracts import (
     CurrentMemoryListResult,
     MEMORY_TYPES,
@@ -169,6 +169,26 @@ class PostgresMemoryProvider(MemoryProvider):
         limit: int = 10,
     ) -> MemorySearchResult:
         profile = await get_or_create_preference_profile(self.session, user_id)
+
+        entity_events = await self._search_entity_facts(
+            user_id=user_id,
+            query=query,
+            limit=limit,
+        )
+        if entity_events is not None:
+            return MemorySearchResult(
+                profile_summary=profile.profile_summary,
+                preferred_tags=profile.preferred_tags,
+                disliked_tags=profile.disliked_tags,
+                favorite_authors=profile.favorite_authors,
+                disliked_authors=profile.disliked_authors,
+                reading_states=self._build_reading_states(entity_events, []),
+                relevant_events=[
+                    self._event_from_record(event) for event in entity_events
+                ],
+                provider_sources=[self.provider_name],
+            )
+
         events = await self._search_events(
             user_id=user_id,
             query=query,
@@ -192,6 +212,60 @@ class PostgresMemoryProvider(MemoryProvider):
             relevant_events=[self._event_from_record(event) for event in events],
             provider_sources=[self.provider_name],
         )
+
+    async def _search_entity_facts(
+        self,
+        *,
+        user_id: UUID,
+        query: str,
+        limit: int,
+    ) -> list[MemoryEventRecord] | None:
+        """Entity-first search: resolve ONE entity, then read its current facts.
+
+        Returns None when the query does not resolve to exactly one entity
+        (caller falls back to full-text relevance search).
+        """
+        q = str(query or "").strip()
+        if not q:
+            return None
+        tokens = [
+            token
+            for token in re.findall(r"[\\w\\u4e00-\\u9fff]+", q.lower())
+            if len(token) >= 2
+        ][:4]
+        if not tokens:
+            return None
+        entities = (
+            await self.session.execute(
+                select(MemoryEntityRecord).where(
+                    MemoryEntityRecord.user_id == user_id,
+                )
+            )
+        ).scalars().all()
+        hits: list[MemoryEntityRecord] = []
+        for entity in entities:
+            haystack = " ".join(
+                [
+                    entity.canonical_name,
+                    *(entity.aliases or []),
+                    entity.entity_type,
+                ]
+            ).lower()
+            if any(token in haystack for token in tokens):
+                hits.append(entity)
+        if len(hits) != 1:
+            return None
+        entity = hits[0]
+        rows = (
+            await self.session.execute(
+                self._active_events_stmt(user_id)
+                .where(MemoryEventRecord.entity_id == entity.id)
+                .order_by(MemoryEventRecord.version_no.desc().nullslast())
+                .limit(max(1, min(limit, 50)))
+            )
+        ).scalars().all()
+        return list(rows)
+
 
     async def list_events(
         self,
@@ -287,6 +361,35 @@ class PostgresMemoryProvider(MemoryProvider):
         self._assert_commit_ready(event)
         normalized = self._normalize_event(event)
         await get_or_create_preference_profile(self.session, normalized.user_id)
+
+        # Entity-centric writes update (entity_id, predicate) chains.
+        if normalized.entity_id is not None:
+            head = await self._entity_chain_head(normalized)
+            if head is not None and _same_entity_fact(head, normalized):
+                head.confidence = max(head.confidence, normalized.confidence)
+                head.metadata_json = _merge_metadata(
+                    head.metadata_json, normalized.metadata
+                )
+                head.updated_at = utc_now()
+                await self.session.flush()
+                await self.session.refresh(head)
+                return self._event_from_record(head)
+            record = self._record_from_event(normalized)
+            self.session.add(record)
+            await self.session.flush()
+            await self.session.refresh(record)
+            if head is not None:
+                head.superseded_by = record.id
+                head.updated_at = utc_now()
+                await self.session.flush()
+            self._set_entity_chain_fields(record, normalized, head)
+            await self.session.flush()
+            await self.session.refresh(record)
+            await self._apply_event_to_profile(record)
+            await self.session.flush()
+            await self.session.refresh(record)
+            return self._event_from_record(record)
+
         duplicate = await self._find_duplicate(normalized)
         if duplicate is not None:
             duplicate.confidence = max(duplicate.confidence, normalized.confidence)
@@ -310,6 +413,45 @@ class PostgresMemoryProvider(MemoryProvider):
         await self.session.flush()
         await self.session.refresh(record)
         return self._event_from_record(record)
+
+    async def _entity_chain_head(
+        self,
+        event: MemoryEvent,
+    ) -> MemoryEventRecord | None:
+        predicate = _entity_predicate(event)
+        key = f"entity:{event.entity_id}:{predicate}"
+        result = await self.session.execute(
+            self._active_events_stmt(event.user_id)
+            .where(
+                MemoryEventRecord.entity_id == event.entity_id,
+                MemoryEventRecord.memory_key == key,
+            )
+            .order_by(MemoryEventRecord.version_no.desc().nullslast())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    def _set_entity_chain_fields(
+        self,
+        record: MemoryEventRecord,
+        event: MemoryEvent,
+        head: MemoryEventRecord | None,
+    ) -> None:
+        predicate = _entity_predicate(event)
+        record.memory_key = f"entity:{record.entity_id}:{predicate}"
+        if record.schema_key is None:
+            record.schema_key = event.state_key or None
+        if head is None:
+            record.chain_id = uuid4()
+            record.version_no = 1
+            record.operation = "create"
+            record.previous_version_id = None
+        else:
+            record.chain_id = head.chain_id or uuid4()
+            record.version_no = (head.version_no or 1) + 1
+            record.operation = "correct"
+            record.previous_version_id = head.id
+
 
     async def revise(
         self,
@@ -362,6 +504,17 @@ class PostgresMemoryProvider(MemoryProvider):
     @staticmethod
     def _assert_commit_ready(event: MemoryEvent) -> None:
         """Reject raw chat state at the final durable-storage boundary."""
+
+        if not event.domain or not event.kind:
+            raise ValueError(
+                "durable memory requires domain and kind (unified classification)"
+            )
+        state_value = event.state_value or {}
+        if isinstance(state_value, dict) and "entity" in state_value and not event.entity_id:
+            raise ValueError(
+                "entity facts must bind a stable entity_id (entity registry)"
+            )
+
 
         if event.source != "chat_turn" or event.type not in {
             "state",
@@ -785,6 +938,9 @@ class PostgresMemoryProvider(MemoryProvider):
         return MemoryEventRecord(
             user_id=event.user_id,
             thread_id=event.thread_id,
+            domain=event.domain,
+            entity_id=event.entity_id,
+            kind=event.kind,
             type=event.type,
             subject=event.subject,
             value=event.value,
@@ -809,6 +965,9 @@ class PostgresMemoryProvider(MemoryProvider):
             state_status = "expired"
         return MemoryEvent(
             id=record.id,
+            domain=record.domain,
+            entity_id=record.entity_id,
+            kind=record.kind,
             type=record.type,
             subject=record.subject,
             value=record.value,
@@ -889,3 +1048,19 @@ class PostgresMemoryProvider(MemoryProvider):
         if record.polarity in _DISLIKE_POLARITIES:
             return f"Dislikes {record.subject}: {record.value}"
         return f"{record.type} {record.subject}: {record.value}"
+
+
+def _entity_predicate(event: MemoryEvent) -> str:
+    state_value = event.state_value or {}
+    if isinstance(state_value, dict) and state_value.get("predicate"):
+        return str(state_value["predicate"]).strip()[:120]
+    if event.state_key:
+        return event.state_key
+    return "fact"
+
+
+def _same_entity_fact(
+    head: MemoryEventRecord,
+    event: MemoryEvent,
+) -> bool:
+    return head.value == event.value and head.polarity == event.polarity

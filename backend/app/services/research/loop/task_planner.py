@@ -17,6 +17,8 @@ _GAP_QUERY_TERMS = {
     "missing_book_evidence": "图书 作者 出版社 书目",
     "insufficient_independent_sources": "独立书评 出版社 编辑推荐",
     "no_publishable_evidence": "权威来源 详细介绍",
+    "insufficient_evidence_quality": "出版社 机构书单 编辑推荐 权威来源",
+    "insufficient_recommendation_candidates": "同类图书 候选书名 内容简介",
 }
 
 

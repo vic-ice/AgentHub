@@ -21,6 +21,7 @@ PublicationMode = Literal[
     "direct",
     "deterministic_receipt",
     "model_synthesis",
+    "model_knowledge_fallback",
     "deep_research",
 ]
 

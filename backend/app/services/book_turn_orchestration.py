@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 
 from typing import Any
 from uuid import UUID
@@ -10,6 +11,11 @@ from app.services.book_intent import TurnPolicy, build_turn_policy
 from app.services.recommendation_constraints import (
     PersonalizedRecommendationConstraints,
     build_personalized_recommendation_constraints,
+)
+
+_READING_HISTORY_QUESTION_RE = re.compile(
+    r"读了哪些|读过哪些|看过哪些|读了什么书|读过什么书|看过什么书|读过的书|看过的书|reading history|what.*read",
+    re.IGNORECASE,
 )
 from app.services.recommendation_history import normalize_recommendation_history_mode
 from app.services.recommendation_research_workflow import (
@@ -84,6 +90,10 @@ async def plan_book_assistant_turn(
     normalized_query = normalize_recommendation_text(query) or message
     policy = build_turn_policy(message)
     route = _route_from_policy(policy)
+    if _READING_HISTORY_QUESTION_RE.search(message):
+        route = "recommendation_history"
+    if _READING_HISTORY_QUESTION_RE.search(message):
+        route = "recommendation_history"
     history_mode = _history_mode_for_route(route, message, book_title)
     constraints: PersonalizedRecommendationConstraints | None = None
     workflow: RecommendationResearchWorkflowResult | None = None
@@ -182,6 +192,10 @@ def _history_mode_for_route(route: str, user_message: str, book_title: str) -> s
         return normalize_recommendation_history_mode("suppression_explanation")
     if "拒绝" in user_message or "not interested" in lowered or "rejected" in lowered:
         return normalize_recommendation_history_mode("rejection_history")
+    if re.search(r"读了哪些|读过哪些|看过哪些|读了什么书|读过什么书|看过什么书|读过的书|看过的书", user_message):
+        return normalize_recommendation_history_mode("reading_history")
+    if re.search(r"读了哪些|读过哪些|看过哪些|读了什么书|读过什么书|看过什么书|读过的书|看过的书", user_message):
+        return normalize_recommendation_history_mode("reading_history")
     if "已读" in user_message or "读过" in user_message or "reading history" in lowered:
         return normalize_recommendation_history_mode("reading_history")
     return normalize_recommendation_history_mode("all")

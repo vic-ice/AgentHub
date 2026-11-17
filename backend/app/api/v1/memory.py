@@ -1,7 +1,6 @@
 """Version-chain memory management endpoints."""
 
 import hashlib
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,17 +16,29 @@ from app.schemas.memory import (
     MemoryForgetAdminRequest,
 )
 from app.services.memory.canonicalizer import MemoryCanonicalizer
+from app.services.memory.admin_projection import (
+    collapse_current_versions,
+    history_versions_for,
+    project_memory_record,
+)
+from app.services.memory.classification import derive_domain_kind
 from app.services.memory.version_contracts import (
     ForgetMemoryTargetProposal,
     MemoryAssertionProposal,
     MemoryMutationReceipt,
-    MemoryVersionCommitCommand,
-    MemoryVersionForgetCommand,
     MemoryVersionRecord,
 )
-from app.services.memory.version_store import MemoryVersionStore
+from app.services.memory.version_errors import MemoryVersionTargetNotFound
+from app.services.memory.read_gateway import MemoryReadGateway
+from app.services.memory.write_gateway import MemoryWriteGateway
 
 api_router = APIRouter(prefix="/memory", tags=["Memory"])
+
+_SELF_NAME_COMPATIBILITY_KEYS = (
+    "personal.fact:name",
+    "personal.correction:name",
+    "identity.self_reported_name:self",
+)
 
 
 @api_router.get(
@@ -40,12 +51,12 @@ async def list_current_memories(
 ) -> MemoryAdminCurrentResponse:
     """List current canonical facts exactly as the chat memory path sees them."""
 
-    store = MemoryVersionStore(db)
-    heads = await store.list_current(user_id=user_id, limit=500)
+    reader = MemoryReadGateway(db)
+    heads = await reader.current_versions(user_id=user_id, limit=500)
     return MemoryAdminCurrentResponse(
         facts=[
             _to_admin_fact(head)
-            for head in heads
+            for head in collapse_current_versions(heads)
             if not head.is_tombstone
         ]
     )
@@ -62,18 +73,23 @@ async def memory_history(
 ) -> MemoryAdminHistoryResponse:
     """Return the full version timeline for one fact."""
 
-    store = MemoryVersionStore(db)
-    records = await store.list_history(user_id=user_id, limit=1000)
-    versions = [
-        record
-        for record in records
-        if record.memory_key == memory_key
-    ]
-    if not versions:
+    reader = MemoryReadGateway(db)
+    exact = await reader.history_versions_by_key(
+        user_id=user_id,
+        memory_key=memory_key,
+    )
+    if not exact:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="memory fact not found",
         )
+    records = exact
+    if _to_admin_fact(exact[-1]).presentation_key in {
+        "identity.self_reported_name",
+        "entity.name",
+    }:
+        records = await reader.history_versions(user_id=user_id, limit=1000)
+    versions = history_versions_for(records, memory_key=memory_key)
     return MemoryAdminHistoryResponse(
         memory_key=memory_key,
         versions=[_to_admin_fact(version) for version in versions],
@@ -91,6 +107,14 @@ async def edit_memory(
 ) -> MemoryMutationReceipt:
     """Create or correct one canonical fact from the memory panel."""
 
+    target_record = None
+    if request.memory_key:
+        target_record = await _require_manageable_target(
+            db,
+            user_id=request.user_id,
+            memory_key=request.memory_key,
+            action="edit",
+        )
     evidence = request.evidence_quote or _admin_evidence(
         "更新",
         request.predicate,
@@ -114,38 +138,57 @@ async def edit_memory(
         )
 
     fact = canonical.facts[0]
-    store = MemoryVersionStore(db)
-    heads = await store.list_current(user_id=request.user_id, limit=500)
-    head = next(
-        (item for item in heads if item.memory_key == fact.memory_key),
-        None,
-    )
     event = MemoryManagementEvent(
         user_id=request.user_id,
         thread_id=request.thread_id,
-        action="correct" if head is not None else "create",
-        schema_key=fact.schema_key,
-        memory_key=fact.memory_key,
+        action="create",
+        schema_key=(target_record.schema_key if target_record else fact.schema_key),
+        memory_key=(target_record.memory_key if target_record else fact.memory_key),
         subject="self",
         predicate=request.predicate,
         value=request.value,
         qualifiers=request.qualifiers,
         evidence_quote=evidence,
-        previous_value=head.value if head is not None else None,
+        previous_value=None,
     )
     db.add(event)
     await db.flush()
     await db.refresh(event)
 
-    receipt = await store.commit(
-        MemoryVersionCommitCommand(
-            facts=canonical.facts,
+    gateway = MemoryWriteGateway(db)
+    if target_record is not None:
+        gateway_result = await gateway.commit_admin_correction(
+            fact.model_copy(update={"evidence_quote": evidence}),
+            target_memory_key=target_record.memory_key,
+            user_id=request.user_id,
+            thread_id=request.thread_id,
             source_event_id=event.id,
             receipt_id=_admin_receipt_id(request.user_id, "edit", event.id),
-        ),
-        user_id=request.user_id,
-        thread_id=request.thread_id,
-    )
+        )
+    else:
+        gateway_result = await gateway.commit_facts(
+            canonical.facts,
+            user_id=request.user_id,
+            thread_id=request.thread_id,
+            source_event_id=event.id,
+            receipt_id=_admin_receipt_id(request.user_id, "edit", event.id),
+            evidence_quote=evidence,
+            source_kind="admin_action",
+        )
+    if gateway_result.get("status") == "clarification_required":
+        raise _clarification_error(
+            ["gateway_entity_resolution_ambiguous"],
+            gateway_result.get("clarification_question", ""),
+        )
+    receipt = MemoryMutationReceipt.model_validate(gateway_result["receipt"])
+    if receipt.mutations:
+        mutation = receipt.mutations[0]
+        event.action = "correct" if mutation.status == "revised" else "create"
+        event.schema_key = mutation.version.schema_key
+        event.memory_key = mutation.memory_key
+        event.previous_value = (
+            mutation.previous.value if mutation.previous is not None else None
+        )
     await db.commit()
     return receipt
 
@@ -157,6 +200,14 @@ async def forget_memory(
 ) -> MemoryMutationReceipt:
     """Tombstone one existing fact from the memory panel."""
 
+    target_record = None
+    if request.memory_key:
+        target_record = await _require_manageable_target(
+            db,
+            user_id=request.user_id,
+            memory_key=request.memory_key,
+            action="forget",
+        )
     evidence = request.evidence_quote or _admin_evidence(
         "遗忘",
         request.predicate,
@@ -169,23 +220,12 @@ async def forget_memory(
         qualifiers=request.qualifiers,
         evidence_quote=evidence,
     )
-    resolution = MemoryCanonicalizer().resolve_targets(
-        [target],
-        source_text=evidence,
-    )
-    if resolution.status != "ready":
-        raise _clarification_error(
-            resolution.reason_codes,
-            resolution.clarification_question,
-        )
-
-    store = MemoryVersionStore(db)
     event = MemoryManagementEvent(
         user_id=request.user_id,
         thread_id=request.thread_id,
         action="forget",
-        schema_key=resolution.targets[0].schema_key,
-        memory_key=resolution.targets[0].memory_key,
+        schema_key=(target_record.schema_key if target_record else None),
+        memory_key=(target_record.memory_key if target_record else None),
         subject="self",
         predicate=request.predicate,
         value={},
@@ -197,27 +237,96 @@ async def forget_memory(
     await db.flush()
     await db.refresh(event)
 
-    receipt = await store.forget(
-        MemoryVersionForgetCommand(
-            memory_keys=[
-                item.memory_key for item in resolution.targets
-            ],
-            source_event_id=event.id,
-            receipt_id=_admin_receipt_id(request.user_id, "forget", event.id),
-            evidence_quote=evidence,
-        ),
-        user_id=request.user_id,
-        thread_id=request.thread_id,
-    )
+    gateway = MemoryWriteGateway(db)
+    try:
+        if target_record is not None:
+            gateway_result = await gateway.forget_admin_target(
+                user_id=request.user_id,
+                thread_id=request.thread_id,
+                target_memory_key=target_record.memory_key,
+                source_event_id=event.id,
+                receipt_id=_admin_receipt_id(request.user_id, "forget", event.id),
+                evidence_quote=evidence,
+            )
+        else:
+            gateway_result = await gateway.forget_targets(
+                user_id=request.user_id,
+                thread_id=request.thread_id,
+                targets=[target],
+                source_text=evidence,
+                source_event_id=event.id,
+                receipt_id=_admin_receipt_id(request.user_id, "forget", event.id),
+                source_kind="admin_action",
+            )
+    except MemoryVersionTargetNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="memory fact not found",
+        ) from exc
+    if gateway_result.get("status") == "clarification_required":
+        raise _clarification_error(
+            ["gateway_target_resolution_failed"],
+            gateway_result.get("clarification_question", ""),
+        )
+    if gateway_result.get("status") == "rejected":
+        raise _clarification_error(
+            [str(gateway_result.get("reason") or "gateway_target_rejected")],
+            "",
+        )
+    receipt = MemoryMutationReceipt.model_validate(gateway_result["receipt"])
+    if receipt.mutations:
+        mutation = receipt.mutations[0]
+        event.schema_key = mutation.version.schema_key
+        event.memory_key = mutation.memory_key
+        event.previous_value = (
+            mutation.previous.value if mutation.previous is not None else None
+        )
     await db.commit()
     return receipt
 
 
 def _admin_evidence(action: str, predicate: str, value) -> str:
-    return (
-        f"用户在记忆面板{action}：predicate={predicate} "
-        f"value={json.dumps(value, ensure_ascii=False)}"
+    del predicate, value
+    return f"用户在记忆中心{action}了这条事实。"
+
+
+async def _require_manageable_target(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    memory_key: str,
+    action: str,
+) -> MemoryVersionRecord:
+    reader = MemoryReadGateway(db)
+    records = await reader.current_versions_by_keys(
+        user_id=user_id,
+        memory_keys=[memory_key],
     )
+    target = next(
+        (
+            record
+            for record in records
+            if record.memory_key == memory_key and not record.is_tombstone
+        ),
+        None,
+    )
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="memory fact not found",
+        )
+    presentation = _to_admin_fact(target)
+    allowed = presentation.can_edit if action == "edit" else presentation.can_forget
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "this memory is managed by its owning feature"
+                if presentation.category_key == "reading"
+                else f"memory fact cannot be {action}ed"
+            ),
+        )
+    return target
 
 
 def _admin_receipt_id(user_id: UUID, action: str, event_id: UUID) -> str:
@@ -227,6 +336,16 @@ def _admin_receipt_id(user_id: UUID, action: str, event_id: UUID) -> str:
 
 
 def _to_admin_fact(record: MemoryVersionRecord) -> MemoryAdminFact:
+    fallback_domain, fallback_kind = derive_domain_kind(
+        "", record.subject, record.schema_key
+    )
+    domain = str(record.value.get("domain") or fallback_domain)
+    kind = str(record.value.get("kind") or fallback_kind)
+    presentation = project_memory_record(
+        record,
+        domain=domain,
+        kind=kind,
+    )
     return MemoryAdminFact(
         schema_key=record.schema_key,
         memory_key=record.memory_key,
@@ -239,6 +358,15 @@ def _to_admin_fact(record: MemoryVersionRecord) -> MemoryAdminFact:
         valid_from=record.valid_from,
         valid_to=record.valid_to,
         is_tombstone=record.is_tombstone,
+        domain=domain,
+        kind=kind,
+        presentation_key=presentation.presentation_key,
+        category_key=presentation.category_key,
+        category_label=presentation.category_label,
+        display_value=presentation.display_value,
+        can_edit=presentation.can_edit,
+        can_forget=presentation.can_forget,
+        show_evidence=presentation.show_evidence,
     )
 
 

@@ -21,6 +21,9 @@ from app.services.agent_core.publication.graph import (
     project_public_execution_graph,
 )
 from app.services.agent_core.publication.service import TrustedPublisher
+from app.services.agent_core.publication.response_view import (
+    project_external_answer_view,
+)
 from app.services.agent_core.publication.stream import TrustedStreamSequencer
 from app.services.agent_core.trusted_stream import TrustedControllerStream
 from app.services.agent_core.receipt_projector import ReceiptContextProjector
@@ -118,6 +121,205 @@ def _web_output() -> dict:
 
 
 class TrustedPublicationTests(unittest.TestCase):
+    def test_balanced_book_synthesis_preserves_all_admitted_items(self) -> None:
+        plan = _plan().model_copy(
+            update={
+                "actions": [
+                    PlannedAction(
+                        action_id="book-action-coverage",
+                        capability="books",
+                        operation="book_search_v1",
+                    )
+                ]
+            }
+        )
+        output = {
+            "result_mode": "book_evidence",
+            "status": "ok",
+            "query": "双主题推荐",
+            "response_depth": "balanced",
+            "candidate_count": 2,
+            "sources": [
+                {
+                    "title": "候选甲",
+                    "url": "https://book.example/a",
+                    "snippet": "甲的可信简介。",
+                },
+                {
+                    "title": "候选乙",
+                    "url": "https://book.example/b",
+                    "snippet": "乙的可信简介。",
+                },
+            ],
+            "items": [
+                {
+                    "title": "候选甲",
+                    "theme": "主题甲",
+                    "summary": "甲的可信简介。",
+                    "catalog_url": "https://book.example/a",
+                },
+                {
+                    "title": "候选乙",
+                    "theme": "主题乙",
+                    "summary": "乙的可信简介。",
+                    "catalog_url": "https://book.example/b",
+                },
+            ],
+        }
+        receipt = _receipt(plan, output=output)
+
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text="先推荐《候选甲》，它适合主题甲。",
+            ),
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+        )
+
+        self.assertIn("候选甲", answer.content)
+        self.assertIn("其他已核验候选", answer.content)
+        self.assertIn("候选乙", answer.content)
+
+    def test_candidate_coverage_accepts_title_without_marketing_parenthetical(self) -> None:
+        plan = _plan().model_copy(
+            update={
+                "actions": [
+                    PlannedAction(
+                        action_id="book-action-title-alias",
+                        capability="books",
+                        operation="book_search_v1",
+                    )
+                ]
+            }
+        )
+        output = {
+            "result_mode": "book_evidence",
+            "status": "ok",
+            "query": "说服沟通",
+            "response_depth": "deep",
+            "candidate_count": 1,
+            "sources": [
+                {
+                    "title": "说服：沟通中的认知偏见与群体认同",
+                    "url": "https://book.example/persuasion",
+                    "snippet": "讨论说服中的认知偏见。",
+                }
+            ],
+            "items": [
+                {
+                    "title": "说服：沟通中的认知偏见与群体认同（你越自信越可能落入陷阱）",
+                    "theme": "说服沟通",
+                    "summary": "讨论说服中的认知偏见。",
+                    "catalog_url": "https://book.example/persuasion",
+                }
+            ],
+        }
+        receipt = _receipt(plan, output=output)
+
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text="推荐《说服：沟通中的认知偏见与群体认同》。",
+            ),
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+        )
+
+        self.assertNotIn("其他已核验候选", answer.content)
+
+    def test_rich_book_items_drive_presentation_and_admit_supporting_urls(self) -> None:
+        plan = _plan().model_copy(
+            update={
+                "actions": [
+                    PlannedAction(
+                        action_id="book-action-rich",
+                        capability="books",
+                        operation="book_search_v1",
+                    )
+                ]
+            }
+        )
+        output = {
+            "result_mode": "book_evidence",
+            "status": "ok",
+            "query": "财商心理",
+            "response_depth": "deep",
+            "candidate_count": 1,
+            "sources": [
+                {
+                    "title": "金钱心理学",
+                    "url": "https://book.example/money",
+                    "snippet": "作者：摩根·豪泽尔",
+                }
+            ],
+            "coverage": [
+                {
+                    "theme": "财商心理",
+                    "candidate_count": 1,
+                    "status": "partial",
+                }
+            ],
+            "items": [
+                {
+                    "title": "金钱心理学",
+                    "authors": ["摩根·豪泽尔"],
+                    "theme": "财商心理",
+                    "summary": "讨论行为与长期金钱决策。",
+                    "catalog_url": "https://book.example/money",
+                    "evidence_sources": [
+                        {
+                            "title": "出版社简介",
+                            "url": "https://publisher.example/money",
+                            "snippet": "讨论行为与长期金钱决策。",
+                        }
+                    ],
+                    "evidence_provider_count": 2,
+                }
+            ],
+        }
+        receipt = _receipt(plan, output=output)
+        bundle = ReceiptEvidenceBundle(plan=plan, receipt=receipt)
+
+        view = project_external_answer_view([bundle])
+
+        self.assertIsNotNone(view)
+        assert view is not None
+        self.assertEqual(view.response_depth, "deep")
+        self.assertEqual(view.books[0].theme, "财商心理")
+        self.assertEqual(view.coverage[0].status, "partial")
+        self.assertEqual(
+            view.books[0].supporting_sources[0].url,
+            "https://publisher.example/money",
+        )
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text=(
+                    "推荐《金钱心理学》，可参考"
+                    "[出版社简介](https://publisher.example/money)。"
+                ),
+            ),
+            evidence=[bundle],
+        )
+        self.assertEqual(answer.status, "completed")
+
+    def test_synthesis_normalizes_admitted_url_and_strips_unadmitted_links(self) -> None:
+        plan = _plan()
+        receipt = _receipt(plan, output=_web_output())
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text=(
+                    "可参考[已核验来源](https://example.com/one/?tracking=1)，"
+                    "补充站点不会作为证据：[未知来源](https://unknown.example/item)。"
+                ),
+            ),
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+        )
+
+        self.assertIn("[已核验来源](https://example.com/one)", answer.content)
+        self.assertIn("未知来源", answer.content)
+        self.assertNotIn("unknown.example", answer.content)
+
     def test_direct_and_model_synthesis_are_distinct_modes(self) -> None:
         publisher = TrustedPublisher()
         direct = publisher.publish_direct(
@@ -157,36 +359,444 @@ class TrustedPublicationTests(unittest.TestCase):
                 ],
             )
 
-    def test_synthesis_rejects_unstructured_external_dump(self) -> None:
+    def test_synthesis_rejects_thinking_markup(self) -> None:
         plan = _plan()
         receipt = _receipt(plan, output=_web_output())
-        with self.assertRaisesRegex(ValueError, "structured"):
+        with self.assertRaisesRegex(ValueError, "technical"):
             TrustedPublisher().publish_synthesis(
                 ControllerOutput(
                     mode="direct_answer",
-                    text=(
-                        "来源一 https://example.com/one 第一条证据 "
-                        "来源二 https://example.com/two 第二条证据 "
-                        "来源三 https://example.com/three 第三条证据 "
-                    )
-                    * 25,
+                    text="我准备继续处理。</think>",
                 ),
-                evidence=[
-                    ReceiptEvidenceBundle(plan=plan, receipt=receipt)
-                ],
+                evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
             )
 
-    def test_model_synthesis_cannot_cover_side_effect_plan(self) -> None:
-        plan = _plan(side_effect=True)
+    def test_synthesis_rejects_plain_string_internal_monologue(self) -> None:
+        plan = _plan()
         receipt = _receipt(plan, output=_web_output())
-        with self.assertRaisesRegex(ValueError, "read-only"):
+        with self.assertRaisesRegex(ValueError, "technical"):
             TrustedPublisher().publish_synthesis(
                 ControllerOutput(
                     mode="direct_answer",
                     text=(
-                        "## 结果\n\n"
-                        "- [来源一](https://example.com/one)：证据。"
+                        "我需要先分析用户需求，再检查约束和引用。\n"
+                        "接下来我将起草最终回答，并确保看起来完整。"
                     ),
+                ),
+                evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            )
+
+    def test_explicit_table_is_deterministically_completed_from_evidence(self) -> None:
+        plan = _plan()
+        receipt = _receipt(plan, output=_web_output())
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text=(
+                    "已经找到几条可核验资料，可以据此进行比较。"
+                    "可参考[来源一](https://example.com/one)。"
+                ),
+            ),
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            user_request="请搜索并用表格对比",
+        )
+
+        self.assertIn("| 来源 | 摘要 |", answer.content)
+        self.assertIn("| --- | --- |", answer.content)
+
+    def test_web_synthesis_without_an_admitted_citation_is_rejected(self) -> None:
+        plan = _plan()
+        receipt = _receipt(plan, output=_web_output())
+        with self.assertRaisesRegex(ValueError, "admitted source citation"):
+            TrustedPublisher().publish_synthesis(
+                ControllerOutput(
+                    mode="direct_answer",
+                    text="火星常住人口已达一百万人，来自最新官方普查。",
+                ),
+                evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            )
+
+    def test_synthesis_rejects_raw_tool_invocation_text(self) -> None:
+        plan = _plan()
+        receipt = _receipt(plan, output=_web_output())
+        publisher = TrustedPublisher()
+        for leaked_text in (
+            'book_search(query="任意图书")',
+            'web_search({"query":"任意主题"})',
+            '{"name":"book_search","arguments":{"query":"任意图书"}}',
+        ):
+            with self.subTest(leaked_text=leaked_text):
+                with self.assertRaisesRegex(ValueError, "technical"):
+                    publisher.publish_synthesis(
+                        ControllerOutput(
+                            mode="direct_answer",
+                            text=leaked_text,
+                        ),
+                        evidence=[
+                            ReceiptEvidenceBundle(plan=plan, receipt=receipt)
+                        ],
+                    )
+
+    def test_book_synthesis_must_name_an_admitted_candidate(self) -> None:
+        plan = _plan().model_copy(
+            update={
+                "actions": [
+                    PlannedAction(
+                        action_id="book-action",
+                        capability="books",
+                        operation="book_search_v1",
+                    )
+                ]
+            }
+        )
+        receipt = _receipt(
+            plan,
+            output={
+                "status": "ok",
+                "query": "通用推荐请求",
+                "candidate_count": 1,
+                "sources": [
+                    {
+                        "title": "可核验候选作品",
+                        "url": "https://book.example/admitted",
+                        "snippet": "作者：示例作者",
+                    }
+                ],
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "candidate title"):
+            TrustedPublisher().publish_synthesis(
+                ControllerOutput(
+                    mode="direct_answer",
+                    text="我是一个模型，但没有使用搜索结果。",
+                ),
+                evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            )
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text="推荐《可核验候选作品》，因为它符合当前方向。",
+            ),
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+        )
+        self.assertEqual(answer.status, "completed")
+
+    def test_verified_book_table_keeps_model_prose_and_binds_source_link(self) -> None:
+        plan = _plan().model_copy(
+            update={
+                "actions": [
+                    PlannedAction(
+                        action_id="book-table-action",
+                        capability="books",
+                        operation="book_search_v1",
+                    )
+                ]
+            }
+        )
+        receipt = _receipt(
+            plan,
+            output={
+                "status": "ok",
+                "query": "通用推荐请求",
+                "candidate_count": 1,
+                "sources": [
+                    {
+                        "title": "可核验候选作品",
+                        "url": "https://book.example/admitted",
+                        "snippet": "本书通过具体案例讲解沟通方法。",
+                    }
+                ],
+            },
+        )
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text=(
+                    "| 书名 | 推荐理由 |\n"
+                    "| --- | --- |\n"
+                    "| 可核验候选作品 | 这是模型写出的具体取舍，不应被固定模板覆盖。 |"
+                ),
+            ),
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            user_request="请用Markdown表格，列为书名、推荐理由。",
+        )
+
+        self.assertIn("这是模型写出的具体取舍", answer.content)
+        self.assertIn(
+            "[可核验候选作品](https://book.example/admitted)",
+            answer.content,
+        )
+        self.assertNotIn("以下对比仅使用本轮已核验书目", answer.content)
+
+    def test_synthesis_does_not_hardcode_a_markdown_report_shape(self) -> None:
+        plan = _plan()
+        receipt = _receipt(plan, output=_web_output())
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text=(
+                    "我更建议先看[来源一](https://example.com/one)，"
+                    "它最贴近你现在关注的方向。"
+                ),
+            ),
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+        )
+        self.assertEqual(answer.status, "completed")
+        self.assertNotIn("研究结论", answer.content)
+
+    def test_external_fallback_is_a_user_view_not_a_receipt_dump(self) -> None:
+        plan = _plan()
+        receipt = _receipt(plan, output=_web_output())
+        answer = TrustedPublisher().publish_evidence_fallback(
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)]
+        )
+        self.assertIsNotNone(answer)
+        assert answer is not None
+        self.assertIn("🔎", answer.content)
+        self.assertIn("[来源一](https://example.com/one)", answer.content)
+        self.assertNotIn("回执", answer.content)
+        self.assertNotIn("证据限制", answer.content)
+
+    def test_external_fallback_preserves_explicit_table_contract(self) -> None:
+        plan = _plan()
+        receipt = _receipt(plan, output=_web_output())
+        request = "请用Markdown表格，列为来源、摘要。"
+        answer = TrustedPublisher().publish_evidence_fallback(
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            user_request=request,
+        )
+        self.assertIsNotNone(answer)
+        assert answer is not None
+        from app.services.publication_safety import table_contract_satisfied
+
+        self.assertTrue(
+            table_contract_satisfied(answer.content, request=request)
+        )
+        self.assertNotIn("### 🔎 相关资料", answer.content)
+
+    def test_book_table_fallback_does_not_use_author_biography_as_reason(self) -> None:
+        plan = _plan().model_copy(
+            update={
+                "actions": [
+                    PlannedAction(
+                        action_id="book-author-bio",
+                        capability="books",
+                        operation="book_search_v1",
+                    )
+                ]
+            }
+        )
+        receipt = _receipt(
+            plan,
+            output={
+                "result_mode": "book_evidence",
+                "status": "ok",
+                "query": "理财入门",
+                "candidate_count": 1,
+                "sources": [
+                    {
+                        "title": "示例理财书",
+                        "url": "https://book.example/money",
+                        "snippet": "作者：示例作者",
+                    }
+                ],
+                "items": [
+                    {
+                        "title": "示例理财书",
+                        "authors": ["示例作者"],
+                        "summary": (
+                            "## 作者简介\n\n示例作者1960年出生于某地，"
+                            "是著名投资家、企业家、演说家和畅销书作家。"
+                            "他创立多家公司，代表作畅销多年。"
+                        ),
+                        "catalog_url": "https://book.example/money",
+                    }
+                ],
+            },
+        )
+        request = (
+            "请用Markdown表格，列为书名、作者、适合人群、"
+            "推荐理由、局限。"
+        )
+
+        answer = TrustedPublisher().publish_evidence_fallback(
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            user_request=request,
+        )
+
+        self.assertIsNotNone(answer)
+        assert answer is not None
+        self.assertNotIn("1960年", answer.content)
+        self.assertNotIn("著名投资家", answer.content)
+        self.assertIn("缺少可核验的内容型推荐依据", answer.content)
+        self.assertIn("标题和内容摘要未明确标注适合人群", answer.content)
+        self.assertIn("缺少内容型来源与明确适读标记", answer.content)
+
+    def test_book_table_fallback_uses_content_after_author_biography(self) -> None:
+        plan = _plan().model_copy(
+            update={
+                "actions": [
+                    PlannedAction(
+                        action_id="book-content-after-bio",
+                        capability="books",
+                        operation="book_search_v1",
+                    )
+                ]
+            }
+        )
+        receipt = _receipt(
+            plan,
+            output={
+                "result_mode": "book_evidence",
+                "status": "ok",
+                "query": "人工智能入门",
+                "candidate_count": 1,
+                "sources": [
+                    {
+                        "title": "人工智能入门",
+                        "url": "https://book.example/ai",
+                        "snippet": "作者：示例作者",
+                    }
+                ],
+                "items": [
+                    {
+                        "title": "人工智能入门",
+                        "authors": ["示例作者"],
+                        "summary": (
+                            "## 作者简介 示例作者1960年出生于某地，"
+                            "是著名教授和畅销书作家。 [...] "
+                            "## 内容简介 纸质版 24.70元 "
+                            "本书通过故事和案例讲解人工智能基础知识，"
+                            "适合零基础读者。"
+                        ),
+                        "catalog_url": "https://book.example/ai",
+                    }
+                ],
+            },
+        )
+        request = (
+            "请用Markdown表格，列为书名、作者、适合人群、"
+            "推荐理由、局限。"
+        )
+
+        answer = TrustedPublisher().publish_evidence_fallback(
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            user_request=request,
+        )
+
+        self.assertIsNotNone(answer)
+        assert answer is not None
+        self.assertNotIn("1960年", answer.content)
+        self.assertNotIn("24.70元", answer.content)
+        self.assertIn("通过故事和案例讲解人工智能基础知识", answer.content)
+        self.assertIn("零基础或初学者", answer.content)
+        self.assertIn("单一公开来源", answer.content)
+
+    def test_valid_model_book_table_preserves_verified_candidates(self) -> None:
+        plan = _plan().model_copy(
+            update={
+                "actions": [
+                    PlannedAction(
+                        action_id="book-complete-table",
+                        capability="books",
+                        operation="book_search_v1",
+                    )
+                ]
+            }
+        )
+        receipt = _receipt(
+            plan,
+            output={
+                "result_mode": "book_evidence",
+                "status": "ok",
+                "query": "沟通与理财",
+                "candidate_count": 2,
+                "sources": [
+                    {
+                        "title": "沟通练习",
+                        "url": "https://book.example/communication",
+                        "snippet": "本书通过案例讲解沟通方法，适合初学者。",
+                    },
+                    {
+                        "title": "理财入门",
+                        "url": "https://book.example/finance",
+                        "snippet": "本书介绍日常理财原理和实践方法。",
+                    },
+                ],
+                "items": [
+                    {
+                        "title": "沟通练习",
+                        "authors": ["甲"],
+                        "summary": "本书通过案例讲解沟通方法，适合初学者。",
+                        "catalog_url": "https://book.example/communication",
+                    },
+                    {
+                        "title": "理财入门",
+                        "authors": ["乙"],
+                        "summary": "本书介绍日常理财原理和实践方法。",
+                        "catalog_url": "https://book.example/finance",
+                    },
+                ],
+            },
+        )
+        request = "请用Markdown表格，列为书名、作者、推荐理由。"
+        draft = (
+            "模型自写内容\n\n"
+            "| 书名 | 作者 | 推荐理由 |\n"
+            "| --- | --- | --- |\n"
+            "| 沟通练习 | 甲 | 通过案例讲解沟通方法 |"
+        )
+
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(mode="direct_answer", text=draft),
+            evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            user_request=request,
+        )
+
+        self.assertIn("沟通练习", answer.content)
+        self.assertIn("理财入门", answer.content)
+        self.assertIn("其他已核验候选", answer.content)
+        self.assertIn("模型自写内容", answer.content)
+        self.assertIn("通过案例讲解沟通方法", answer.content)
+        self.assertIn(
+            "[沟通练习](https://book.example/communication)",
+            answer.content,
+        )
+
+    def test_synthesis_rejects_internal_receipt_language(self) -> None:
+        plan = _plan()
+        receipt = _receipt(plan, output=_web_output())
+        with self.assertRaisesRegex(ValueError, "technical"):
+            TrustedPublisher().publish_synthesis(
+                ControllerOutput(
+                    mode="direct_answer",
+                    text="根据本轮通过回执校验的结果，推荐来源一。",
+                ),
+                evidence=[ReceiptEvidenceBundle(plan=plan, receipt=receipt)],
+            )
+
+    def test_model_synthesis_can_use_side_effect_receipt_as_evidence(self) -> None:
+        plan = _plan(side_effect=True)
+        receipt = _receipt(plan, output=_web_output())
+        answer = TrustedPublisher().publish_synthesis(
+            ControllerOutput(
+                mode="direct_answer",
+                text=(
+                    "## 结果\n\n"
+                    "- [来源一](https://example.com/one)：证据。"
+                ),
+            ),
+            evidence=[
+                ReceiptEvidenceBundle(plan=plan, receipt=receipt)
+            ],
+        )
+        self.assertTrue(answer.receipt_backed)
+
+        with self.assertRaisesRegex(ValueError, "deterministic receipt"):
+            TrustedPublisher().publish_synthesis(
+                ControllerOutput(
+                    mode="direct_answer",
+                    text="已经更新你的阅读状态。",
                 ),
                 evidence=[
                     ReceiptEvidenceBundle(plan=plan, receipt=receipt)
@@ -235,27 +845,31 @@ class TrustedPublicationTests(unittest.TestCase):
         self.assertEqual(answer.publication_mode, "deterministic_receipt")
         self.assertNotIn("完成", answer.content)
 
-    def test_compiler_rejects_side_effect_mixed_with_model_synthesis(
+    def test_compiler_orders_read_after_side_effect_in_one_batch(
         self,
     ) -> None:
-        with self.assertRaisesRegex(ValueError, "mixed with side effects"):
-            WorkflowCompiler().compile(
-                CapabilityProposalBatch(
-                    proposals=[
-                        ValidatedCapabilityProposal(
-                            call_id="remember",
-                            capability="remember_memory",
-                            side_effect=True,
-                        ),
-                        ValidatedCapabilityProposal(
-                            call_id="web",
-                            capability="web_search",
-                            side_effect=False,
-                        ),
-                    ]
-                ),
-                goal="记住名字并查资料",
-            )
+        plan = WorkflowCompiler().compile(
+            CapabilityProposalBatch(
+                proposals=[
+                    ValidatedCapabilityProposal(
+                        call_id="remember",
+                        capability="remember_memory",
+                        side_effect=True,
+                    ),
+                    ValidatedCapabilityProposal(
+                        call_id="web",
+                        capability="web_search",
+                        side_effect=False,
+                    ),
+                ]
+            ),
+            goal="记住名字并查资料",
+        )
+        self.assertEqual(plan.response_mode, "model")
+        self.assertEqual(
+            plan.actions[1].depends_on,
+            [plan.actions[0].action_id],
+        )
 
 
 class TrustedEvidenceProjectionTests(unittest.TestCase):

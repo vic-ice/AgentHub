@@ -116,7 +116,7 @@ class MemoryHistoryRenderTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertEqual(rendered, "已把你的名字从小白更新为小红。")
+        self.assertEqual(rendered, "已把你的名字从“小白”更新为“小红”。")
 
 
 class DeterministicReadPriorityTests(unittest.TestCase):

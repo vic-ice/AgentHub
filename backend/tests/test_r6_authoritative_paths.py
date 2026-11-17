@@ -63,6 +63,7 @@ class CoreCapabilityMatrixTests(unittest.TestCase):
             set(registry.enabled_names),
             {
                 "conversation_read",
+                "bookshelf_read",
                 "remember_memory",
                 "search_memory",
                 "forget_memory",

@@ -86,12 +86,16 @@ def extract_research_source_records(
             )
             continue
 
-        booklist_records = _booklist_records(
-            document,
-            query=normalized_query,
-            subquestion=normalized_subquestion,
-            provider_source=normalized_provider,
-            index=index,
+        booklist_records = (
+            []
+            if re.search(r"/subject/\d+/?", document["source_url"])
+            else _booklist_records(
+                document,
+                query=normalized_query,
+                subquestion=normalized_subquestion,
+                provider_source=normalized_provider,
+                index=index,
+            )
         )
         if booklist_records:
             source_records.extend(booklist_records)
@@ -129,10 +133,14 @@ def extract_research_source_records(
         )
         if structured_record is not None:
             source_records.append(structured_record)
-            continue
 
+        candidate_content = (
+            _book_content_regions(document["content"])
+            if structured_record is not None
+            else document["content"]
+        )
         candidates = _select_claim_sentences(
-            content=document["content"],
+            content=candidate_content,
             query=normalized_query,
             subquestion=normalized_subquestion,
             source_title=document["source_title"],
@@ -141,6 +149,8 @@ def extract_research_source_records(
             limit=max_records,
         )
         if not candidates:
+            if structured_record is not None:
+                continue
             fallback_assessment = explicit_assessment or assess_evidence_candidate(
                 claim=document["content"],
                 query=f"{normalized_query} {normalized_subquestion}".strip(),
@@ -245,7 +255,7 @@ def _source_document(item: dict[str, Any]) -> dict[str, Any]:
     )
     from app.services.research.text_cleaner import clean_text_for_context
 
-    content = clean_text_for_context(
+    raw_content = (
         payload.get("content")
         or payload.get("raw_content")
         or payload.get("text")
@@ -254,6 +264,14 @@ def _source_document(item: dict[str, Any]) -> dict[str, Any]:
         or payload.get("summary")
         or payload.get("excerpt")
     )
+    # SourceVisit already converted the fetched page to plain text. Running
+    # that single long line through the generic line-boilerplate cleaner can
+    # drop the entire document merely because it begins with "登录". Preserve
+    # the visited body and let the extraction/quality gates select facts.
+    if metadata.get("source_visit"):
+        content = " ".join(normalize_text(raw_content).split())[:24_000]
+    else:
+        content = clean_text_for_context(raw_content)
     published_date = normalize_text(
         payload.get("published_date")
         or payload.get("published_at")
@@ -342,7 +360,12 @@ def _select_claim_sentences(
     scored: list[tuple[int, int, str, EvidenceQualityAssessment]] = []
     for index, sentence in enumerate(sentences):
         candidate = _clean_claim_text(sentence)
-        if not candidate or not _claim_looks_complete(candidate):
+        if (
+            not candidate
+            or _is_source_boilerplate(candidate)
+            or _has_unresolved_anaphora(candidate)
+            or not _claim_looks_complete(candidate)
+        ):
             continue
         assessment = assess_evidence_candidate(
             claim=candidate,
@@ -394,7 +417,12 @@ def _booklist_records(
         if any(record.claim.startswith("\u300a" + title_clean + "\u300b") for record in records):
             continue
         claim = _clean_claim_text(_book_context(content, title_clean))
-        if len(claim) < 20 or claim in seen_claims:
+        if not claim:
+            # List membership is itself a source-backed recommendation fact.
+            # This neutral projection does not invent an author, topic or
+            # rating when the page exposes only a title.
+            claim = f"\u300a{title_clean}\u300b\u88ab\u8be5\u6765\u6e90\u5217\u5165\u63a8\u8350\u4e66\u5355\u3002"
+        if len(claim) < 12 or claim in seen_claims:
             continue
         if not claim.startswith("\u300a"):
             continue
@@ -448,25 +476,33 @@ def _book_context(content: str, title: str) -> str:
     tail = content[start + len(marker):]
     next_marker = tail.find("\u300a")
     segment = tail if next_marker < 0 else tail[:next_marker]
-    if not re.match(
-        r"^(\s)*(\u672c\u4e66|\u5168\u4e66|\u4f5c\u8005|\u51fa\u7248\u793e|"
-        r"\u7531|\u5185\u5bb9|\u7b80\u4ecb|\u8c46\u74e3|\u8fd9\u672c|"
-        r"\u8be5\u4e66|\u5176\u4e2d|\u662f|\u4e3a|\u4ece)",
+    segment = _clean_claim_text(segment)
+    segment = re.sub(
+        r"^(?:\u8fd4\u56de\u6982\u89c8\s*)?\d+\s*/\s*\d+\s*",
+        "",
         segment,
-    ):
-        return ""
+    )
     sentences = _split_sentences(segment)
     parts = []
-    if sentences:
-        parts.append(sentences[0])
+    for sentence in sentences:
+        candidate = normalize_text(sentence).strip(" \uff1a:")
+        if len(candidate) < 12:
+            continue
+        if re.fullmatch(
+            r"(?:\u4f5c\u8005|\u8bd1\u8005|\u51fa\u7248\u793e)[:\uff1a].+",
+            candidate,
+        ):
+            continue
+        parts.append(candidate[:220])
+        break
     author = re.search(
         r"\u4f5c\u8005[:\uff1a]\s*([^\u3002\uff01\uff1f!?\uff1b;]{2,120})",
         segment,
     )
     if author:
         parts.append("\u4f5c\u8005\uff1a" + normalize_text(author.group(1)).strip())
-    body = "\u3002".join(part for part in parts if part)[:300]
-    return marker + "\uff1a" + body if body else marker
+    body = "\u3002".join(part for part in parts if part)[:280]
+    return marker + "\uff1a" + body if body else ""
 
 
 def _structured_book_record(
@@ -487,18 +523,18 @@ def _structured_book_record(
     ).strip()
     rating = _first_group(r"豆瓣评分\s*([0-9]+(?:\.[0-9]+)?)", content)
     author = _first_group(
-        r"作者:\s*(.{1,100}?)(?=译者:|出版社:|出品方:|出版年:|ISBN:|$)",
+        r"作者\s*[:：]\s*(.{1,100}?)(?=译者\s*[:：]|出版社\s*[:：]|出品方\s*[:：]|出版年\s*[:：]|ISBN\s*[:：]|$)",
         content,
     )
     publisher = _first_group(
-        r"出版社:\s*(.{1,80}?)(?=出品方:|出版年:|ISBN:|页数:|$)",
+        r"出版社\s*[:：]\s*(.{1,80}?)(?=出品方\s*[:：]|出版年\s*[:：]|ISBN\s*[:：]|页数\s*[:：]|$)",
         content,
     )
     published = _first_group(
-        r"出版年:\s*([0-9]{4}(?:[-./][0-9]{1,2}){0,2})",
+        r"出版年\s*[:：]\s*([0-9]{4}(?:[-./][0-9]{1,2}){0,2})",
         content,
     )
-    if not title or not rating:
+    if not title or not any((author, publisher, published, rating)):
         return None
 
     parts = [f"《{_bounded_field(title, 80)}》"]
@@ -508,7 +544,8 @@ def _structured_book_record(
         parts.append(f"由{_bounded_field(publisher, 60)}出版")
     if published:
         parts.append(f"出版时间为{published}")
-    parts.append(f"豆瓣页面显示评分为{rating}")
+    if rating:
+        parts.append(f"豆瓣页面显示评分为{rating}")
     claim = "，".join(parts) + "。"
     assessment = assess_evidence_candidate(
         claim=claim,
@@ -543,6 +580,28 @@ def _structured_book_record(
             "evidence_quality": assessment.model_dump(mode="json"),
         },
     )
+
+
+def _book_content_regions(content: str) -> str:
+    """Keep book-owned synopsis/excerpt regions, excluding reviews and chrome."""
+
+    regions: list[str] = []
+    for start_marker, end_markers in (
+        ("内容简介", ("作者简介", "目录", "原文摘录", "喜欢读")),
+        ("原文摘录", ("喜欢读", "短评", "书评", "论坛")),
+    ):
+        start = content.find(start_marker)
+        if start < 0:
+            continue
+        start += len(start_marker)
+        tail = content[start:]
+        ends = [tail.find(marker) for marker in end_markers]
+        ends = [index for index in ends if index >= 0]
+        region = tail[: min(ends)] if ends else tail
+        region = normalize_text(region).strip(" ·")
+        if region:
+            regions.append(region[:8_000])
+    return "\n".join(regions)
 
 
 def _first_group(pattern: str, content: str) -> str:
@@ -596,6 +655,24 @@ def _claim_looks_complete(text: str) -> bool:
     if text[-1] in "\u3002\uff01\uff1f!?.":
         return True
     return "\u300a" in text and "\u300b" in text and len(text) >= 15
+
+
+def _is_source_boilerplate(text: str) -> bool:
+    normalized = normalize_text(text).casefold()
+    return bool(
+        re.search(r"(?:©|copyright|all rights reserved|版权所有)", normalized)
+        or re.search(r"\bdouban\.com\b", normalized)
+        or re.search(r"(?:京icp|公网安备|网站备案)", normalized)
+        or re.search(r"(?:feed\s*:\s*rss|订阅关于.{0,80}评论)", normalized)
+        or re.search(r"(?:扫码直接下载|全新发布|登录\s*/\s*注册|豆瓣读书\s+搜索)", normalized)
+    )
+
+
+def _has_unresolved_anaphora(text: str) -> bool:
+    """Reject person-pronoun fragments whose antecedent is outside the claim."""
+
+    normalized = normalize_text(text).lstrip(" >-—–")
+    return bool(re.match(r"^(?:他|她|他们|她们|其)(?:与|和|曾|在|是|将|把|为|以|的)", normalized))
 
 
 def _split_sentences(content: str) -> list[str]:

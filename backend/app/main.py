@@ -3,19 +3,23 @@ import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
 from app.infra.config import get_settings
-from app.utils.logging import JsonFormatter, RequestIdFilter
+from app.utils.logging import JsonFormatter, RequestIdFilter, request_id_context
 from app.infra.llm.manager import get_model_manager
 from app.infra.llm.system_llm import init_system_llm
 from app.infra.llm.embedding import (
     initialize_embedding_runtime,
     probe_embedding_runtime,
 )
-from app.api.errors import register_exception_handlers
+from app.api.errors import (
+    general_exception_handler,
+    register_exception_handlers,
+    resolve_request_id,
+)
 from app.infra.database import (
     init_database_connection,
     init_database_components,
@@ -126,11 +130,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await init_database_components()
         logger.info("All database components initialized successfully")
 
-        from app.services.routing import schedule_routing_semantic_warmup
-
-        schedule_routing_semantic_warmup()
-        logger.info("Routing semantic index warmup scheduled")
-
         # WeChat listener is now per-login, started in WebSocket endpoint
     except Exception as e:
         logger.critical("Application startup failed, exiting: %s", e)
@@ -152,6 +151,24 @@ app = FastAPI(
     version=settings.VERSION,
     description=settings.DESCRIPTION,
 )
+
+
+@app.middleware("http")
+async def request_diagnostics_middleware(request: Request, call_next):
+    """Correlate every HTTP response and log line with one safe request id."""
+    request_id = resolve_request_id(request.headers.get("X-Request-ID"))
+    token = request_id_context.set(request_id)
+    try:
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            # Keep the correlation context alive while the centralized handler
+            # logs and formats exceptions escaping the application stack.
+            response = await general_exception_handler(request, exc)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        request_id_context.reset(token)
 
 # Configure CORS middleware
 # Allow all methods and headers for development. Credentials are not allowed

@@ -139,3 +139,58 @@ class UserPreferenceProfile(Base):
         default=utc_now,
         onupdate=utc_now,
     )
+
+
+class UserBookShelf(Base):
+    """Current per-user reading shelf state.
+
+    This is the authoritative source for a user's current reading status and
+    evaluation. ReadingService is the only writer. RecommendationEvent /
+    BookInteraction remain the historical audit trail.
+    """
+
+    __tablename__ = "user_book_shelf"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    book_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("books.id", ondelete="SET NULL"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    authors: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    cover_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    reading_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="want_to_read"
+    )
+    evaluation: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_event_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+class UserBookshelfState(Base):
+    """Per-user marker that shelf backfill from history has been applied."""
+
+    __tablename__ = "user_bookshelf_state"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    initialized_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )

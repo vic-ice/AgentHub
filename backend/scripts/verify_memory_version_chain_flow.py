@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -40,11 +41,12 @@ from app.services.agent_runtime.contracts import ExecutionContext
 from app.services.conversation import ConversationJournalService
 from app.services.memory import (
     MemoryAssertionProposal,
-    MemoryCanonicalizer,
-    MemoryVersionCommitCommand,
     MemoryVersionIdempotencyConflict,
     MemoryVersionStore,
 )
+from app.services.memory.turn_compiler import compiled_turn_from_assertions
+from app.services.memory.version_contracts import MemoryMutationReceipt
+from app.services.memory.write_gateway import MemoryWriteGateway
 from scripts.init_database import _init_postgres
 
 
@@ -103,8 +105,8 @@ async def _user_event(
         )
 
 
-def _canonical_name(name: str, source: str):
-    result = MemoryCanonicalizer().canonicalize(
+def _compiled_name(name: str, source: str):
+    result = compiled_turn_from_assertions(
         [
             MemoryAssertionProposal(
                 subject="self",
@@ -113,9 +115,8 @@ def _canonical_name(name: str, source: str):
                 evidence_quote=source,
             )
         ],
-        source_text=source,
+        raw_text=source,
     )
-    _assert(result.status == "ready", str(result))
     return result.facts[0]
 
 
@@ -129,15 +130,16 @@ async def _commit(
 ):
     db = get_database()
     async with db.session() as session:
-        return await MemoryVersionStore(session).commit(
-            MemoryVersionCommitCommand(
-                facts=[fact],
-                source_event_id=source_event_id,
-                receipt_id=receipt_id,
-            ),
+        result = await MemoryWriteGateway(session).commit_compiled_facts(
+            [fact],
             user_id=user_id,
             thread_id=thread_id,
+            source_event_id=source_event_id,
+            receipt_id=receipt_id,
+            source_kind="user_message",
+            raw_text=fact.source_excerpt,
         )
+        return MemoryMutationReceipt.model_validate(result["receipt"])
 
 
 async def _cleanup(user_id: uuid.UUID) -> None:
@@ -165,7 +167,7 @@ async def _run() -> dict:
             request_id="memory-v1",
             content="I am 冰露",
         )
-        first_fact = _canonical_name("冰露", "I am 冰露")
+        first_fact = _compiled_name("冰露", "I am 冰露")
         controller_result = await harness.run(
             ControllerOutput(
                 mode="capability_proposals",
@@ -216,6 +218,7 @@ async def _run() -> dict:
             created_output["mutations"][0]["version"]["version_no"] == 1,
             str(created_output),
         )
+        memory_key = created_output["mutations"][0]["memory_key"]
 
         duplicate_source = await _user_event(
             user_id=user_id,
@@ -280,7 +283,9 @@ async def _run() -> dict:
         _assert(corrected_result.receipt is not None, str(corrected_result))
         _assert(corrected_result.answer is not None, str(corrected_result))
         corrected_output = corrected_result.receipt.actions[0].output
-        corrected_receipt_id = str(corrected_output["receipt_id"])
+        corrected_receipt_id = str(
+            corrected_output["mutations"][0]["version"]["receipt_id"]
+        )
         _assert(
             corrected_output["mutations"][0]["status"] == "revised",
             str(corrected_output),
@@ -355,7 +360,7 @@ async def _run() -> dict:
                 content="I am 星露",
             ),
         )
-        concurrent_fact = _canonical_name("星露", "I am 星露")
+        concurrent_fact = _compiled_name("星露", "I am 星露")
         concurrent_receipts = await asyncio.gather(
             _commit(
                 user_id=user_id,
@@ -466,14 +471,14 @@ async def _run() -> dict:
             current = await store.list_current(user_id=user_id)
             history = await store.history(
                 user_id=user_id,
-                memory_key=first_fact.memory_key,
+                memory_key=memory_key,
             )
             head_count = await session.scalar(
                 select(func.count())
                 .select_from(MemoryEventRecord)
                 .where(
                     MemoryEventRecord.user_id == user_id,
-                    MemoryEventRecord.memory_key == first_fact.memory_key,
+                    MemoryEventRecord.memory_key == memory_key,
                     MemoryEventRecord.superseded_by.is_(None),
                 )
             )
@@ -533,7 +538,11 @@ async def _main_async() -> dict:
 
 
 def main() -> None:
-    _init_postgres()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--skip-migration", action="store_true")
+    args = parser.parse_args()
+    if not args.skip_migration:
+        _init_postgres()
     evidence = asyncio.run(_main_async())
     print("memory version chain verification passed")
     print("duplicate_versions_created=0")

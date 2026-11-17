@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -122,6 +123,9 @@ class MemoryFactDraft(MemoryWriteModel):
     legacy_type: str
     legacy_subject: str
     legacy_value: str
+    domain: str = ""
+    kind: str = ""
+    entity_id: UUID | None = None
     polarity: str = "neutral"
     durability: Literal["long_term", "short_term", "unknown"] = "unknown"
     source: MemorySourceEvidence
@@ -137,6 +141,8 @@ class MemoryFactDraft(MemoryWriteModel):
         "legacy_type",
         "legacy_subject",
         "legacy_value",
+        "domain",
+        "kind",
         "polarity",
         "clarification_question",
         mode="before",
@@ -158,6 +164,9 @@ class ResolvedMemoryFact(MemoryWriteModel):
     legacy_type: str
     legacy_subject: str
     legacy_value: str
+    domain: str = ""
+    kind: str = ""
+    entity_id: UUID | None = None
     polarity: str = "neutral"
     durability: Literal["long_term"] = "long_term"
     source: MemorySourceEvidence
@@ -171,6 +180,8 @@ class ResolvedMemoryFact(MemoryWriteModel):
         "legacy_type",
         "legacy_subject",
         "legacy_value",
+        "domain",
+        "kind",
         "polarity",
         mode="before",
     )

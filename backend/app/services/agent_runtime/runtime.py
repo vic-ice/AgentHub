@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,7 @@ from app.services.conversation.authoritative_reader import (
     JournalConversationReader,
 )
 from app.services.conversation.contracts import ConversationReadRequest
+from app.services.books.read_runtime import execute_bookshelf_read
 from app.services.memory.version_contracts import (
     ForgetMemoryRequest,
     RememberMemoryRequest,
@@ -39,6 +41,10 @@ from app.services.memory.version_runtime import (
 )
 from app.services.tasks.contracts import TaskPlanDraft
 from app.utils.turn_context import user_message_scope
+from app.services.execution_progress import (
+    report_completed_step,
+    summarize_step_result,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +55,7 @@ _RETIRED_CHAT_MEMORY_WRITE_OPERATIONS = frozenset(
 _NATIVE_OPERATIONS = frozenset(
     {
         "conversation_read",
+        "bookshelf_read_v1",
         "remember_memory_v2",
         "search_memory_v2",
         "forget_memory_v2",
@@ -58,6 +65,19 @@ _NATIVE_OPERATIONS = frozenset(
         "research_read_v1",
     }
 )
+
+
+def _normalized_evidence_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(character for character in normalized if character.isalnum())
+
+
+def _evidence_is_user_authored(evidence_quote: str, goal: str) -> bool:
+    """Accept literal user evidence across harmless width/punctuation changes."""
+
+    evidence = _normalized_evidence_text(evidence_quote)
+    source = _normalized_evidence_text(goal)
+    return bool(evidence) and evidence in source
 
 
 class SystemRuntime:
@@ -103,6 +123,7 @@ class SystemRuntime:
                 )
                 if recovered is not None:
                     receipts.append(recovered)
+                    await _report_action_receipt(recovered)
                     continue
                 dependency_failure = _dependency_failure(action, receipts)
                 if dependency_failure:
@@ -124,6 +145,7 @@ class SystemRuntime:
                             receipt=receipt,
                         )
                     )
+                    await _report_action_receipt(receipts[-1])
                     continue
 
                 admitted, reason = self._admit_action(
@@ -149,8 +171,10 @@ class SystemRuntime:
                             receipt=receipt,
                         )
                     )
+                    await _report_action_receipt(receipts[-1])
                     continue
 
+                await _report_action_started(action)
                 receipt = await self._execute_planned_action(
                     plan,
                     action,
@@ -166,6 +190,7 @@ class SystemRuntime:
                         receipt=receipt,
                     )
                 )
+                await _report_action_receipt(receipts[-1])
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         status = _plan_status(receipts)
@@ -359,6 +384,11 @@ class SystemRuntime:
                     action,
                     context=context,
                 )
+            elif action.operation == "bookshelf_read_v1":
+                output = await execute_bookshelf_read(
+                    action.arguments,
+                    context=context,
+                )
             elif action.operation == "remember_memory_v2":
                 output = await execute_remember_memory(
                     action.arguments,
@@ -433,6 +463,43 @@ class SystemRuntime:
             )
         except Exception as exc:
             return _failed_action_receipt(action, exc=exc, started=started)
+
+
+async def _report_action_receipt(receipt: ActionReceipt) -> None:
+    status = receipt.status
+    await report_completed_step(
+        kind="action",
+        status=status,
+        title=f"\u6267\u884c {receipt.operation}",
+        detail=(
+            summarize_step_result(receipt.output)
+            if status == "completed"
+            else (receipt.error or f"\u6b65\u9aa4\u72b6\u6001\uff1a{status}")
+        ),
+        step_id=f"action:{receipt.action_id}",
+        action_id=receipt.action_id,
+        operation=receipt.operation,
+        duration_ms=receipt.duration_ms,
+        error=receipt.error or None,
+    )
+
+
+async def _report_action_started(action: PlannedAction) -> None:
+    details = {
+        "book_search_v1": "正在按主题查找书目，并交叉核对公开来源",
+        "web_search_v2": "正在从多个公开来源检索相关信息",
+        "research_report_v1": "正在整理研究证据并生成回答",
+        "bookshelf_read_v1": "正在读取你的当前书架状态",
+    }
+    await report_completed_step(
+        kind="action",
+        status="waiting",
+        title=f"执行 {action.operation}",
+        detail=details.get(action.operation, "正在执行这一步"),
+        step_id=f"action:{action.action_id}",
+        action_id=action.action_id,
+        operation=action.operation,
+    )
 
 
 def _completed_action_receipt(
@@ -526,9 +593,9 @@ def _admit_action(
             request = RememberMemoryRequest.model_validate(action.arguments)
         except Exception:
             return False, "versioned_memory_request_invalid"
-        goal = " ".join(str(plan.goal or "").split()).strip().casefold()
+        goal = str(plan.goal or "")
         if any(
-            assertion.evidence_quote.casefold() not in goal
+            not _evidence_is_user_authored(assertion.evidence_quote, goal)
             for assertion in request.assertions
         ):
             return False, "memory_evidence_must_be_user_authored"
@@ -544,9 +611,9 @@ def _admit_action(
             request = ForgetMemoryRequest.model_validate(action.arguments)
         except Exception:
             return False, "versioned_memory_forget_invalid"
-        goal = " ".join(str(plan.goal or "").split()).strip().casefold()
+        goal = str(plan.goal or "")
         if any(
-            target.evidence_quote.casefold() not in goal
+            not _evidence_is_user_authored(target.evidence_quote, goal)
             for target in request.targets
         ):
             return False, "memory_evidence_must_be_user_authored"
@@ -629,7 +696,13 @@ def _output_status(output: Any) -> tuple[str, str]:
         return "waiting", error
     if status in {"failed", "error", "timeout", "unavailable"}:
         return "failed", error or status
-    if status in {"skipped", "empty_result"}:
+    # A typed read completed successfully even when its business result is
+    # empty.  Keeping it completed/admitted lets the publication layer render
+    # an honest "nothing found" answer instead of misreporting an execution
+    # failure or inviting another search loop.
+    if status == "empty_result":
+        return "completed", ""
+    if status == "skipped":
         return "skipped", error or status
     return "completed", ""
 

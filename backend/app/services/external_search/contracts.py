@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 SearchDetail = Literal["standard", "deep"]
 SearchOutcome = Literal["found", "empty", "unavailable"]
 SearchCategory = Literal["general", "news"]
+SearchStrategy = Literal["failover", "federated"]
 
 
 def _clean_domain(value: Any) -> str:
@@ -34,7 +35,18 @@ class SearchRequest(BaseModel):
     language: str = ""
     zone: Literal["cn", "intl"] | None = None
     category: SearchCategory = "general"
-    round_index: int = Field(default=1, ge=1, le=3)
+    round_index: int = Field(default=1, ge=1, le=4)
+    strategy: SearchStrategy = "failover"
+    provider_budget: int = Field(
+        default=3,
+        ge=1,
+        le=3,
+        description=(
+            "Maximum providers participating in this one gateway execution. "
+            "failover stops on the first usable result; federated merges every "
+            "provider within the budget."
+        ),
+    )
 
     @field_validator("query", mode="before")
     @classmethod

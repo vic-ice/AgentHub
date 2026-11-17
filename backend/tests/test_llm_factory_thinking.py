@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.infra.llm.factory import get_llm
+from app.infra.llm.provider_adapters import get_provider_adapter
 
 
 class _Manager:
@@ -34,6 +35,11 @@ class _Manager:
 
 
 class LlmFactoryThinkingTests(unittest.TestCase):
+    def test_openai_compatible_adapter_propagates_disabled_thinking(self) -> None:
+        kwargs = get_provider_adapter("openai-compatible").model_kwargs(False)
+
+        self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
+
     def test_omitted_mode_uses_database_configuration(self) -> None:
         sentinel = object()
         with (

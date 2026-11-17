@@ -29,11 +29,16 @@ from app.services.agent_runtime.contracts import (
     PlanReceipt,
     PlannedAction,
 )
+from app.services.agent_runtime.runtime import _evidence_is_user_authored
 from app.services.conversation import (
     ConversationReadRequest,
     ConversationTurn,
     ConversationWindow,
     read_conversation,
+)
+from app.services.memory.version_contracts import (
+    RememberMemoryRequest,
+    SearchMemoryRequest,
 )
 from app.services.tasks.contracts import TaskPlanDraft, TaskPlanStepDraft
 
@@ -94,6 +99,35 @@ def _conversation_output() -> ControllerOutput:
 
 
 class ControllerContractTests(unittest.TestCase):
+    def test_stringified_assertions_array_is_restored_at_contract_boundary(
+        self,
+    ) -> None:
+        request = RememberMemoryRequest.model_validate(
+            {
+                "assertions": (
+                    '[{"subject":"Python深度学习 (第2版)",'
+                    '"predicate":"reading_status",'
+                    '"value":{"reading_status":"reading"},'
+                    '"evidence_quote":"我正在读《Python深度学习 (第2版)》",'
+                    '"domain":"reading","entity_type":"book"}]'
+                )
+            }
+        )
+
+        self.assertEqual(len(request.assertions), 1)
+        self.assertEqual(request.assertions[0].domain, "reading")
+
+    def test_evidence_gate_tolerates_width_and_punctuation_only(self) -> None:
+        goal = "我正在读《Python深度学习（第2版）》，很喜欢。"
+
+        self.assertTrue(
+            _evidence_is_user_authored(
+                "我正在读 Python深度学习 (第2版)",
+                goal,
+            )
+        )
+        self.assertFalse(_evidence_is_user_authored("我读完了这本书", goal))
+
     def test_mode_schema_defines_clarification_boundary(self) -> None:
         description = ControllerOutput.model_json_schema()["properties"][
             "mode"
@@ -178,6 +212,109 @@ class ControllerContractTests(unittest.TestCase):
         self.assertEqual(plan.actions[0].operation, "remember_memory_v2")
         self.assertNotIn("user_id", plan.actions[0].arguments)
         self.assertNotIn("memory_key", plan.actions[0].arguments)
+
+    def test_remember_contract_repairs_kind_accidentally_put_in_domain(self) -> None:
+        registry = _enabled_registry()
+        output = ControllerOutput(
+            mode="capability_proposals",
+            tool_calls=[
+                ControllerToolCall(
+                    call_id="remember-preference",
+                    name="remember_memory",
+                    arguments={
+                        "assertions": [
+                            {
+                                "subject": "self",
+                                "predicate": "likes",
+                                "value": {
+                                    "entity": "电脑",
+                                    "polarity": "like",
+                                },
+                                "evidence_quote": "我喜欢看电脑",
+                                "domain": "preference",
+                                "entity_type": "other",
+                            }
+                        ]
+                    },
+                )
+            ],
+        )
+        batch = ProposalValidator(registry).validate(output)
+        assertion = batch.proposals[0].arguments["assertions"][0]
+        self.assertEqual(assertion["kind"], "preference")
+        self.assertEqual(assertion["domain"], "general")
+
+    def test_equivalent_memory_reads_collapse_to_one_owner_call(self) -> None:
+        registry = _enabled_registry()
+        output = ControllerOutput(
+            mode="capability_proposals",
+            tool_calls=[
+                ControllerToolCall(
+                    call_id="likes",
+                    name="search_memory",
+                    arguments={
+                        "query": "喜好",
+                        "predicate": "likes",
+                        "scope": "current",
+                    },
+                ),
+                ControllerToolCall(
+                    call_id="preference",
+                    name="search_memory",
+                    arguments={
+                        "query": "喜好",
+                        "predicate": "preference",
+                        "scope": "current",
+                    },
+                ),
+            ],
+        )
+        batch = ProposalValidator(registry).validate(output)
+        self.assertEqual(len(batch.proposals), 1)
+        self.assertEqual(batch.proposals[0].capability, "search_memory")
+        self.assertEqual(batch.proposals[0].arguments["predicate"], "likes")
+
+    def test_predicate_only_equivalent_memory_reads_remain_valid(self) -> None:
+        registry = _enabled_registry()
+        output = ControllerOutput(
+            mode="capability_proposals",
+            tool_calls=[
+                ControllerToolCall(
+                    call_id="likes",
+                    name="search_memory",
+                    arguments={"predicate": "likes", "scope": "current"},
+                ),
+                ControllerToolCall(
+                    call_id="preference",
+                    name="search_memory",
+                    arguments={"predicate": "preference", "scope": "current"},
+                ),
+            ],
+        )
+        batch = ProposalValidator(registry).validate(output)
+        self.assertEqual(len(batch.proposals), 1)
+        self.assertEqual(batch.proposals[0].arguments["predicate"], "likes")
+        SearchMemoryRequest.model_validate(batch.proposals[0].arguments)
+
+    def test_memory_read_recovers_missing_predicate_from_structured_query(self) -> None:
+        output = ControllerOutput(
+            mode="capability_proposals",
+            tool_calls=[
+                ControllerToolCall(
+                    call_id="preference-query",
+                    name="search_memory",
+                    arguments={
+                        "query": "我的长期偏好里记了哪些喜欢的东西",
+                        "scope": "current",
+                    },
+                )
+            ],
+        )
+        batch = ProposalValidator(_enabled_registry()).validate(output)
+        self.assertEqual(
+            batch.proposals[0].arguments["predicate"],
+            "preference.entity",
+        )
 
     def test_task_plan_proposal_is_mutually_exclusive(self) -> None:
         draft = TaskPlanDraft(
@@ -620,6 +757,64 @@ class AgentCoreHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNotNone(result.receipt)
+        self.assertIsNone(result.answer)
+
+    async def test_failed_model_response_mode_is_still_intermediate(self) -> None:
+        class _ModelCompiler:
+            def compile(self, batch, *, goal):
+                return ActionPlan(
+                    source="controller_proposal",
+                    route_type="fast_path",
+                    intent="model_fallback",
+                    goal=goal,
+                    response_mode="model",
+                    actions=[
+                        PlannedAction(
+                            action_id="book-search",
+                            capability="book_search",
+                            operation="book_search_v1",
+                        )
+                    ],
+                )
+
+        class _Runtime:
+            async def execute(self, plan, *, context, user_input=None):
+                return PlanReceipt(
+                    plan_id=plan.plan_id,
+                    request_id=context.request_id,
+                    route_type=plan.route_type,
+                    intent=plan.intent,
+                    status="failed",
+                    actions=[
+                        ActionReceipt(
+                            action_id="book-search",
+                            capability="book_search",
+                            operation="book_search_v1",
+                            status="failed",
+                            error="book_source_unavailable",
+                            admitted=True,
+                        )
+                    ],
+                )
+
+        class _Publisher:
+            def publish_receipt(self, *args, **kwargs):
+                raise AssertionError(
+                    "failed model-mode receipt reached deterministic publication"
+                )
+
+        result = await AgentCoreHarness(
+            registry=_enabled_registry(),
+            compiler=_ModelCompiler(),  # type: ignore[arg-type]
+            runtime=_Runtime(),  # type: ignore[arg-type]
+            publisher=_Publisher(),  # type: ignore[arg-type]
+        ).run(
+            _conversation_output(),
+            goal="推荐个人成长书籍",
+            context=_context(),
+        )
+
+        self.assertEqual(result.receipt.status, "failed")
         self.assertIsNone(result.answer)
 
 

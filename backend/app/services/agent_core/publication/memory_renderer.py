@@ -9,8 +9,22 @@ _SELF_SUBJECTS = frozenset({"self", "user", "me", "myself", "我", "本人"})
 
 def _subject_label(version: dict) -> str:
     """主语标签：self 别名用“你”，实体用实体名。"""
+    schema_key = str((version or {}).get("schema_key") or "")
+    value = (
+        version.get("value")
+        if isinstance((version or {}).get("value"), dict)
+        else {}
+    )
+    if schema_key.startswith("reading."):
+        title = str(value.get("book_title") or value.get("entity") or "").strip()
+        if title:
+            return f"《{title}》"
     subject = str((version or {}).get("subject") or "").strip()
-    if not subject or subject in _SELF_SUBJECTS:
+    if (
+        not subject
+        or subject in _SELF_SUBJECTS
+        or (schema_key == "preference.entity" and subject == "other")
+    ):
         return "你"
     return subject
 
@@ -26,10 +40,17 @@ def render_memory_mutation(output: dict) -> str:
     mutations = [
         item for item in output.get("mutations", []) if isinstance(item, dict)
     ]
+    reading_lines = _render_shelf_reading_changes(output)
+    note_lines = (
+        [] if reading_lines else _render_shelf_note_mutations(output)
+    )
+    shelf_lines = [*reading_lines, *note_lines]
     if not mutations:
-        return ""
+        return "\n".join(shelf_lines)
     statuses = {str(item.get("status") or "") for item in mutations}
     if statuses == {"noop_duplicate"}:
+        if shelf_lines:
+            return "\n".join(shelf_lines)
         labels = [
             _value_label(item.get("version"))
             for item in mutations
@@ -41,23 +62,125 @@ def render_memory_mutation(output: dict) -> str:
         return "我已经记得：" + "；".join(labels) + "，无需重复保存。"
 
     lines: list[str] = []
-    for mutation in mutations:
+    consumed: set[int] = set()
+    for name_index, mutation in enumerate(mutations):
+        if str(mutation.get("status") or "") != "created":
+            continue
+        version = mutation.get("version")
+        version_payload = version if isinstance(version, dict) else {}
+        entity, name = _entity_name_parts(version_payload)
+        if not entity or not name:
+            continue
+        possession_index = next(
+            (
+                index
+                for index, candidate in enumerate(mutations)
+                if index != name_index
+                and str(candidate.get("status") or "") == "created"
+                and _same_text(
+                    _possession_entity(candidate.get("version")),
+                    entity,
+                )
+            ),
+            None,
+        )
+        if possession_index is None:
+            continue
+        consumed.update({name_index, possession_index})
+        lines.append(f"记住了：你有{entity}，名字叫{name}。")
+
+    for mutation_index, mutation in enumerate(mutations):
+        if mutation_index in consumed:
+            continue
         mutation_status = str(mutation.get("status") or "")
         version = mutation.get("version")
         previous = mutation.get("previous")
         version_payload = version if isinstance(version, dict) else {}
         new_label = _value_label(version_payload)
         if mutation_status == "revised" and isinstance(previous, dict):
+            entity, new_name = _entity_name_parts(version_payload)
+            previous_entity, old_name = _entity_name_parts(previous)
+            if new_name and old_name and (entity or previous_entity):
+                target = entity or previous_entity
+                lines.append(
+                    f"我已经记得：{target}的名字是{new_name}。"
+                    if _same_text(old_name, new_name)
+                    else f"已把{target}的名字从“{old_name}”更新为“{new_name}”。"
+                )
+                continue
             old_label = _value_label(previous)
             kind = _fact_kind(version_payload)
             if new_label and old_label:
-                lines.append(f"已把{_subject_label(version_payload)}的{kind}从{old_label}更新为{new_label}。")
+                subject = _subject_label(version_payload)
+                lines.append(
+                    f"已把{subject}的{kind}从“{old_label}”更新为“{new_label}”。"
+                )
                 continue
         if mutation_status in {"created", "revised"} and new_label:
-            lines.append(f"已记录长期记忆：{new_label}。")
+            schema_key = str(version_payload.get("schema_key") or "")
+            if reading_lines and schema_key in {
+                "reading.state",
+                "reading.feedback",
+            }:
+                continue
+            subject = _subject_label(version_payload)
+            if schema_key == "reading.state":
+                lines.append(f"已将{subject}的阅读状态设为“{new_label}”。")
+            elif schema_key == "reading.feedback":
+                lines.append(f"已记录：你对{subject}的评价是“{new_label}”。")
+            elif schema_key == "identity.self_reported_name":
+                lines.append(f"记住了：你现在叫{new_label}。")
+            else:
+                lines.append(f"记住了：{new_label}。")
     if lines:
-        return "\n".join(lines)
+        return "\n".join(dict.fromkeys([*lines, *shelf_lines]))
+    if shelf_lines:
+        return "\n".join(shelf_lines)
     return "已根据你的最新表述更新长期记忆。"
+
+
+def _render_shelf_reading_changes(output: dict) -> list[str]:
+    lines: list[str] = []
+    for change in output.get("reading_changes", []):
+        if not isinstance(change, dict):
+            continue
+        title = str(change.get("title") or "").strip()
+        if not title:
+            continue
+        status = str(change.get("reading_status") or "").strip()
+        evaluation = str(change.get("evaluation") or "").strip()
+        note = str(change.get("note") or "").strip()
+        if status:
+            status_label = {
+                "want_to_read": "想读",
+                "reading": "在读",
+                "read": "已读",
+                "dropped": "弃读",
+            }.get(status, status)
+            lines.append(f"已将《{title}》的阅读状态设置为“{status_label}”。")
+        if evaluation:
+            evaluation_label = {
+                "liked": "喜欢",
+                "neutral": "一般",
+                "disliked": "不喜欢",
+                "not_interested": "不感兴趣",
+            }.get(evaluation, evaluation)
+            lines.append(f"已将《{title}》的阅读评价更新为“{evaluation_label}”。")
+        if note:
+            lines.append(f"已保存《{title}》的备注：“{note}”。")
+    return list(dict.fromkeys(lines))
+
+
+def _render_shelf_note_mutations(output: dict) -> list[str]:
+    lines: list[str] = []
+    for entry in output.get("shelf_entries", []):
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        note = str(entry.get("note") or "").strip()
+        if title and note:
+            lines.append(f"已为《{title}》保存备注：“{note}”。")
+    return list(dict.fromkeys(lines))
 
 
 def render_memory_search(output: dict) -> str:
@@ -233,6 +356,7 @@ def _timeline_line(ordered: list[dict]) -> str:
 
 def _current_line(item: dict) -> str:
     schema_key = str(item.get("schema_key") or "")
+    predicate = str(item.get("predicate") or "").strip().casefold()
     value = item.get("value") if isinstance(item.get("value"), dict) else {}
     qualifiers = (
         item.get("qualifiers") if isinstance(item.get("qualifiers"), dict) else {}
@@ -269,12 +393,16 @@ def _current_line(item: dict) -> str:
         entity = str(value.get("entity") or "").strip()
         name = str(value.get("name") or "").strip()
         return f"{entity}的名字是{name}。" if entity and name else ""
+    if predicate in {"name", "identity", "self_reported_name"}:
+        name = str(value.get("name") or "").strip()
+        return f"你的名字是{name}。" if name else ""
     quote = str(item.get("evidence_quote") or "").strip()
     return quote
 
 
 def _fact_kind(version: dict) -> str:
     schema_key = str(version.get("schema_key") or "")
+    predicate = str(version.get("predicate") or "").strip().casefold()
     if schema_key == "identity.self_reported_name":
         return "名字"
     if schema_key == "identity.preferred_address":
@@ -287,12 +415,18 @@ def _fact_kind(version: dict) -> str:
         return "喜好"
     if schema_key == "relationship.entity":
         return "关系"
-    if schema_key == "entity.name":
+    if _entity_name_parts(version)[1]:
         return "实体名称"
     if schema_key == "instruction.behavior":
         return "行为约定"
     if schema_key == "feedback.outcome":
         return "反馈"
+    if schema_key == "reading.state":
+        return "阅读状态"
+    if schema_key == "reading.feedback":
+        return "评价"
+    if predicate in {"name", "identity", "self_reported_name"}:
+        return "名字"
     return "状态"
 
 
@@ -300,6 +434,7 @@ def _value_label(version: dict, *, with_subject: bool = True) -> str:
     if not isinstance(version, dict):
         return ""
     schema_key = str(version.get("schema_key") or "")
+    predicate = str(version.get("predicate") or "").strip().casefold()
     value = version.get("value") if isinstance(version.get("value"), dict) else {}
     qualifiers = (
         version.get("qualifiers")
@@ -312,10 +447,29 @@ def _value_label(version: dict, *, with_subject: bool = True) -> str:
         return str(value.get("address") or "").strip()
     if schema_key == "identity.alias":
         return str(value.get("alias") or "").strip()
-    if schema_key == "entity.name":
-        entity = str(value.get("entity") or "").strip()
-        name = str(value.get("name") or "").strip()
+    if schema_key == "reading.state":
+        status = str(
+            value.get("reading_status") or value.get("status") or ""
+        ).strip()
+        return {
+            "want_to_read": "想读",
+            "reading": "在读",
+            "read": "已读",
+            "dropped": "弃读",
+        }.get(status, status)
+    if schema_key == "reading.feedback":
+        evaluation = str(value.get("evaluation") or "").strip()
+        return {
+            "liked": "喜欢",
+            "neutral": "一般",
+            "disliked": "不喜欢",
+            "not_interested": "不感兴趣",
+        }.get(evaluation, evaluation)
+    entity, name = _entity_name_parts(version)
+    if entity and name:
         return f"{entity}的名字是{name}" if entity and name else ""
+    if predicate in {"name", "identity", "self_reported_name"}:
+        return str(value.get("name") or "").strip()
     entity = str(value.get("entity") or qualifiers.get("entity") or "").strip()
     if schema_key == "possession.entity":
         prefix = _subject_label(version) if with_subject else ""
@@ -338,6 +492,49 @@ def _value_label(version: dict, *, with_subject: bool = True) -> str:
         if label:
             return label
     return str(version.get("evidence_quote") or "").strip()
+
+
+def _entity_name_parts(version: Any) -> tuple[str, str]:
+    if not isinstance(version, dict):
+        return "", ""
+    value = version.get("value") if isinstance(version.get("value"), dict) else {}
+    schema_key = str(version.get("schema_key") or "").strip()
+    predicate = str(
+        version.get("predicate") or value.get("predicate") or ""
+    ).strip().casefold()
+    if schema_key != "entity.name" and predicate not in {
+        "entity_name",
+        "entity.name",
+    }:
+        return "", ""
+    return (
+        str(value.get("entity") or "").strip(),
+        str(value.get("name") or "").strip(),
+    )
+
+
+def _possession_entity(version: Any) -> str:
+    if not isinstance(version, dict):
+        return ""
+    value = version.get("value") if isinstance(version.get("value"), dict) else {}
+    schema_key = str(version.get("schema_key") or "").strip()
+    predicate = str(
+        version.get("predicate") or value.get("predicate") or ""
+    ).strip().casefold()
+    if schema_key != "possession.entity" and predicate not in {
+        "has",
+        "have",
+        "own",
+        "possess",
+    }:
+        return ""
+    return str(value.get("entity") or "").strip()
+
+
+def _same_text(left: Any, right: Any) -> bool:
+    return "".join(str(left or "").split()).casefold() == "".join(
+        str(right or "").split()
+    ).casefold()
 
 
 def _short_date(value: Any) -> str:

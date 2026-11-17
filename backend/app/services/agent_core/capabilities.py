@@ -8,6 +8,7 @@ from app.services.agent_core.core_capabilities import (
     CoreCapabilityAvailability,
 )
 from app.services.conversation.contracts import ConversationReadRequest
+from app.services.books.read_contracts import BookshelfReadRequest
 from app.services.external_capabilities.availability import (
     ExternalCapabilityAvailability,
 )
@@ -30,6 +31,9 @@ class CapabilityInput(BaseModel):
 
 
 class ConversationReadInput(ConversationReadRequest):
+    pass
+
+class BookshelfReadInput(BookshelfReadRequest):
     pass
 
 
@@ -87,11 +91,38 @@ class CapabilityRegistry:
                 enabled=core.capability_enabled("conversation_read"),
                 compiler_key="conversation_read",
             ),
+            "bookshelf_read": CapabilitySpec(
+                name="bookshelf_read",
+                description=(
+                    "Read the user's authoritative current Bookshelf as one "
+                    "aggregate row per book, including reading status and "
+                    "evaluation. Use this for Shelf inventory, counts, current "
+                    "reading states, per-book evaluations, or whether a known "
+                    "book is on the Shelf. Put every user-requested status or "
+                    "evaluation restriction into the typed filter arrays; leave "
+                    "them empty only for an unrestricted Shelf read. One call "
+                    "must preserve the exact subset: want_to_read means planned "
+                    "but not started, reading means currently in progress, read "
+                    "means finished, and dropped means abandoned. Never widen a "
+                    "requested subset with a related status. Already added, "
+                    "saved, collected, owned, or on the Shelf describes Shelf "
+                    "membership, not status=read; require an actual finished/read "
+                    "request for that filter. One call "
+                    "returns all requested fields. Do not use search_memory or "
+                    "book_search as a fallback for these questions."
+                ),
+                input_model=BookshelfReadInput,
+                side_effect=False,
+                enabled=core.capability_enabled("bookshelf_read"),
+                compiler_key="bookshelf_read",
+            ),
             "remember_memory": CapabilitySpec(
                 name="remember_memory",
                 description=(
-                    "Propose complete user-authored facts for long-term memory. "
-                    "Use only when the user expressed durable information."
+                    "Propose the complete assertions array from one semantic "
+                    "reading of the user's message. Preserve every exact entity "
+                    "name (book titles must never become 'book') and every stated "
+                    "status/evaluation. Use only for user-authored durable facts."
                 ),
                 input_model=RememberMemoryInput,
                 side_effect=True,
@@ -177,8 +208,43 @@ class CapabilityRegistry:
             self._specs["book_search"] = CapabilitySpec(
                 name="book_search",
                 description=(
-                    "Retrieve read-only public evidence for books matching "
-                    "explicit subject, author, genre, audience, or year filters."
+                    "Search the external book catalog through the single "
+                    "RecommendationService owner. For one user recommendation "
+                    "request emit exactly one book_search call. Write query as a "
+                    "short natural-language retrieval request preserving the user's "
+                    "goal and comparison anchors but omitting output-format text. "
+                    "Never infer themes or audience from example books; put only "
+                    "dimensions explicitly stated by the user in themes. Set "
+                    "theme_match=all only when every returned book must cover every "
+                    "dimension; otherwise use any. RecommendationService executes "
+                    "this structured intent without another LLM pass. "
+                    "reference_titles contains every "
+                    "user-stated comparison book. Put books the user says not to "
+                    "recommend in excluded_titles; reference_titles are excluded "
+                    "automatically. Put explicit "
+                    "candidate_titles contains 5-8 plausible new books for "
+                    "public-page verification; never include reference or "
+                    "excluded titles there. Put explicit "
+                    "answer depth in response_depth: balanced is the default; "
+                    "use deep when the user asks for an in-depth search, detailed "
+                    "reasons, comparison, or a reading plan, and quick only when "
+                    "the user explicitly asks for a short answer. Put explicit "
+                    "evidence_strategy in the same semantic call. Its facets, "
+                    "query terms and preferred source/resource roles must be "
+                    "chosen for the user's actual decision and candidates. Do "
+                    "not map genres to a fixed evidence checklist or generic "
+                    "review template. Mark which facets are required and "
+                    "candidate-specific; the service will execute and preserve "
+                    "that portfolio without reinterpreting it. Put explicit "
+                    "publication-year requirements in publication_year_from/to. "
+                    "A year mentioned as the time to read is not automatically a "
+                    "publication-year filter. Use "
+                    "mode=recommendation to discover new candidates personalized "
+                    "from preferences and the authoritative Shelf; known Shelf "
+                    "books are excluded. Use mode=lookup only to retrieve a "
+                    "specifically requested catalog book. Never use this capability "
+                    "to list or count the user's own Shelf, saved collection, "
+                    "reading states, or evaluations; bookshelf_read owns those."
                 ),
                 input_model=BookSearchInput,
                 side_effect=False,

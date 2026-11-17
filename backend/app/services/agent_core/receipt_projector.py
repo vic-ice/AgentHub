@@ -116,6 +116,9 @@ def _typed_external_evidence(
                 "query",
                 "sources",
                 "error",
+                "candidate_count",
+                "filters_applied",
+                "limitations",
             },
         ),
         "research_report_v1": (
@@ -135,13 +138,19 @@ def _typed_external_evidence(
         return None
     model, allowed_fields = model_and_fields
     try:
-        validated = model.model_validate(
-            {
-                key: output[key]
-                for key in allowed_fields
-                if key in output
-            }
-        )
+        candidate = {
+            key: output[key]
+            for key in allowed_fields
+            if key in output
+        }
+        if isinstance(candidate.get("sources"), list):
+            candidate["sources"] = [
+                source
+                for source in candidate["sources"]
+                if isinstance(source, dict)
+                and str(source.get("url") or "").strip()
+            ]
+        validated = model.model_validate(candidate)
     except Exception:
         return None
     payload = validated.model_dump(mode="json")

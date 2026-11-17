@@ -50,6 +50,18 @@ from app.utils.crypto import encrypt_api_key
 logger = logging.getLogger(__name__)
 
 api_router = APIRouter(prefix="/models", tags=["Models"])
+
+
+async def _commit_configuration_and_refresh(db: AsyncSession) -> None:
+    """Publish model configuration only after it is transactionally visible.
+
+    ``ModelManager.refresh`` reads through its own database session. Refreshing
+    before the request session commits leaves the runtime cache one change
+    behind even though the API response already shows the new configuration.
+    """
+
+    await db.commit()
+    await get_model_manager().refresh()
 # ── Model CRUD ───────────────────────────────────────────────────────────────
 
 
@@ -127,7 +139,7 @@ async def create_model(
     if model_data.is_default:
         new_model = await model_crud.set_default_model_by_id(db, new_model.id)
 
-    await get_model_manager().refresh()
+    await _commit_configuration_and_refresh(db)
     return await _model_to_info(db, new_model)
 
 
@@ -172,7 +184,7 @@ async def update_model(
     if updated_model and update_dict.get("is_default"):
         updated_model = await model_crud.set_default_model_by_id(db, model_id)
 
-    await get_model_manager().refresh()
+    await _commit_configuration_and_refresh(db)
     return await _model_to_info(db, updated_model)
 
 
@@ -189,7 +201,7 @@ async def delete_model(
             detail=f"Model with id '{model_id}' not found",
         )
 
-    await get_model_manager().refresh()
+    await _commit_configuration_and_refresh(db)
 
 
 @api_router.post("/{model_id:uuid}/validate", response_model=ModelCapabilityStatus)
@@ -396,7 +408,7 @@ async def create_connection(
         "extra_headers_json": request.extra_headers_json or {},
     }
     connection = await connection_crud.create_connection(db, data)
-    await get_model_manager().refresh()
+    await _commit_configuration_and_refresh(db)
     return _connection_to_info(connection)
 
 
@@ -445,7 +457,7 @@ async def update_connection(
             detail="connection_not_found",
         )
 
-    await get_model_manager().refresh()
+    await _commit_configuration_and_refresh(db)
     model_counts = await connection_crud.get_connection_model_counts(db)
     return _connection_to_info(connection, model_counts.get(connection.id, 0))
 
@@ -466,7 +478,7 @@ async def delete_connection(
             detail="connection_not_found",
         )
 
-    await get_model_manager().refresh()
+    await _commit_configuration_and_refresh(db)
 
 
 @api_router.patch("/providers/{provider_name}", response_model=ProviderInfo)
@@ -505,7 +517,7 @@ async def update_provider(
             detail="Failed to update provider",
         )
 
-    await get_model_manager().refresh()
+    await _commit_configuration_and_refresh(db)
     return _provider_to_info(updated)
 
 

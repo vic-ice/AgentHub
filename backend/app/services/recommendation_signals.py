@@ -15,6 +15,8 @@ RECOMMENDATION_EVENT_TYPES = frozenset(
         "followup_clicked",
         "followup_matched",
         "detail_requested",
+        "reading",
+        "dropped",
         "want_to_read",
         "read",
         "liked",
@@ -27,10 +29,24 @@ RECOMMENDATION_SIGNAL_POLARITIES = frozenset(
     {"positive", "negative", "neutral"}
 )
 RECOMMENDATION_SIGNAL_SOURCES = frozenset(
-    {"agent_tool", "book_feedback", "followup_question", "api", "system"}
+    {
+        "agent_tool",
+        "api",
+        "book_feedback",
+        "followup_question",
+        "system",
+        # Cross-domain provenance contract. These values describe origin;
+        # ReadingService records them but never reinterprets their semantics.
+        "user_message",
+        "reading_event",
+        "tool_execution",
+        "admin_action",
+        "correction",
+        "system_derived",
+    }
 )
 
-READING_STATE_EVENT_TYPES = frozenset({"read"})
+READING_STATE_EVENT_TYPES = frozenset({"reading", "read", "dropped"})
 NEGATIVE_EVENT_TYPES = frozenset({"disliked", "not_interested"})
 SUPPRESSION_EVENT_TYPES = READING_STATE_EVENT_TYPES | NEGATIVE_EVENT_TYPES
 
@@ -175,6 +191,20 @@ def map_interaction_to_recommendation_signal(
     interaction_type: str,
 ) -> RecommendationFeedbackPlan:
     normalized = normalize_recommendation_token(interaction_type)
+    if normalized in {"reading", "in_progress", "currently_reading"}:
+        return RecommendationFeedbackPlan(
+            event_type="reading",
+            signal_polarity="neutral",
+            signal_strength=0.7,
+            writes_long_term_memory=True,
+        )
+    if normalized in {"dropped", "quit", "abandoned"}:
+        return RecommendationFeedbackPlan(
+            event_type="dropped",
+            signal_polarity="neutral",
+            signal_strength=0.5,
+            writes_long_term_memory=True,
+        )
     if normalized in {"read", "finished", "already_read"}:
         return RecommendationFeedbackPlan(
             event_type="read",

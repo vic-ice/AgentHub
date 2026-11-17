@@ -16,6 +16,7 @@ from app.services.agent_core.prompt_contracts import (
     ControllerModelRequest,
     TrustedMemoryContext,
     TrustedResearchRunContext,
+    TrustedShelfBookContext,
     TrustedTaskContext,
     TrustedWorkingStateContext,
 )
@@ -25,7 +26,7 @@ from app.services.agent_core.working_state import (
 from app.services.conversation.summary_llm_provider import (
     LLMSummaryProvider,
 )
-from app.services.memory.version_store import MemoryVersionStore
+from app.services.memory.read_gateway import MemoryReadGateway
 from app.services.tasks.repository import TaskRepository
 
 
@@ -103,10 +104,20 @@ class ControllerRequestBuilder:
             user_id=user_input.user_id,
             thread_id=user_input.thread_id,
         )
+        assembled.snapshot.shelf = await self._shelf_context(
+            db,
+            user_id=user_input.user_id,
+            current_user_message=user_input.content,
+        )
         return ControllerModelRequest(
             model_name=model_name,
+            thinking_mode=bool(user_input.thinking_mode),
             current_user_message=user_input.content,
             context=assembled.snapshot,
+            timeout_seconds=max(
+                1.0,
+                min(float(settings.AGENT_INVOKE_TIMEOUT or 120.0), 180.0),
+            ),
         )
 
     async def _research_context(
@@ -158,7 +169,7 @@ class ControllerRequestBuilder:
         *,
         user_id: UUID,
     ) -> list[TrustedMemoryContext]:
-        records = await MemoryVersionStore(db).list_current(
+        records = await MemoryReadGateway(db).current_versions(
             user_id=user_id,
             limit=50,
         )
@@ -168,6 +179,42 @@ class ControllerRequestBuilder:
                 fact=_memory_fact(record),
             )
             for record in records
+        ]
+
+    async def _shelf_context(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: UUID,
+        current_user_message: str,
+    ) -> list[TrustedShelfBookContext]:
+        """Load a bounded Shelf snapshot only for recommendation decisions."""
+
+        from app.services.research.search_policy import (
+            is_book_recommendation_request,
+        )
+
+        if not is_book_recommendation_request(current_user_message):
+            return []
+        try:
+            from app.services.books.reading_service import ReadingService
+
+            items, _ = await ReadingService(db).list_entries(
+                user_id=user_id,
+                limit=20,
+                offset=0,
+            )
+        except Exception:
+            return []
+        return [
+            TrustedShelfBookContext(
+                title=item.title,
+                authors=list(item.authors or [])[:10],
+                tags=list(item.tags or [])[:20],
+                reading_status=item.reading_status,
+                evaluation=item.evaluation,
+            )
+            for item in items
         ]
 
     async def _task_context(

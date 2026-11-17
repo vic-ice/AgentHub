@@ -8,6 +8,10 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 
 from app.services.research.contracts import normalize_text
+from app.services.research.candidate_quality import (
+    candidate_topic_supported,
+    is_book_catalog_url,
+)
 
 
 MAX_PUBLISHABLE_CLAIM_CHARS = 320
@@ -33,6 +37,25 @@ _SOCIAL_HOST_MARKERS = (
     "xiaohongshu.",
     "zhihu.",
     "reddit.",
+    "instagram.com",
+    "x.com",
+    "twitter.com",
+    "toutiao.com",
+    "sina.cn",
+    "sina.com",
+)
+_LOW_TRUST_TEXT_HOST_MARKERS = (
+    "youtube.com",
+    "youtu.be",
+    "bilibili.com",
+    "scribd.com",
+    "github.io",
+    "blogspot.",
+    "wordpress.com",
+    "medium.com",
+    "docin.com",
+    "wenku.baidu.com",
+    "z-library",
 )
 _COMMERCIAL_MARKERS = (
     "正版",
@@ -49,11 +72,35 @@ _COMMERCIAL_MARKERS = (
     "天猫",
     "京东",
 )
+_PERSONAL_REVIEW_MARKERS = (
+    "我觉得",
+    "我认为",
+    "我在",
+    "对我而言",
+    "我的感悟",
+    "让我想",
+    "读的时候",
+    "看完",
+    "读完",
+    "这篇书评",
+    "原文摘录",
+)
 _QUERY_STOP_TERMS = {
+    "有什么",
+    "有啥",
+    "哪些",
+    "好的",
+    "今年",
+    "最新",
+    "近期",
+    "最近",
+    "新书",
+    "值得读",
+    "值得",
+    "读的",
     "一下",
     "帮我",
     "请问",
-    "深度",
     "搜索",
     "研究",
     "查找",
@@ -61,6 +108,11 @@ _QUERY_STOP_TERMS = {
     "看看",
     "关于",
     "一个",
+    "推荐",
+    "书籍",
+    "图书",
+    "书单",
+    "书",
 }
 
 
@@ -124,6 +176,20 @@ def assess_evidence_candidate(
 
     if source_class == "marketplace":
         reasons.append("marketplace_source")
+    if source_class == "low_trust_text":
+        reasons.append("low_trust_source")
+    if source_class == "review" and any(
+        marker in normalized_claim for marker in _PERSONAL_REVIEW_MARKERS
+    ):
+        reasons.append("personal_review_excerpt")
+    if re.search(r"(?:作者|author).{0,40}[A-Z]\.$", normalized_claim):
+        reasons.append("truncated_fact_fragment")
+    if re.search(
+        r"^\(?\s*(?:全部|查看原文|展开|收起)|回复\s*\d+|"
+        r"\d+\s*赞|引自第\s*\d+\s*页",
+        normalized_claim,
+    ):
+        reasons.append("source_ui_artifact")
 
     query_relevance = _query_relevance(
         normalized_query,
@@ -132,13 +198,27 @@ def assess_evidence_candidate(
     )
     if normalized_query and query_relevance <= 0:
         reasons.append("query_irrelevant")
-    reasons.extend(
-        _requirement_reasons(
+    if (
+        is_book_catalog_url(normalized_url)
+        and re.search(r"图书|书籍|书单|书\b|\bbook", normalized_query.lower())
+        and not candidate_topic_supported(
+            objective=normalized_query,
+            candidate_title=normalized_title,
+            evidence_texts=[normalized_claim],
+        )
+    ):
+        reasons.append("query_irrelevant")
+    requirement_reasons = _requirement_reasons(
             query=normalized_query,
             candidate_text=f"{normalized_title} {normalized_claim}",
             published_date=normalized_published_date,
         )
-    )
+    if (
+        "missing_book_evidence" in requirement_reasons
+        and _source_host(normalized_url).startswith("book.douban.")
+    ):
+        requirement_reasons.remove("missing_book_evidence")
+    reasons.extend(requirement_reasons)
 
     blocking = {
         "missing_source_metadata",
@@ -147,6 +227,10 @@ def assess_evidence_candidate(
         "claim_not_atomic",
         "keyword_stuffing",
         "marketplace_source",
+        "low_trust_source",
+        "personal_review_excerpt",
+        "truncated_fact_fragment",
+        "source_ui_artifact",
         "query_irrelevant",
         "missing_recency_evidence",
         "missing_review_evidence",
@@ -189,6 +273,8 @@ def classify_source(source_url: str) -> str:
         return "scholarly"
     if any(marker in host for marker in _SOCIAL_HOST_MARKERS):
         return "social"
+    if any(marker in host for marker in _LOW_TRUST_TEXT_HOST_MARKERS):
+        return "low_trust_text"
     if host.endswith(".gov") or ".gov." in host:
         return "official"
     if host.endswith(".edu") or ".edu." in host:
@@ -203,6 +289,7 @@ def source_quality(source_class: str) -> str:
         "editorial": "medium",
         "review": "medium",
         "social": "low",
+        "low_trust_text": "low",
         "marketplace": "low",
         "unknown": "unknown",
     }.get(source_class, "unknown")
@@ -239,7 +326,11 @@ def _query_relevance(
         candidate_text=candidate_text,
         published_date=published_date,
     )
-    return max(lexical, semantic)
+    # Generic requirements such as "is a book" or "has a publication date"
+    # cannot establish topical relevance.  Use them only when the request has
+    # no usable subject terms at all; otherwise the subject must actually
+    # occur in the candidate text.
+    return lexical if terms else semantic
 
 
 def _requirement_relevance(
@@ -253,7 +344,7 @@ def _requirement_relevance(
     if re.search(r"最新|近期|最近|新书|\blatest\b|\brecent\b|\bnew\b", lowered_query):
         required.append("missing_recency_evidence")
     if re.search(
-        r"好评|高分|口碑|评分|评价|推荐|\breview|\brating|\bbest\b|well[- ]reviewed",
+        r"好评|高分|口碑|评分|评价|书评|\breview|\brating|well[- ]reviewed",
         lowered_query,
     ):
         required.append("missing_review_evidence")
@@ -298,11 +389,11 @@ def _requirement_reasons(
         if not recent_year and not (explicit_recency and dated_source):
             reasons.append("missing_recency_evidence")
     if re.search(
-        r"好评|高分|口碑|评分|评价|推荐|\breview|\brating|\bbest\b|well[- ]reviewed",
+        r"好评|高分|口碑|评分|评价|书评|\breview|\brating|well[- ]reviewed",
         lowered_query,
     ):
         if not re.search(
-            r"好评|高分|口碑|评分|评价|书评|推荐|榜单|星级|读者|评论|"
+            r"好评|高分|口碑|评分|评价|书评|推荐|榜单|书单|清单|精选|入选|星级|读者|评论|"
             r"\breview|\brating|\brated|\bbest\b|\brecommend",
             lowered_candidate,
         ):

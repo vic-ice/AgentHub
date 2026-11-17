@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { getAvailableModels } from "@/lib/api"
+import { formatErrorForDisplay } from "@/lib/errors"
 import type { ModelInfo } from "@/types"
 
 function getModelKey(model: ModelInfo): string {
@@ -74,7 +75,7 @@ export function useModels(
     } catch (err) {
       console.error("Failed to fetch available models:", err)
       if (mountedRef.current) {
-        setError(err instanceof Error ? err.message : "Failed to fetch models")
+        setError(formatErrorForDisplay(err, "Failed to fetch models"))
       }
     } finally {
       if (mountedRef.current) {

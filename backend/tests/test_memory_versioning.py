@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock, patch
@@ -18,6 +19,7 @@ from app.services.memory import (
 from app.services.memory.providers.postgres import _query_terms
 from app.services.memory.vector_recall import recall_memory_keys
 from app.services.memory.version_search import VersionedMemorySearch
+from app.services.memory.write_gateway import MemoryWriteGateway
 
 
 def _assertion(
@@ -135,6 +137,25 @@ class MemoryCanonicalizerTests(unittest.TestCase):
             registry.resolve_predicate("想要").schema_key,
             "preference.entity",
         )
+
+    def test_compatibility_preference_row_is_found_by_canonical_query(self) -> None:
+        record = _fact_version(
+            schema_key="general.preference",
+            memory_key="general.preference:computer",
+            predicate="likes",
+            value={"entity": "电脑", "polarity": "like"},
+            evidence="我喜欢看电脑",
+            valid_from=datetime.now(timezone.utc),
+        )
+        result = VersionedMemorySearch().search(
+            [record],
+            SearchMemoryRequest(
+                query="喜好",
+                predicate="preference",
+                scope="current",
+            ),
+        )
+        self.assertEqual([item.memory_key for item in result.memories], [record.memory_key])
 
     def test_structured_entity_name_write_succeeds(self) -> None:
         result = self.canonicalizer.canonicalize(
@@ -416,6 +437,64 @@ class MemoryCanonicalizerTests(unittest.TestCase):
         )
         self.assertEqual(len(timeline.memories), 3)
         self.assertEqual(timeline.scope, "timeline")
+
+    def test_current_search_reads_gateway_domain_kind_rows_by_predicate(self) -> None:
+        current = _fact_version(
+            schema_key="personal.fact",
+            memory_key="personal.fact:name",
+            predicate="name",
+            value={"name": "鲁班", "domain": "personal", "kind": "fact"},
+            evidence="我现在叫鲁班",
+            valid_from=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        )
+
+        result = VersionedMemorySearch().search(
+            [current],
+            SearchMemoryRequest(query="", predicate="name", scope="current"),
+        )
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.memories[0].value["name"], "鲁班")
+
+    def test_gateway_forget_resolves_current_domain_kind_row(self) -> None:
+        asyncio.run(self._assert_gateway_forget_resolves_current_domain_kind_row())
+
+    async def _assert_gateway_forget_resolves_current_domain_kind_row(self) -> None:
+        current = _fact_version(
+            schema_key="personal.fact",
+            memory_key="personal.fact:name",
+            predicate="name",
+            value={"name": "鲁班", "domain": "personal", "kind": "fact"},
+            evidence="我现在叫鲁班",
+            valid_from=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        )
+        gateway = MemoryWriteGateway(Mock())
+        gateway.forget = AsyncMock(return_value={"status": "forgotten", "receipt": {}})
+        target = ForgetMemoryTargetProposal(
+            subject="self",
+            predicate="identity.self_reported_name",
+            evidence_quote="忘记我的名字",
+        )
+
+        with patch(
+            "app.services.memory.write_gateway.MemoryVersionStore"
+        ) as store_type:
+            store_type.return_value.list_current = AsyncMock(return_value=[current])
+            result = await gateway.forget_targets(
+                user_id=uuid4(),
+                thread_id=uuid4(),
+                targets=[target],
+                source_text="忘记我的名字",
+                source_event_id=uuid4(),
+                receipt_id="forget-current-gateway-row",
+            )
+
+        self.assertEqual(result["status"], "forgotten")
+        gateway.forget.assert_awaited_once()
+        self.assertEqual(
+            gateway.forget.await_args.kwargs["memory_keys"],
+            ["personal.fact:name"],
+        )
 
     def test_current_search_uses_schema_hints_and_cjk_terms(self) -> None:
         pet = _fact_version(

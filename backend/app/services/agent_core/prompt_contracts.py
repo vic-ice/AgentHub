@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from app.services.agent_core.contracts import AgentCoreModel
+from app.services.agent_core.publication.response_view import ExternalAnswerView
 
 
 class ConversationContextTurn(AgentCoreModel):
@@ -18,11 +19,23 @@ class TrustedMemoryContext(AgentCoreModel):
     source: Literal["user_journal"] = "user_journal"
 
 
+class TrustedShelfBookContext(AgentCoreModel):
+    """Compact authoritative Shelf row exposed only as trusted decision data."""
+
+    title: str = Field(min_length=1, max_length=256)
+    authors: list[str] = Field(default_factory=list, max_length=10)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    reading_status: Literal["want_to_read", "reading", "read", "dropped"]
+    evaluation: Literal["liked", "neutral", "disliked", "not_interested"] | None = None
+
+
 class TrustedReceiptSource(AgentCoreModel):
     title: str = Field(default="", max_length=300)
     url: str = Field(min_length=1, max_length=2_000)
     snippet: str = Field(default="", max_length=1_000)
     published_date: str = Field(default="", max_length=64)
+    evidence_facet: str = Field(default="", max_length=80)
+    source_role: str = Field(default="", max_length=100)
 
 
 class TrustedReceiptContext(AgentCoreModel):
@@ -133,10 +146,15 @@ class ControllerContextSnapshot(AgentCoreModel):
         default_factory=list,
         max_length=50,
     )
+    shelf: list[TrustedShelfBookContext] = Field(
+        default_factory=list,
+        max_length=20,
+    )
     receipts: list[TrustedReceiptContext] = Field(
         default_factory=list,
         max_length=32,
     )
+    response_view: ExternalAnswerView | None = None
     working_state: TrustedWorkingStateContext | None = None
     research_runs: list[TrustedResearchRunContext] = Field(
         default_factory=list,
@@ -156,7 +174,9 @@ class ControllerContextSnapshot(AgentCoreModel):
 
 
 class ControllerModelRequest(AgentCoreModel):
+    phase: Literal["decision", "synthesis"] = "decision"
     model_name: str = Field(min_length=1, max_length=256)
+    thinking_mode: bool = False
     current_user_message: str = Field(min_length=1, max_length=32_000)
     context: ControllerContextSnapshot = Field(
         default_factory=ControllerContextSnapshot
@@ -170,6 +190,7 @@ __all__ = [
     "ConversationContextTurn",
     "TrustedConversationSummary",
     "TrustedMemoryContext",
+    "TrustedShelfBookContext",
     "TrustedReceiptContext",
     "TrustedResearchRunContext",
     "TrustedReceiptSource",

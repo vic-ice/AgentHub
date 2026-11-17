@@ -262,15 +262,23 @@ def _assert_publication() -> None:
     synthesis = synthesize_research_report_deterministic(report)
     published = publish_research_answer(report, synthesis)
     assert published.answer_status == "verified"
-    assert "## 研究结论" in published.answer
-    assert "## 主要发现" in published.answer
-    assert "## 来源" in published.answer
+    assert "### ✨ 值得关注" in published.answer
+    assert "### 🔗 参考来源" in published.answer
+    assert "## 研究结论" not in published.answer
+    assert "## 证据限制" not in published.answer
     assert "Limitations:" not in published.answer
     assert all(
         len(finding.summary) <= 280
         for finding in published.brief.findings
     )
     assert published.sources[0].source_id == str(evidence_id)
+    formal = publish_research_answer(
+        report,
+        synthesis,
+        presentation_style="formal_report",
+    )
+    assert "## 研究结论" in formal.answer
+    assert "## 主要发现" in formal.answer
 
     empty_verification = VerifierAdmissionResult(run_id=run_id)
     empty_report = ResearchReport(
@@ -284,7 +292,8 @@ def _assert_publication() -> None:
     empty_synthesis = synthesize_research_report_deterministic(empty_report)
     empty_answer = publish_research_answer(empty_report, empty_synthesis)
     assert empty_answer.answer_status == "blocked_no_publishable_evidence"
-    assert "## 证据限制" in empty_answer.answer
+    assert "💡 说明" in empty_answer.answer
+    assert "## 证据限制" not in empty_answer.answer
     assert "出版或发布时间" in empty_answer.answer
     assert "评分、评论或榜单" in empty_answer.answer
 
@@ -357,7 +366,8 @@ def _assert_failure_projection() -> None:
         actions=receipts,
     )
     message = finalize_runtime_receipt(plan, receipt)
-    assert "外部检索服务" in message.content
+    assert "稍后重试" in message.content
+    assert "研究状态" not in message.content
     assert "dependency did not complete" not in message.content
     assert "action-" not in message.content
     assert message.custom_data["failure_summary"]["stage"] == "source_search"

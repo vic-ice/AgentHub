@@ -13,7 +13,8 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { getCurrentUserId } from '@/lib/api';
+import { getCurrentUserId, requestJson } from '@/lib/api';
+import { formatErrorForDisplay } from '@/lib/errors';
 import type { MessageStepRaw } from '../types/dag';
 
 interface UseTurnStepsResult {
@@ -73,22 +74,18 @@ export function useTurnSteps(
 
     // Debounce: wait 100ms before fetching to avoid duplicate calls
     // when both isStreaming and sessionId change in quick succession
+    let cancelled = false;
     debounceTimerRef.current = setTimeout(() => {
       // Double-check the key hasn't been fetched while we waited
       if (lastFetchedKeyRef.current === requestKey) {
         return;
       }
 
-      let cancelled = false;
       setLoading(true);
       setError(null);
 
       // Use the correct backend API endpoint with user_id
-      fetch(`/api/v1/traces/${threadId}/steps?user_id=${encodeURIComponent(userId)}`)
-        .then(res => {
-          if (!res.ok) throw new Error(`Failed to fetch turn steps: ${res.status}`);
-          return res.json();
-        })
+      requestJson<MessageStepRaw[]>(`/traces/${threadId}/steps?user_id=${encodeURIComponent(userId)}`)
         .then((data: MessageStepRaw[]) => {
           if (!cancelled) {
             // Empty array is valid - means no trace data yet (new conversation)
@@ -108,7 +105,7 @@ export function useTurnSteps(
             // Don't show error for new conversations without trace data
             // The backend returns empty array now, so this shouldn't happen
             // But keep error handling for genuine network/auth errors
-            setError(err.message);
+            setError(formatErrorForDisplay(err, 'Failed to fetch turn steps'));
           }
         })
         .finally(() => {
@@ -119,6 +116,7 @@ export function useTurnSteps(
     }, 100);
 
     return () => {
+      cancelled = true;
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }

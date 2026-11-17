@@ -88,6 +88,8 @@ class ResearchSearchAdapter:
                 SearchRequest(
                     query=query,
                     max_results=max_sources,
+                    strategy="federated",
+                    provider_budget=3,
                     detail=(
                         "deep"
                         if plan.get("mode") == "deep_research"

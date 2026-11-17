@@ -5,6 +5,8 @@ from app.models.book import (
     Book,
     BookInteraction,
     RecommendationEvent,
+    UserBookShelf,
+    UserBookshelfState,
     UserPreferenceProfile,
 )
 from app.models.app_provider_config import AppProviderConfigRecord
@@ -33,6 +35,8 @@ __all__ = [
     "Book",
     "BookInteraction",
     "RecommendationEvent",
+    "UserBookShelf",
+    "UserBookshelfState",
     "AppProviderConfigRecord",
     "Conversation",
     "ConversationEventRecord",

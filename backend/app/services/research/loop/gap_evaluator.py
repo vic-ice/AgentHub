@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.research.evidence_quality import (
@@ -7,6 +8,12 @@ from app.services.research.evidence_quality import (
     source_host,
 )
 from app.services.research.dedup import dedup_by_content
+from app.services.research.candidate_quality import (
+    catalog_book_title,
+    candidate_topic_supported,
+    is_book_catalog_url,
+    normalize_candidate_title,
+)
 from app.services.research.loop.contracts import (
     ResearchGapAssessment,
     ResearchLoopBudget,
@@ -27,7 +34,11 @@ _GAP_DESCRIPTIONS = {
     "missing_book_evidence": "未找到可核验的具体图书信息。",
     "insufficient_independent_sources": "独立来源不足，尚不能完成交叉验证。",
     "no_publishable_evidence": "没有找到可进入研究报告的可核验证据。",
+    "insufficient_evidence_quality": "现有候选只有低质量来源，需要机构、出版社或编辑来源补强。",
+    "insufficient_recommendation_candidates": "已核验的推荐候选数量不足，需要继续验证同类图书。",
 }
+
+_QUALITY_RANK = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
 
 
 def evaluate_research_gaps(
@@ -109,10 +120,17 @@ def evaluate_research_evidence_gaps(
         )
         for record in normalized_records
     ]
-    publishable_records = [
+    structurally_publishable_records = [
         record
         for record, assessment in assessments
         if assessment.publishable
+    ]
+    required_quality = loop_budget.required_evidence_quality
+    publishable_records = [
+        record
+        for record in structurally_publishable_records
+        if _QUALITY_RANK.get(str(record.quality).lower(), 0)
+        >= _QUALITY_RANK[required_quality]
     ]
     independent_records = dedup_by_content(
         publishable_records,
@@ -139,15 +157,26 @@ def evaluate_research_evidence_gaps(
 
     gaps: list[str] = []
     if not publishable_records:
-        gaps.extend(
-            reason
-            for reason in _REQUIREMENT_GAPS
-            if reason in reason_codes
-        )
+        if structurally_publishable_records:
+            gaps.append("insufficient_evidence_quality")
+        else:
+            gaps.extend(
+                reason
+                for reason in _REQUIREMENT_GAPS
+                if reason in reason_codes
+            )
         if not gaps:
             gaps.append("no_publishable_evidence")
     elif len(independent_sources) < loop_budget.min_independent_sources:
         gaps.append("insufficient_independent_sources")
+    candidate_titles = _verified_recommendation_titles(
+        publishable_records,
+        expected=loop_budget.recommendation_candidate_titles,
+        objective=objective,
+    )
+    if publishable_records and loop_budget.min_recommendation_candidates:
+        if len(candidate_titles) < loop_budget.min_recommendation_candidates:
+            gaps.append("insufficient_recommendation_candidates")
 
     satisfied = not gaps
     can_continue = bool(gaps) and round_index < loop_budget.max_search_rounds
@@ -181,6 +210,11 @@ def evaluate_research_evidence_gaps(
             "rejection_reason_codes": reason_codes,
             "candidate_record_count": len(normalized_records),
             "publishable_record_count": len(publishable_records),
+            "structurally_publishable_record_count": len(
+                structurally_publishable_records
+            ),
+            "required_evidence_quality": required_quality,
+            "recommendation_candidate_count": len(candidate_titles),
             "max_search_rounds": loop_budget.max_search_rounds,
         },
     )
@@ -219,3 +253,67 @@ def _record_fingerprint_text(record: ResearchSourceRecord) -> str:
         )
         if part
     )
+
+
+def _verified_recommendation_titles(
+    records: list[ResearchSourceRecord],
+    *,
+    expected: list[str],
+    objective: str,
+) -> set[str]:
+    identities: dict[str, str] = {}
+    for record in records:
+        if not _is_book_entity_record(record):
+            continue
+        # Only the catalog page's own title is an entity identity. A synopsis
+        # may mention comparison titles, sequels or references that do not own
+        # this catalog URL and therefore must not inflate the stop count.
+        source_title = catalog_book_title(
+            record.source_title,
+            source_url=record.source_url,
+        )
+        if key := normalize_candidate_title(source_title):
+            identities[key] = source_title
+
+    observed: set[str] = set()
+    for key, title in identities.items():
+        bound_texts: list[str] = []
+        for record in records:
+            quoted_keys = {
+                normalize_candidate_title(value)
+                for value in re.findall(
+                    r"《([^》]{1,100})》",
+                    " ".join([record.claim, record.excerpt]),
+                )
+            }
+            source_key = normalize_candidate_title(
+                catalog_book_title(
+                    record.source_title,
+                    source_url=record.source_url,
+                )
+            )
+            if key not in quoted_keys and key != source_key:
+                continue
+            bound_texts.extend(
+                [record.source_title, record.claim, record.excerpt]
+            )
+        if candidate_topic_supported(
+            objective=objective,
+            candidate_title=title,
+            evidence_texts=bound_texts,
+        ):
+            observed.add(key)
+
+    # `expected` is the discovery frontier, not an allow-list. Structured
+    # catalog queries can legitimately discover additional exact entities in
+    # the final round. Count every canonical, topic-supported catalog entity;
+    # editorial pages and unrelated catalog records are already excluded above.
+    return observed
+
+
+def _book_title_key(value: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
+
+
+def _is_book_entity_record(record: ResearchSourceRecord) -> bool:
+    return is_book_catalog_url(record.source_url)

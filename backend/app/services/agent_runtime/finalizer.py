@@ -58,7 +58,7 @@ def finalize_runtime_receipt(
     else:
         content = str(output.get("answer") or "").strip()
         if not content:
-            content = "研究回执中没有可发布的已验证结论。"
+            content = "这次没有找到足够可靠的内容，我先不拿不确定的信息凑答案。"
 
     return _chat_message_from_receipt(
         content,

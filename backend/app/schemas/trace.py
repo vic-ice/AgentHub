@@ -17,6 +17,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
+from app.services.execution_progress import (
+    CompletedExecutionStep,
+    ModelTokenUsage,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +164,21 @@ class ExecutionDag(BaseModel):
             "Authoritative ActionPlan/PlanReceipt topology. Legacy message DAG "
             "fields remain available for historical traces."
         ),
+    )
+    progress_steps: list[CompletedExecutionStep] = Field(
+        default_factory=list,
+        description=(
+            "Compact completed-step progress records. The execution graph and "
+            "persisted trace remain the authoritative final facts."
+        ),
+    )
+    usage_summary: ModelTokenUsage = Field(
+        default_factory=ModelTokenUsage,
+        description="Provider-reported model usage accumulated for this turn.",
+    )
+    business_type: str = Field(
+        default="chat",
+        description="Business scope used by usage aggregation.",
     )
 
 

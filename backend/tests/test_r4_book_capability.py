@@ -19,7 +19,13 @@ from app.services.external_capabilities.book import BookSearchRuntimeAdapter
 from app.services.external_capabilities.runtime import (
     ExternalCapabilityRuntime,
 )
-from app.services.external_search.contracts import SearchHit, SearchResult
+from app.services.external_capabilities.policy import (
+    ExternalCapabilityPolicyRegistry,
+)
+from app.services.external_capabilities.contracts import (
+    BookEvidence,
+    ExternalEvidenceSource,
+)
 
 
 def _availability(*, book: bool) -> ExternalCapabilityAvailability:
@@ -55,24 +61,20 @@ def _compile_book_plan():
     )
 
 
-class _BookGatewayStub:
-    async def search(self, request):
-        return SearchResult(
-            outcome="found",
-            provider="private-book-provider",
+class _RecommendationServiceStub:
+    async def search(self, request, *, user_id):
+        del user_id
+        return BookEvidence(
+            status="ok",
             query=request.query,
-            effective_query=request.query,
-            hits=[
-                SearchHit(
+            sources=[
+                ExternalEvidenceSource(
                     title="《天气之书》",
                     url="https://books.example/weather",
                     snippet="作者：示例作者；适合儿童阅读。",
-                    content="RAW_BOOK_PAGE",
-                    provider="private-book-provider",
-                    metadata={"cache_write": "must-not-happen"},
                 )
             ],
-            metadata={"provider_dump": "must-not-leak"},
+            metadata={"owner": "RecommendationService"},
         )
 
 
@@ -91,11 +93,19 @@ class BookCapabilityContractTests(unittest.TestCase):
             properties,
             {
                 "query",
+                "mode",
                 "limit",
+                "response_depth",
                 "language",
+                "themes",
                 "genres",
+                "theme_match",
                 "authors",
                 "audience",
+                "reference_titles",
+                "candidate_titles",
+                "evidence_strategy",
+                "excluded_titles",
                 "publication_year_from",
                 "publication_year_to",
             },
@@ -122,12 +132,32 @@ class BookCapabilityContractTests(unittest.TestCase):
 
 
 class BookCapabilityRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_book_timeout_matches_structured_response_depth(self):
+        policies = ExternalCapabilityPolicyRegistry()
+
+        self.assertEqual(
+            policies.timeout_seconds(
+                "book_search_v1",
+                {"mode": "recommendation", "response_depth": "deep"},
+            ),
+            75.0,
+        )
+        self.assertEqual(
+            policies.timeout_seconds(
+                "book_search_v1",
+                {"mode": "lookup", "response_depth": "deep"},
+            ),
+            25.0,
+        )
+
     async def test_disabled_book_runtime_rejects_compiled_bypass(self):
         plan = _compile_book_plan()
         runtime = ExternalCapabilityRuntime(
             availability=_availability(book=False),
             adapters=[
-                BookSearchRuntimeAdapter(search_gateway=_BookGatewayStub())
+                BookSearchRuntimeAdapter(
+                    recommendation_service=_RecommendationServiceStub()
+                )
             ],
         )
 
@@ -154,7 +184,9 @@ class BookCapabilityRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runtime = ExternalCapabilityRuntime(
             availability=_availability(book=True),
             adapters=[
-                BookSearchRuntimeAdapter(search_gateway=_BookGatewayStub())
+                BookSearchRuntimeAdapter(
+                    recommendation_service=_RecommendationServiceStub()
+                )
             ],
         )
 

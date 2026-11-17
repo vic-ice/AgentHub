@@ -91,7 +91,7 @@ export type UserInput = {
 
 // ==================== Memory Types ====================
 
-export type MemoryAdminFact = {
+export type MemoryVersionRecord = {
   schema_key: string
   memory_key: string
   subject: string
@@ -103,6 +103,18 @@ export type MemoryAdminFact = {
   valid_from: string
   valid_to: string | null
   is_tombstone: boolean
+  domain: string
+  kind: string
+}
+
+export type MemoryAdminFact = MemoryVersionRecord & {
+  presentation_key: string
+  category_key: string
+  category_label: string
+  display_value: string
+  can_edit: boolean
+  can_forget: boolean
+  show_evidence: boolean
 }
 
 export type MemoryAdminCurrentResponse = {
@@ -116,6 +128,7 @@ export type MemoryAdminHistoryResponse = {
 
 export type MemoryEditRequest = {
   user_id: string
+  memory_key: string
   predicate: string
   value: Record<string, unknown>
   qualifiers?: Record<string, unknown>
@@ -125,6 +138,7 @@ export type MemoryEditRequest = {
 
 export type MemoryForgetAdminRequest = {
   user_id: string
+  memory_key: string
   predicate: string
   identity?: Record<string, unknown>
   qualifiers?: Record<string, unknown>
@@ -139,8 +153,8 @@ export type MemoryMutationReceipt = {
   mutations: {
     memory_key: string
     status: "created" | "revised" | "noop_duplicate" | "forgotten"
-    version: MemoryAdminFact
-    previous?: MemoryAdminFact | null
+    version: MemoryVersionRecord
+    previous?: MemoryVersionRecord | null
   }[]
 }
 
@@ -1031,6 +1045,30 @@ export type StoredToolCallInfo = {
   order: number  // Call order index
 }
 
+export type ModelTokenUsage = {
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cached_tokens: number
+  total_tokens: number
+}
+
+export type CompletedExecutionStep = {
+  step_id: string
+  order: number
+  kind: "model" | "action" | "research"
+  status: "completed" | "failed" | "blocked" | "skipped" | "waiting"
+  title: string
+  detail: string
+  business_type: string
+  model_name?: string | null
+  action_id?: string | null
+  operation?: string | null
+  duration_ms?: number | null
+  error?: string | null
+  usage?: ModelTokenUsage | null
+}
+
 export type StreamEvent =
   | {
     protocol_version: "agent-stream-v1"
@@ -1038,6 +1076,15 @@ export type StreamEvent =
     type: "turn.started"
     request_id: string
     content: Record<string, never>
+  }
+  | {
+    protocol_version: "agent-stream-v1"
+    sequence: number
+    type: "step.completed"
+    request_id: string
+    content: {
+      step: CompletedExecutionStep
+    }
   }
   | {
     protocol_version: "agent-stream-v1"
@@ -1146,5 +1193,59 @@ export type StreamEvent =
     type: "error"
     content: string
     error_type?: string
+    error_code?: string
+    request_id?: string
+    stage?: string
+    retryable?: boolean
   }
 
+
+// ==================== Bookshelf (Reading Assets) ====================
+// 契约权威来源：docs/bookshelf-contract.md (frozen v1)
+// 前端只允许依赖本组类型，不得依赖 BookInteraction / RecommendationEvent 底层结构。
+
+export type ReadingStatus = "want_to_read" | "reading" | "read" | "dropped"
+
+export type BookEvaluation = "liked" | "neutral" | "disliked" | "not_interested"
+
+export type ShelfBook = {
+  id: string
+  user_id: string
+  book_id: string | null
+  title: string
+  authors: string[]
+  tags: string[]
+  cover_url: string | null
+  source_url: string | null
+  reading_status: ReadingStatus
+  evaluation: BookEvaluation | null
+  note: string
+  rating: number | null
+  created_at: string
+  updated_at: string
+  last_event_at: string | null
+}
+
+export type ShelfBookUpsert = {
+  user_id: string
+  book_id?: string | null
+  title?: string
+  reading_status?: ReadingStatus
+  evaluation?: BookEvaluation | null
+  note?: string
+  rating?: number | null
+}
+
+export type ShelfBookUpdate = {
+  reading_status?: ReadingStatus
+  evaluation?: BookEvaluation | null
+  note?: string
+  rating?: number | null
+}
+
+export type BookshelfListResponse = {
+  user_id: string
+  items: ShelfBook[]
+  total: number
+  status?: "ok"
+}
