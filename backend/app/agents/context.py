@@ -19,16 +19,22 @@ class AgentRuntimeContext:
 
     Attributes:
         user_id: User identifier for long-term memory and multi-tenancy.
+        thread_id: Conversation identifier for memory traceability.
         request_id: Request identifier for end-to-end tracing.
         model_name: Override model for this request (e.g. "dashscope/qwen3.5-27b").
         thinking_mode: Enable thinking/reasoning mode for the model.
         timezone: IANA timezone for time-context substitution in prompts.
         file: File path/URL for file-based Q&A scenarios (from custom_data).
+        action_plan: The planner decision that authorized runtime actions.
+        plan_receipt: SystemRuntime proof and bounded capability outputs.
     """
 
     user_id: UUID | None = None
+    thread_id: UUID | None = None
     request_id: str = ""
     model_name: str = ""
     thinking_mode: bool = False
     timezone: str = "Asia/Shanghai"
     file: str = ""
+    action_plan: dict | None = None
+    plan_receipt: dict | None = None

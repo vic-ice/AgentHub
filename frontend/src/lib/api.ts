@@ -1,4 +1,7 @@
 import type {
+  AppProviderConfigList,
+  AppProviderConfig,
+  AppProviderConfigUpdate,
   ChatHistory,
   ChatMessage,
   ConversationInDB,
@@ -12,6 +15,22 @@ import type {
   ProviderInfo,
   ProvidersResponse,
   ProviderUpdate,
+  ProviderConnectionInfo,
+  ProviderConnectionsResponse,
+  ProviderConnectionCreate,
+  ProviderConnectionUpdate,
+  MemoryAdminCurrentResponse,
+  MemoryAdminHistoryResponse,
+  MemoryEditRequest,
+  MemoryForgetAdminRequest,
+  MemoryMutationReceipt,
+  RecommendationEventType,
+  RecommendationSignal,
+  RecommendationSignalCreate,
+  ResearchFinishRequest,
+  ResearchRunListResult,
+  ResearchRunStatus,
+  ResearchStateResult,
 } from "@/types"
 
 const rawBaseUrl = import.meta.env.VITE_API_BASE_URL || "/api/v1"
@@ -37,7 +56,15 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`HTTP ${response.status}${details}`)
   }
 
-  return (await response.json()) as T
+  if (response.status === 204) {
+    return undefined as T
+  }
+
+  const text = await response.text()
+  if (!text) {
+    return undefined as T
+  }
+  return JSON.parse(text) as T
 }
 
 // ── User scoping helper ───────────────────────────────────────────────────────
@@ -171,7 +198,158 @@ export async function getHistory(
   )
 }
 
+export async function getMemoryCurrent(
+  userId: string,
+): Promise<MemoryAdminCurrentResponse> {
+  return requestJson<MemoryAdminCurrentResponse>(
+    `/memory/${encodeURIComponent(userId)}/current`,
+  )
+}
+
+export async function getMemoryHistory(
+  userId: string,
+  memoryKey: string,
+): Promise<MemoryAdminHistoryResponse> {
+  const query = new URLSearchParams({ memory_key: memoryKey })
+  return requestJson<MemoryAdminHistoryResponse>(
+    `/memory/${encodeURIComponent(userId)}/history?${query.toString()}`,
+  )
+}
+
+export async function editMemory(
+  input: MemoryEditRequest,
+): Promise<MemoryMutationReceipt> {
+  return requestJson<MemoryMutationReceipt>("/memory/edit", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
+export async function forgetMemory(
+  input: MemoryForgetAdminRequest,
+): Promise<MemoryMutationReceipt> {
+  return requestJson<MemoryMutationReceipt>("/memory/forget", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
 // ── Invoke / Stream ───────────────────────────────────────────────────────────
+
+export async function recordRecommendationSignal(
+  input: RecommendationSignalCreate,
+): Promise<RecommendationSignal> {
+  return requestJson<RecommendationSignal>("/books/recommendation-events", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
+export async function listRecommendationSignals(input: {
+  userId: string
+  bookTitle?: string
+  eventType?: RecommendationEventType[]
+  limit?: number
+  offset?: number
+}): Promise<RecommendationSignal[]> {
+  const params = new URLSearchParams({
+    limit: String(input.limit ?? 50),
+    offset: String(input.offset ?? 0),
+  })
+  if (input.bookTitle) {
+    params.set("book_title", input.bookTitle)
+  }
+  for (const eventType of input.eventType ?? []) {
+    params.append("event_type", eventType)
+  }
+  return requestJson<RecommendationSignal[]>(
+    `/books/recommendation-events/${encodeURIComponent(input.userId)}?${params.toString()}`,
+  )
+}
+
+export async function listResearchRuns(input: {
+  userId: string
+  status?: ResearchRunStatus | ""
+  limit?: number
+  offset?: number
+}): Promise<ResearchRunListResult> {
+  const params = new URLSearchParams({
+    user_id: input.userId,
+    limit: String(input.limit ?? 50),
+    offset: String(input.offset ?? 0),
+  })
+  if (input.status) {
+    params.set("status", input.status)
+  }
+  return requestJson<ResearchRunListResult>(`/research/runs?${params.toString()}`)
+}
+
+export async function getResearchState(input: {
+  userId: string
+  runId: string
+  limitSteps?: number
+  limitEvidence?: number
+}): Promise<ResearchStateResult> {
+  const params = new URLSearchParams({
+    user_id: input.userId,
+    limit_steps: String(input.limitSteps ?? 100),
+    limit_evidence: String(input.limitEvidence ?? 100),
+  })
+  return requestJson<ResearchStateResult>(
+    `/research/${encodeURIComponent(input.runId)}?${params.toString()}`,
+  )
+}
+
+export async function finishResearch(
+  input: ResearchFinishRequest,
+): Promise<ResearchStateResult> {
+  return requestJson<ResearchStateResult>("/research/finish", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
+export async function cancelResearchRun(input: {
+  userId: string
+  runId: string
+  reason?: string
+}): Promise<ResearchStateResult> {
+  return finishResearch({
+    user_id: input.userId,
+    run_id: input.runId,
+    status: "cancelled",
+    conclusion: input.reason || "Research run cancelled from research view.",
+    metadata: {
+      cancelled_from: "research_view",
+    },
+  })
+}
+
+export async function getAppProviderConfigs(): Promise<AppProviderConfigList> {
+  return requestJson<AppProviderConfigList>("/provider-configs")
+}
+
+export async function updateAppProviderConfig(
+  providerKey: string,
+  input: AppProviderConfigUpdate,
+): Promise<AppProviderConfig> {
+  return requestJson<AppProviderConfig>(
+    `/provider-configs/${encodeURIComponent(providerKey)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    },
+  )
+}
+
+export async function checkAppProviderHealth(
+  providerKey: string,
+): Promise<AppProviderConfig> {
+  return requestJson<AppProviderConfig>(
+    `/provider-configs/${encodeURIComponent(providerKey)}/health`,
+    { method: "POST" },
+  )
+}
 
 export async function invoke(input: UserInput): Promise<ChatMessage> {
   return requestJson<ChatMessage>("/chat/invoke", {
@@ -293,7 +471,7 @@ export async function getAllModels(): Promise<ModelsResponse> {
 export async function createModel(data: ModelCreate): Promise<ModelInfo> {
   // Normalize model_id: strip provider prefix if present
   let normalizedModelId = data.model_id
-  if (normalizedModelId.startsWith(`${data.provider}/`)) {
+  if (data.provider && normalizedModelId.startsWith(`${data.provider}/`)) {
     normalizedModelId = normalizedModelId.slice(data.provider.length + 1)
   }
 
@@ -376,6 +554,38 @@ export async function setDefaultThinkingModel(modelId: string): Promise<ModelInf
  */
 export async function getProviders(): Promise<ProvidersResponse> {
   return requestJson<ProvidersResponse>("/models/providers")
+}
+
+export async function getProviderConnections(
+  providerKey?: string,
+): Promise<ProviderConnectionsResponse> {
+  const query = providerKey ? `?provider_key=${encodeURIComponent(providerKey)}` : ""
+  return requestJson<ProviderConnectionsResponse>(`/models/connections${query}`)
+}
+
+export async function createProviderConnection(
+  data: ProviderConnectionCreate,
+): Promise<ProviderConnectionInfo> {
+  return requestJson<ProviderConnectionInfo>("/models/connections", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function updateProviderConnection(
+  connectionId: string,
+  data: ProviderConnectionUpdate,
+): Promise<ProviderConnectionInfo> {
+  return requestJson<ProviderConnectionInfo>(`/models/connections/${connectionId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteProviderConnection(connectionId: string): Promise<void> {
+  await requestJson<void>(`/models/connections/${connectionId}`, {
+    method: "DELETE",
+  })
 }
 
 /**

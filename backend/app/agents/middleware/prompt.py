@@ -24,10 +24,14 @@ import asyncio
 import time
 from datetime import datetime
 from pathlib import Path
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cachetools import TTLCache
 from langchain.agents.middleware import dynamic_prompt, ModelRequest
+
+from app.services.context_pack import ContextBuilder, render_context_pack_prompt
+from app.utils.turn_context import get_current_user_message
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
@@ -126,10 +130,17 @@ def _inject_runtime_context(
     template: str,
     timezone: str,
     user_id: str = "",
+    thread_id: str = "",
+    context_pack: str = "",
 ) -> str:
     """Replace runtime placeholders in template."""
     time_ctx = _build_time_context(timezone)
-    return template.format(**time_ctx, user_id=user_id)
+    return template.format(
+        **time_ctx,
+        user_id=user_id,
+        thread_id=thread_id,
+        context_pack=context_pack,
+    )
 
 
 # ── Dynamic prompt middlewares ──────────────────────────────────────────────
@@ -152,11 +163,40 @@ async def supervisor_prompt(request: ModelRequest) -> str:
         if tz:
             timezone = tz
         user_id = str(getattr(request.runtime.context, "user_id", "") or "")
+        thread_id = str(getattr(request.runtime.context, "thread_id", "") or "")
+        action_plan = getattr(request.runtime.context, "action_plan", None)
+        plan_receipt = getattr(request.runtime.context, "plan_receipt", None)
     else:
         user_id = ""
+        thread_id = ""
+        action_plan = None
+        plan_receipt = None
 
     # Get template (from cache or file)
     template = await _get_template("supervisor")
 
     # Inject runtime context
-    return _inject_runtime_context(template, timezone, user_id=user_id)
+    user_message = get_current_user_message()
+    context_pack = await ContextBuilder().build(
+        user_id=_coerce_uuid(user_id),
+        thread_id=_coerce_uuid(thread_id),
+        user_message=user_message,
+        messages=getattr(request, "messages", []),
+        action_plan=action_plan,
+        plan_receipt=plan_receipt,
+    )
+    context_pack_prompt = render_context_pack_prompt(context_pack)
+    return _inject_runtime_context(
+        template,
+        timezone,
+        user_id=user_id,
+        thread_id=thread_id,
+        context_pack=context_pack_prompt,
+    )
+
+
+def _coerce_uuid(value: str) -> UUID | None:
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None

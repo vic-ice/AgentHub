@@ -7,19 +7,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
-from app.agents import init_agent
-from app.agents.middleware.prompt import preload_templates
 from app.infra.config import get_settings
 from app.utils.logging import JsonFormatter, RequestIdFilter
 from app.infra.llm.manager import get_model_manager
 from app.infra.llm.system_llm import init_system_llm
-from app.infra.llm.embedding import init_embedding_model
+from app.infra.llm.embedding import (
+    initialize_embedding_runtime,
+    probe_embedding_runtime,
+)
 from app.api.errors import register_exception_handlers
 from app.infra.database import (
-    init_database,
+    init_database_connection,
+    init_database_components,
     dispose_database,
-    get_checkpointer,
-    get_store,
 )
 from app.api.v1 import api_router
 
@@ -89,31 +89,47 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     try:
         # ── Startup ──────────────────────────────────────────────────────
-        # Initialize system LLM and embedding model FIRST (no dependencies).
-        # Embedding model must be ready before database (vectorstore needs it).
+        # System LLM is environment-owned and has no database dependency.
         init_system_llm()
         logger.info("System LLM initialized")
-        init_embedding_model()
-        logger.info("Embedding model initialized")
 
-        # Initialize database (needs embedding model for vectorstore).
-        # Order: database → vectorstore → checkpointer → store.
-        await init_database()
-        logger.info("All database components initialized successfully")
-
-        # Initialize model manager (needs database to query model configs).
+        # Canonical order: DB -> ModelManager -> EmbeddingClient -> consumers.
+        await init_database_connection()
+        logger.info("Database connection initialized")
         await get_model_manager().refresh()
         logger.info("Model manager initialized")
 
-        # Preload prompt templates (sync, zero first-request latency)
-        loaded = preload_templates()
-        logger.info("Preloaded %d prompt templates: %s", len(loaded), loaded)
+        embedding_config = initialize_embedding_runtime()
+        if embedding_config is not None:
+            embedding_probe = await probe_embedding_runtime(
+                embedding_config,
+                timeout_seconds=1.5,
+            )
+            if embedding_probe.probe_ok:
+                logger.info(
+                    "Embedding runtime probe succeeded: model=%s dimensions=%d "
+                    "elapsed_ms=%.1f",
+                    embedding_config.model,
+                    embedding_probe.embedding_dimensions,
+                    embedding_probe.elapsed_ms,
+                )
+            else:
+                logger.warning(
+                    "Embedding runtime probe failed open: model=%s category=%s "
+                    "message=%s elapsed_ms=%.1f",
+                    embedding_config.model,
+                    embedding_probe.error_category,
+                    embedding_probe.message,
+                    embedding_probe.elapsed_ms,
+                )
 
-        store = get_store()
-        await init_agent(
-            checkpointer=get_checkpointer().get_saver(),
-            store=store.get_store() if store else None,
-        )
+        await init_database_components()
+        logger.info("All database components initialized successfully")
+
+        from app.services.routing import schedule_routing_semantic_warmup
+
+        schedule_routing_semantic_warmup()
+        logger.info("Routing semantic index warmup scheduled")
 
         # WeChat listener is now per-login, started in WebSocket endpoint
     except Exception as e:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Languages, Moon, Share2, Sun, Settings } from "lucide-react"
+import { Brain, Languages, MessageSquare, Moon, PlugZap, SearchCheck, Share2, Sun, Settings } from "lucide-react"
 
 import {
   AlertDialog,
@@ -21,6 +21,7 @@ import {
   getHistory,
   listConversations,
   loadMoreConversations,
+  recordRecommendationSignal,
   setConversationTitle,
   setCurrentUserId,
   streamChat,
@@ -44,11 +45,14 @@ import {
   ChatSidebar,
   ConversationRenameDialog,
   DeleteConversationDialog,
+  MemoryManagementDialog,
   ShareDialog,
   TokenStatsPanel,
   TurnDAGSidebar,
 } from "@/features/chat/components"
 import { ProviderConfigDialog } from "@/features/chat/components/provider-config-dialog"
+import { AppProviderConfigDialog } from "@/features/chat/components/app-provider-config-dialog"
+import { ResearchView } from "@/features/research/components/research-view"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import {
@@ -65,6 +69,15 @@ import {
 import { useI18n } from "@/i18n"
 import { HomePage } from "@/pages/home-page"
 import { Toaster } from "@/components/ui/toaster"
+import {
+  findRecentDetailRequestTarget,
+  findRecentFollowUpMatch,
+  type FollowUpQuestionOption,
+  type FollowUpSendContext,
+} from "@/features/chat/recommendation-followups"
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function App() {
   const { t, toggleLocale } = useI18n()
@@ -102,7 +115,8 @@ function App() {
     getEffectiveModel,
     getSelectedModelInfo,
     refreshModels,
-  } = useModels(threadId, isLoggedIn)
+    isLoading: isLoadingModels,
+  } = useModels(threadId, isLoggedIn, effectiveUserId)
 
   // Handle user switch - go back to home page
   const handleSwitchUser = useCallback(async () => {
@@ -110,13 +124,19 @@ function App() {
     setConversations([])
     setThreadId("")
     setMessages([])
+    messagesRef.current = []
+    conversationDraftsRef.current.clear()
     setConversationTitleState(defaultConversationTitle)
     setDraftTitle(defaultConversationTitle)
     setConversationsOffset(0)
     setHasMoreConversations(false)
     setSelectedRequestId(null)
     setAppError(null)
-    abortControllerRef.current?.abort()
+    setMainView("chat")
+    for (const controller of streamControllersRef.current.values()) {
+      controller.abort()
+    }
+    streamControllersRef.current.clear()
     setIsStreaming(false)
 
     setUserId(null)
@@ -170,15 +190,23 @@ function App() {
   const [renameTarget, setRenameTarget] = useState<ConversationInDB | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ConversationInDB | null>(null)
   const [showShareDialog, setShowShareDialog] = useState(false)
+  const [showMemoryDialog, setShowMemoryDialog] = useState(false)
   const [showProviderConfig, setShowProviderConfig] = useState(false)
+  const [showAppProviderConfig, setShowAppProviderConfig] = useState(false)
   const [showNoModelDialog, setShowNoModelDialog] = useState(false)
+  const [mainView, setMainView] = useState<"chat" | "research">("chat")
 
   const abortControllerRef = useRef<AbortController | null>(null)
-  const streamingPlaceholderIdRef = useRef<string | null>(null)
+  const streamControllersRef = useRef<Map<string, AbortController>>(new Map())
+  const streamingPlaceholderIdsRef = useRef<Map<string, string>>(new Map())
+  const conversationDraftsRef = useRef<Map<string, LocalChatMessage[]>>(new Map())
+  const activeThreadIdRef = useRef(threadId)
+  const messagesRef = useRef<LocalChatMessage[]>(messages)
   const currentRequestIdRef = useRef<string | null>(null)
   const isProcessingRef = useRef(false)
   const thinkingModeRef = useRef(thinkingMode)
   const effectiveModelRef = useRef<string | null>(null)
+  const recordedFollowUpSignalsRef = useRef<Set<string>>(new Set())
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -188,6 +216,82 @@ function App() {
   useEffect(() => {
     effectiveModelRef.current = effectiveSelectedModel
   }, [effectiveSelectedModel])
+
+  useEffect(() => {
+    activeThreadIdRef.current = threadId
+  }, [threadId])
+
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+
+  const recordFollowUpSignal = useCallback(
+    (
+      eventType: "followup_clicked" | "followup_matched" | "detail_requested",
+      question: FollowUpQuestionOption,
+      targetThreadId: string,
+      options?: {
+        similarity?: number
+        parentMessageId?: string | null
+        parentRequestId?: string | null
+      },
+    ) => {
+      const signalUserId = effectiveUserId || getCurrentUserId()
+      if (!signalUserId || !UUID_PATTERN.test(signalUserId)) {
+        return
+      }
+
+      const messageId = options?.parentMessageId || question.messageId || ""
+      const requestId =
+        options?.parentRequestId ||
+        question.requestId ||
+        currentRequestIdRef.current ||
+        ""
+      const dedupeKey = [
+        eventType,
+        signalUserId,
+        targetThreadId,
+        messageId,
+        question.id,
+        question.question,
+      ].join(":")
+
+      if (recordedFollowUpSignalsRef.current.has(dedupeKey)) {
+        return
+      }
+      recordedFollowUpSignalsRef.current.add(dedupeKey)
+
+      void recordRecommendationSignal({
+        user_id: signalUserId,
+        event_type: eventType,
+        signal_polarity: "positive",
+        signal_strength:
+          eventType === "detail_requested"
+            ? 0.8
+            : eventType === "followup_clicked"
+              ? 0.7
+              : 0.55,
+        book_title: question.bookTitle,
+        thread_id: targetThreadId,
+        request_id: requestId,
+        message_id: messageId,
+        source: "followup_question",
+        metadata: {
+          followup_id: question.id,
+          followup_text: question.question,
+          followup_reason: question.reason,
+          parent_book_title: question.bookTitle,
+          parent_tool_call_id: question.toolCallId,
+          parent_tool_name: question.toolName,
+          similarity: options?.similarity ?? null,
+          writes_long_term_memory: false,
+        },
+      }).catch((error: unknown) => {
+        console.warn("Failed to record follow-up recommendation signal", error)
+      })
+    },
+    [effectiveUserId],
+  )
 
   // Check if there are available models (active LLM/VLM)
   const hasAvailableModels = useMemo(() => {
@@ -199,18 +303,22 @@ function App() {
 
   // Show dialog when no models are available after initialization
   useEffect(() => {
-    if (!isInitializing && !isLoadingConversation) {
+    if (!isInitializing && !isLoadingConversation && !isLoadingModels) {
       // Show dialog when no models are configured (including when models array is empty)
       if (!hasAvailableModels) {
         setShowNoModelDialog(true)
       }
     }
-  }, [isInitializing, isLoadingConversation, hasAvailableModels])
+  }, [isInitializing, isLoadingConversation, isLoadingModels, hasAvailableModels])
 
   // Write userId and threadId to URL
   // Use effectiveUserId to support both mock users and WeChat users
   const writeUrl = useCallback((nextThreadId: string | null) => {
     writeToUrl(effectiveUserId, nextThreadId)
+  }, [effectiveUserId])
+
+  useEffect(() => {
+    setCurrentUserId(effectiveUserId)
   }, [effectiveUserId])
 
   const refreshConversations = useCallback(async () => {
@@ -290,13 +398,26 @@ function App() {
         return
       }
 
-      abortControllerRef.current?.abort()
-      setIsStreaming(false)
+      const previousThreadId = activeThreadIdRef.current
+      if (previousThreadId) {
+        conversationDraftsRef.current.set(previousThreadId, messagesRef.current)
+      }
+      activeThreadIdRef.current = targetThreadId
+      setIsStreaming(streamControllersRef.current.has(targetThreadId))
       setThreadId(targetThreadId)
       writeUrl(targetThreadId)
       setRenameTarget(null)
       setIsLoadingConversation(true)
       setAppError(null)
+      setIsProcessing(false)
+      isProcessingRef.current = false
+      setIsAgentThinking(false)
+      setActiveToolCall(null)
+      setCalledTools([])
+      setThinkingContent("")
+      const initialDraft = conversationDraftsRef.current.get(targetThreadId) ?? []
+      messagesRef.current = initialDraft
+      setMessages(initialDraft)
 
       try {
         const [historyResult, titleResult] = await Promise.allSettled([
@@ -304,10 +425,22 @@ function App() {
           getConversationTitle(targetThreadId),
         ])
 
+        if (activeThreadIdRef.current !== targetThreadId) {
+          return
+        }
+
         if (historyResult.status === "fulfilled") {
-          setMessages(
-            historyResult.value.messages.map((message) => toLocalMessage(message)),
+          const persistedMessages = historyResult.value.messages.map((message) =>
+            toLocalMessage(message),
           )
+          const draftMessages = conversationDraftsRef.current.get(targetThreadId) ?? []
+          const nextMessages =
+            draftMessages.length > persistedMessages.length
+              ? draftMessages
+              : persistedMessages
+          conversationDraftsRef.current.set(targetThreadId, nextMessages)
+          messagesRef.current = nextMessages
+          setMessages(nextMessages)
           // Auto-select the latest request_id (from last AI message)
           const lastAiMessage = historyResult.value.messages
             .filter((m: ChatMessage) => m.type === "ai")
@@ -318,7 +451,9 @@ function App() {
             setSelectedRequestId(null)
           }
         } else {
-          setMessages([])
+          const draftMessages = conversationDraftsRef.current.get(targetThreadId) ?? []
+          messagesRef.current = draftMessages
+          setMessages(draftMessages)
           setSelectedRequestId(null)
         }
 
@@ -335,29 +470,41 @@ function App() {
           setDraftTitle(fallbackTitle)
         }
       } catch (error) {
+        if (activeThreadIdRef.current !== targetThreadId) {
+          return
+        }
         setAppError(
           t("error.loadConversation", {
             details: getErrorMessage(error, t("error.unexpected")),
           }),
         )
-        setMessages([])
+        const draftMessages = conversationDraftsRef.current.get(targetThreadId) ?? []
+        messagesRef.current = draftMessages
+        setMessages(draftMessages)
         setConversationTitleState(defaultConversationTitle)
         setDraftTitle(defaultConversationTitle)
       } finally {
-        setIsLoadingConversation(false)
+        if (activeThreadIdRef.current === targetThreadId) {
+          setIsLoadingConversation(false)
+        }
       }
     },
     [conversations, defaultConversationTitle, t, writeUrl],
   )
 
   const resetToNewConversation = useCallback(() => {
-    abortControllerRef.current?.abort()
+    const previousThreadId = activeThreadIdRef.current
+    if (previousThreadId) {
+      conversationDraftsRef.current.set(previousThreadId, messagesRef.current)
+    }
+    activeThreadIdRef.current = ""
     setIsStreaming(false)
 
     // Delay thread_id creation until first message is sent
     setThreadId("")
     writeUrl(null)
     setMessages([])
+    messagesRef.current = []
     setConversationTitleState(defaultConversationTitle)
     setDraftTitle(defaultConversationTitle)
     setRenameTarget(null)
@@ -365,11 +512,32 @@ function App() {
     setSelectedRequestId(null)
   }, [writeUrl, defaultConversationTitle])
 
-  const createStreamingPlaceholder = useCallback(() => {
-    const placeholderId = crypto.randomUUID()
-    streamingPlaceholderIdRef.current = placeholderId
+  const updateThreadMessages = useCallback(
+    (
+      targetThreadId: string,
+      update: (previous: LocalChatMessage[]) => LocalChatMessage[],
+    ) => {
+      if (activeThreadIdRef.current === targetThreadId) {
+        setMessages((previous) => {
+          const next = update(previous)
+          messagesRef.current = next
+          conversationDraftsRef.current.set(targetThreadId, next)
+          return next
+        })
+        return
+      }
 
-    setMessages((previous) => [
+      const previous = conversationDraftsRef.current.get(targetThreadId) ?? []
+      conversationDraftsRef.current.set(targetThreadId, update(previous))
+    },
+    [],
+  )
+
+  const createStreamingPlaceholder = useCallback((targetThreadId: string) => {
+    const placeholderId = crypto.randomUUID()
+    streamingPlaceholderIdsRef.current.set(targetThreadId, placeholderId)
+
+    updateThreadMessages(targetThreadId, (previous) => [
       ...previous,
       toLocalMessage(
         {
@@ -379,19 +547,19 @@ function App() {
         { localId: placeholderId, isStreaming: true },
       ),
     ])
-  }, [])
+  }, [updateThreadMessages])
 
-  const addStreamToken = useCallback((token: string) => {
+  const addStreamToken = useCallback((token: string, targetThreadId: string) => {
     if (!token) {
       return
     }
 
-    setMessages((previous) => {
-      let placeholderId = streamingPlaceholderIdRef.current
+    updateThreadMessages(targetThreadId, (previous) => {
+      let placeholderId = streamingPlaceholderIdsRef.current.get(targetThreadId)
 
       if (!placeholderId) {
         placeholderId = crypto.randomUUID()
-        streamingPlaceholderIdRef.current = placeholderId
+        streamingPlaceholderIdsRef.current.set(targetThreadId, placeholderId)
 
         return [
           ...previous,
@@ -411,10 +579,10 @@ function App() {
           : message,
       )
     })
-  }, [])
+  }, [updateThreadMessages])
 
   const addMessageFromStream = useCallback(
-    (message: ChatMessage) => {
+    (message: ChatMessage, targetThreadId: string) => {
       const normalized = normalizeChatMessage(message)
 
       // The UI already appends the user's text immediately.
@@ -422,9 +590,9 @@ function App() {
         return
       }
 
-      setMessages((previous) => {
+      updateThreadMessages(targetThreadId, (previous) => {
         if (normalized.type === "ai") {
-          const placeholderId = streamingPlaceholderIdRef.current
+          const placeholderId = streamingPlaceholderIdsRef.current.get(targetThreadId)
           const hasToolCalls = normalized.tool_calls && normalized.tool_calls.length > 0
           const hasContent = normalized.content && normalized.content.trim().length > 0
 
@@ -445,8 +613,11 @@ function App() {
             // Determine final content:
             // - If content was already streamed via tokens, keep existing content
             // - Otherwise, use the message content (for non-streaming cases like tool calls)
-            const finalContent = contentAlreadyStreamed ? existingContent :
-              (hasContent ? normalized.content : existingContent)
+            const finalContent = contentAlreadyStreamed
+              ? normalized.content.length >= existingContent.length
+                ? normalized.content
+                : existingContent
+              : (hasContent ? normalized.content : existingContent)
 
             // Merge tool calls: combine existing and new (avoid duplicates by id)
             const mergedToolCalls = hasToolCalls
@@ -469,7 +640,7 @@ function App() {
                   tool_calls: mergedToolCalls,
                   custom_data: {
                     ...item.custom_data,
-                    ...(normalized.custom_data?.thinking ? { thinking: normalized.custom_data.thinking } : {}),
+                    ...normalized.custom_data,
                   },
                   local_id: placeholderId,
                   is_streaming: !isFinalResponse,
@@ -505,7 +676,7 @@ function App() {
           // (e.g., "Let me check..." followed by the actual response).
           // We merge regardless of whether the last message is still marked as streaming,
           // as long as the overall streaming session is still active.
-          const shouldMergeContent = isStreaming && lastMessage?.type === "ai" && hasContent
+          const shouldMergeContent = lastMessage?.type === "ai" && hasContent
 
           if (shouldMergeContent) {
             // Merge content and tool calls into the last message
@@ -527,6 +698,7 @@ function App() {
                   request_id: mergedRequestId,
                   custom_data: {
                     ...item.custom_data,
+                    ...normalized.custom_data,
                     ...(mergedThinking ? { thinking: mergedThinking } : {}),
                   },
                   // Keep streaming state - will be marked as complete when streaming ends
@@ -549,11 +721,11 @@ function App() {
         return [...previous, toLocalMessage(normalized)]
       })
     },
-    [isStreaming],
+    [updateThreadMessages],
   )
 
   const stopStreaming = useCallback(() => {
-    abortControllerRef.current?.abort()
+    streamControllersRef.current.get(activeThreadIdRef.current)?.abort()
     setIsStreaming(false)
   }, [])
 
@@ -612,7 +784,13 @@ function App() {
   )
 
   const handleSendMessage = useCallback(
-    async (rawInput: string, quotedMessageId?: string, userContent?: string) => {
+    async (
+      rawInput: string,
+      quotedMessageId?: string,
+      userContent?: string,
+      followUpContext?: FollowUpSendContext,
+      researchMode?: boolean,
+    ) => {
       const trimmed = rawInput.trim()
       if (
         !trimmed ||
@@ -621,16 +799,62 @@ function App() {
         return
       }
 
+      const activeUserId = effectiveUserId || getCurrentUserId()
+      if (!activeUserId || !UUID_PATTERN.test(activeUserId)) {
+        setAppError("No valid user is selected. Please select a user first.")
+        return
+      }
+
       // Lazy create thread_id if this is a brand new conversation
       let targetThreadId = threadId
       if (!targetThreadId) {
         targetThreadId = crypto.randomUUID()
+        activeThreadIdRef.current = targetThreadId
         setThreadId(targetThreadId)
+      }
+
+      if (followUpContext?.followUpQuestion) {
+        recordFollowUpSignal(
+          "followup_clicked",
+          followUpContext.followUpQuestion,
+          targetThreadId,
+          {
+            parentMessageId: followUpContext.parentMessageId,
+            parentRequestId: followUpContext.parentRequestId,
+          },
+        )
+      } else {
+        const match = findRecentFollowUpMatch(trimmed, messages, calledTools)
+        if (match) {
+          recordFollowUpSignal(
+            "followup_matched",
+            match.question,
+            targetThreadId,
+            {
+              similarity: match.similarity,
+              parentMessageId: match.question.messageId,
+              parentRequestId: match.question.requestId,
+            },
+          )
+        } else {
+          const detailTarget = findRecentDetailRequestTarget(trimmed, messages, calledTools)
+          if (detailTarget) {
+            recordFollowUpSignal(
+              "detail_requested",
+              detailTarget,
+              targetThreadId,
+              {
+                parentMessageId: detailTarget.messageId,
+                parentRequestId: detailTarget.requestId,
+              },
+            )
+          }
+        }
       }
 
       setAppError(null)
       setSelectedRequestId(null) // Reset to show latest request after streaming ends
-      setMessages((previous) => [
+      updateThreadMessages(targetThreadId, (previous) => [
         ...previous,
         toLocalMessage(
           { type: "human", content: trimmed },
@@ -644,6 +868,7 @@ function App() {
       ])
 
       const currentTitle = conversationTitle
+      let controller: AbortController | null = null
 
       try {
         await ensureConversationExists(targetThreadId, currentTitle)
@@ -652,10 +877,11 @@ function App() {
         writeUrl(targetThreadId)
 
         setIsStreaming(true)
-        streamingPlaceholderIdRef.current = null
-        createStreamingPlaceholder()
+        streamingPlaceholderIdsRef.current.delete(targetThreadId)
+        createStreamingPlaceholder(targetThreadId)
 
-        const controller = new AbortController()
+        controller = new AbortController()
+        streamControllersRef.current.set(targetThreadId, controller)
         abortControllerRef.current = controller
 
         // Reset state for new message
@@ -673,23 +899,100 @@ function App() {
           {
             content: trimmed,
             thread_id: targetThreadId,
-            user_id: getCurrentUserId() || "default",
+            user_id: activeUserId,
             request_id: crypto.randomUUID(),
-            model_name: currentModel,
+            model_uuid: currentModel,
             thinking_mode: currentThinkingMode,
+            research_mode: researchMode ? "deep_research" : "chat",
             custom_data: quotedMessageId ? {
               quoted_message_id: quotedMessageId,
               user_content: userContent,
             } : undefined,
           },
           (event: StreamEvent) => {
+            const isTargetActive = activeThreadIdRef.current === targetThreadId
+            if (event.type === "turn.started") {
+              if (isTargetActive) {
+                currentRequestIdRef.current = event.request_id
+              }
+              const placeholderId = streamingPlaceholderIdsRef.current.get(targetThreadId)
+              if (placeholderId) {
+                updateThreadMessages(targetThreadId, (previous) =>
+                  previous.map((item) =>
+                    item.local_id === placeholderId
+                      ? { ...item, request_id: event.request_id }
+                      : item,
+                  ),
+                )
+              }
+              return
+            }
+
+            if (event.type === "graph.snapshot") {
+              if (!isTargetActive) {
+                return
+              }
+              if (isProcessingRef.current) {
+                setIsProcessing(false)
+                isProcessingRef.current = false
+              }
+              const actionNodes = event.content.graph.nodes.filter(
+                (node) => node.kind === "action",
+              )
+              setCalledTools(
+                actionNodes.map((node) => ({
+                  name: node.label,
+                  id: node.node_id,
+                  args: {},
+                  status:
+                    node.status === "completed"
+                      ? ("completed" as const)
+                      : ("calling" as const),
+                })),
+              )
+              return
+            }
+
+            if (
+              event.type === "answer.completed"
+              || event.type === "clarification.required"
+            ) {
+              if (isTargetActive) {
+                setIsProcessing(false)
+                isProcessingRef.current = false
+                setIsAgentThinking(false)
+                setActiveToolCall(null)
+              }
+              addMessageFromStream(event.content.message, targetThreadId)
+              return
+            }
+
+            if (event.type === "turn.failed") {
+              if (isTargetActive) {
+                setIsProcessing(false)
+                isProcessingRef.current = false
+                setAppError(event.content.message)
+              }
+              updateThreadMessages(targetThreadId, (previous) => [
+                ...previous,
+                toLocalMessage({
+                  type: "ai",
+                  content: event.content.message,
+                  request_id: event.request_id,
+                }),
+              ])
+              return
+            }
+
             // Handle request_start event - store request_id for DAG viewing
             if (event.type === "request_start") {
-              currentRequestIdRef.current = event.request_id
+              if (isTargetActive) {
+                currentRequestIdRef.current = event.request_id
+              }
               // Update the placeholder message with request_id
-              const placeholderId = streamingPlaceholderIdRef.current
+              const placeholderId = streamingPlaceholderIdsRef.current.get(targetThreadId)
               if (placeholderId) {
-                setMessages((previous) =>
+                updateThreadMessages(targetThreadId, (previous) =>
                   previous.map((item) =>
                     item.local_id === placeholderId
                       ? { ...item, request_id: event.request_id }
@@ -701,6 +1004,9 @@ function App() {
             }
 
             if (event.type === "llm" || event.type === "reasoning") {
+              if (!isTargetActive) {
+                return
+              }
               // Thinking/reasoning content from models like DeepSeek-R1, Qwen3
               // "llm" is legacy event type, "reasoning" is LangChain v3 streaming type
               // Stop showing "processing..." loader when reasoning content arrives
@@ -718,13 +1024,15 @@ function App() {
             if (event.type === "token") {
               // When we start receiving tokens, agent is no longer "thinking"
               // Also stop showing "processing..." loader since content is now arriving
-              if (isProcessingRef.current) {
+              if (isTargetActive && isProcessingRef.current) {
                 setIsProcessing(false)
                 isProcessingRef.current = false
               }
-              setIsAgentThinking(false)
-              setActiveToolCall(null)
-              addStreamToken(event.content)
+              if (isTargetActive) {
+                setIsAgentThinking(false)
+                setActiveToolCall(null)
+              }
+              addStreamToken(event.content, targetThreadId)
               return
             }
 
@@ -732,7 +1040,7 @@ function App() {
               const message = event.content
               // Stop loading animation when we receive a message event
               // This handles cases where backend sends message directly without streaming tokens
-              if (isProcessingRef.current) {
+              if (isTargetActive && isProcessingRef.current) {
                 setIsProcessing(false)
                 isProcessingRef.current = false
               }
@@ -751,16 +1059,19 @@ function App() {
                 }
 
                 // Only stop thinking if we have content and no pending tool calls
-                if (hasContent && !hasToolCalls) {
+                if (isTargetActive && hasContent && !hasToolCalls) {
                   setIsAgentThinking(false)
                   setActiveToolCall(null)
                 }
               }
-              addMessageFromStream(message)
+              addMessageFromStream(message, targetThreadId)
               return
             }
 
             if (event.type === "tool") {
+              if (!isTargetActive) {
+                return
+              }
               // Agent is calling a tool - stop showing "processing..." loader
               // Content is arriving (tool call is a form of content)
               if (isProcessingRef.current) {
@@ -795,6 +1106,9 @@ function App() {
             }
 
             if (event.type === "tool_result") {
+              if (!isTargetActive) {
+                return
+              }
               // Tool execution completed, update the tool call info
               // Still keep isProcessing true - more tools may be called or AI response pending
               setCalledTools((prev) =>
@@ -820,8 +1134,10 @@ function App() {
 
             // error event - TypeScript knows this must be { type: "error"; content: string }
             if (event.type === "error") {
-              setAppError(event.content)
-              setMessages((previous) => [
+              if (isTargetActive) {
+                setAppError(event.content)
+              }
+              updateThreadMessages(targetThreadId, (previous) => [
                 ...previous,
                 toLocalMessage({
                   type: "ai",
@@ -838,15 +1154,13 @@ function App() {
         // Get the last AI message content for title generation
         // Use a callback to get the latest messages state
         let lastAiContent = ""
-        setMessages((previous) => {
-          for (let i = previous.length - 1; i >= 0; i--) {
-            if (previous[i].type === "ai" && previous[i].content) {
-              lastAiContent = previous[i].content
-              break
-            }
+        const completedMessages = conversationDraftsRef.current.get(targetThreadId) ?? []
+        for (let i = completedMessages.length - 1; i >= 0; i--) {
+          if (completedMessages[i].type === "ai" && completedMessages[i].content) {
+            lastAiContent = completedMessages[i].content
+            break
           }
-          return previous
-        })
+        }
 
         // Non-blocking title generation - fire and forget
         // User can continue chatting while title is being generated
@@ -854,8 +1168,10 @@ function App() {
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
           const details = getErrorMessage(error, t("error.unexpected"))
-          setAppError(t("error.generateResponse", { details }))
-          setMessages((previous) => [
+          if (activeThreadIdRef.current === targetThreadId) {
+            setAppError(t("error.generateResponse", { details }))
+          }
+          updateThreadMessages(targetThreadId, (previous) => [
             ...previous,
             toLocalMessage({
               type: "ai",
@@ -864,31 +1180,41 @@ function App() {
           ])
         }
       } finally {
-        setIsStreaming(false)
-        streamingPlaceholderIdRef.current = null
-        abortControllerRef.current = null
+        if (controller && streamControllersRef.current.get(targetThreadId) === controller) {
+          streamControllersRef.current.delete(targetThreadId)
+        }
+        streamingPlaceholderIdsRef.current.delete(targetThreadId)
+        if (controller && abortControllerRef.current === controller) {
+          abortControllerRef.current = null
+        }
 
-        // Auto-select the latest request_id from messages
-        setMessages((currentMessages) => {
+        if (activeThreadIdRef.current === targetThreadId) {
+          setIsStreaming(false)
+          // Auto-select the latest request_id from messages
+          const currentMessages = conversationDraftsRef.current.get(targetThreadId) ?? []
           const lastAiMessage = currentMessages.filter(m => m.type === "ai" && m.request_id).pop()
           if (lastAiMessage?.request_id) {
             setSelectedRequestId(lastAiMessage.request_id)
           }
-          return currentMessages
-        })
+        }
       }
     },
     [
       addMessageFromStream,
       addStreamToken,
+      calledTools,
       conversationTitle,
       createStreamingPlaceholder,
       ensureConversationExists,
+      effectiveUserId,
       isStreaming,
       maybeGenerateTitle,
+      messages,
+      recordFollowUpSignal,
       refreshConversations,
       t,
       threadId,
+      updateThreadMessages,
       writeUrl,
     ],
   )
@@ -1133,7 +1459,10 @@ function App() {
 
     return () => {
       cancelled = true
-      abortControllerRef.current?.abort()
+      for (const controller of streamControllersRef.current.values()) {
+        controller.abort()
+      }
+      streamControllersRef.current.clear()
     }
   }, [writeUrl, needsReinit, isLoggedIn, defaultConversationTitle])
 
@@ -1188,42 +1517,69 @@ function App() {
         />
 
         <SidebarInset className="min-h-0 overflow-hidden bg-background flex-1">
-          <ChatMainPanel
-            appError={appError}
-            isStreaming={isStreaming}
-            isInitializing={isInitializing}
-            isLoadingConversation={isLoadingConversation}
-            isProcessing={isProcessing}
-            isAgentThinking={isAgentThinking}
-            calledTools={calledTools}
-            thinkingContent={thinkingContent}
-            messages={messages}
-            onSendMessage={handleSendMessage}
-            onStopStreaming={stopStreaming}
-            onJumpToMessage={jumpToMessage}
-            onToggleSidebarProcess={() => setShowSidebarProcess(prev => !prev)}
-            onSelectRequestId={(requestId: string | null) => {
-              setSelectedRequestId(requestId)
-              // Ensure sidebar is visible
-              if (!showSidebarProcess) {
-                setShowSidebarProcess(true)
-              }
-            }}
-            models={models}
-            selectedModel={effectiveSelectedModel}
-            onSelectModel={setSelectedModel}
-            onOpenModelConfig={() => setShowProviderConfig(true)}
-            hasAvailableModels={hasAvailableModels}
-            selectedRequestId={selectedRequestId}
-          />
+          {mainView === "chat" ? (
+            <ChatMainPanel
+              appError={appError}
+              isStreaming={isStreaming}
+              isInitializing={isInitializing}
+              isLoadingConversation={isLoadingConversation}
+              isProcessing={isProcessing}
+              isAgentThinking={isAgentThinking}
+              calledTools={calledTools}
+              thinkingContent={thinkingContent}
+              messages={messages}
+              onSendMessage={handleSendMessage}
+              onStopStreaming={stopStreaming}
+              onJumpToMessage={jumpToMessage}
+              onToggleSidebarProcess={() => setShowSidebarProcess(prev => !prev)}
+              onSelectRequestId={(requestId: string | null) => {
+                setSelectedRequestId(requestId)
+                // Ensure sidebar is visible
+                if (!showSidebarProcess) {
+                  setShowSidebarProcess(true)
+                }
+              }}
+              models={models}
+              selectedModel={effectiveSelectedModel}
+              onSelectModel={setSelectedModel}
+              onOpenModelConfig={() => setShowProviderConfig(true)}
+              hasAvailableModels={hasAvailableModels}
+              selectedRequestId={selectedRequestId}
+            />
+          ) : (
+            <ResearchView userId={effectiveUserId} />
+          )}
         </SidebarInset>
 
         {/* Right Panel - same width as left sidebar (16rem) */}
         <aside className="hidden md:flex flex-col gap-2 border-l border-border bg-background p-2 w-64 min-w-64">
           {/* Top Section: Configuration */}
           <div className="space-y-2">
-            {/* Four buttons horizontally */}
+            {/* Utility buttons */}
             <div className="flex gap-1 w-full">
+              <Button
+                type="button"
+                size="icon"
+                variant={mainView === "chat" ? "default" : "outline"}
+                className="size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                onClick={() => setMainView("chat")}
+                aria-label="Chat"
+                title="Chat"
+              >
+                <MessageSquare className="size-4" />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant={mainView === "research" ? "default" : "outline"}
+                className="size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                onClick={() => setMainView("research")}
+                aria-label="Research"
+                title="Research"
+                disabled={!effectiveUserId}
+              >
+                <SearchCheck className="size-4" />
+              </Button>
               <Button
                 type="button"
                 size="icon"
@@ -1270,6 +1626,18 @@ function App() {
                 size="icon"
                 variant="outline"
                 className="cursor-pointer size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
+                onClick={() => setShowMemoryDialog(true)}
+                aria-label={t("memory.open")}
+                title={t("memory.open")}
+                disabled={!effectiveUserId}
+              >
+                <Brain className="size-4" />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                className="cursor-pointer size-8 flex-1 hover:bg-primary/10 hover:border-primary/40 hover:text-primary dark:hover:bg-primary/20 dark:hover:border-primary/60 dark:hover:text-primary"
                 onClick={() => setShowProviderConfig(true)}
                 aria-label={t("provider.configure")}
                 title={t("provider.configure")}
@@ -1278,11 +1646,24 @@ function App() {
               </Button>
             </div>
 
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 w-full justify-start gap-2"
+              onClick={() => setShowAppProviderConfig(true)}
+              aria-label="App Providers"
+              title="App Providers"
+            >
+              <PlugZap className="size-4" />
+              <span className="truncate text-xs">App Providers</span>
+            </Button>
+
           </div>
 
           {/* Middle Section: Turn DAG Sidebar */}
           <div className="flex-1 min-h-0 overflow-hidden">
-            {!isInitializing && threadId && messages.length > 0 && (
+            {mainView === "chat" && !isInitializing && threadId && messages.length > 0 && (
               <TurnDAGSidebar
                 threadId={threadId || null}
                 isStreaming={isStreaming}
@@ -1292,7 +1673,7 @@ function App() {
           </div>
 
           {/* Bottom Section: Token Stats - only show in chat mode */}
-          {!isInitializing && messages.length > 0 && (
+          {mainView === "chat" && !isInitializing && messages.length > 0 && (
             <TokenStatsPanel
               currentConversation={conversations.find(c => c.thread_id === threadId) ?? null}
             />
@@ -1326,15 +1707,27 @@ function App() {
         onOpenChange={setShowShareDialog}
       />
 
+      <MemoryManagementDialog
+        open={showMemoryDialog}
+        onOpenChange={setShowMemoryDialog}
+        userId={effectiveUserId}
+      />
+
       {/* Provider Config Dialog */}
       <ProviderConfigDialog
         open={showProviderConfig}
+        onConfigChanged={refreshModels}
         onOpenChange={(open) => {
           setShowProviderConfig(open)
           if (!open) {
             void refreshModels()
           }
         }}
+      />
+
+      <AppProviderConfigDialog
+        open={showAppProviderConfig}
+        onOpenChange={setShowAppProviderConfig}
       />
 
       {/* No Model Dialog */}
