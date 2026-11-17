@@ -19,15 +19,15 @@ export function HomePage({ onSelectUser }: HomePageProps) {
         <section className="flex min-h-[420px] flex-col justify-between p-7 sm:p-10 lg:p-14" aria-labelledby="home-title">
           <AgentHubLogo size="md" />
           <div className="max-w-2xl py-14 lg:py-20">
-            <p className="mb-5 font-mono text-xs font-semibold tracking-[0.1em] text-primary">AGENTHUB / LOCAL WORKSPACE</p>
+            <p className="mb-5 text-sm font-semibold tracking-wide text-primary">AI大模型图书馆智能书籍管理系统</p>
             <h1 id="home-title" className="max-w-[13ch] text-[42px] font-semibold leading-[1.35] sm:text-[56px]">
-              让研究、对话与执行过程保持在同一上下文。
+              通过对话管理阅读，让每次反馈改善推荐。
             </h1>
             <p className="mt-7 max-w-[58ch] text-[17px] leading-8 text-muted-foreground">
-              选择工作身份后进入。模型路由、研究记录与记忆配置将沿用对应用户空间。
+              管理想读、在读与已读图书，保存阅读评价和备注，并结合长期偏好获得新书推荐。请选择演示用户进入对应阅读空间。
             </p>
           </div>
-          <p className="font-mono text-xs text-muted-foreground">对话 · 深度研究 · 模型路由 · 执行追踪</p>
+          <p className="text-xs text-muted-foreground">智能对话 · 个人书架 · 长期记忆 · 个性化推荐 · 深度研究</p>
         </section>
 
         <section className="flex flex-col justify-center border-t border-border bg-card p-7 sm:p-10 lg:border-l lg:border-t-0 lg:p-12" aria-labelledby="identity-title">

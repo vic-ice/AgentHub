@@ -258,6 +258,7 @@ export function ChatSidebar({
                       className="cursor-pointer justify-center"
                       onClick={onLoadMore}
                       disabled={isLoadingMore}
+                      aria-label="加载更多会话"
                     >
                       {isLoadingMore ? (
                         <span className="text-xs">{t("common.loading") || "Loading..."}</span>

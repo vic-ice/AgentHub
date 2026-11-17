@@ -458,8 +458,8 @@ export function ChatMainPanel({
           {messages.length === 0 ? (
             <div className="mx-auto mb-4 max-w-2xl text-center">
               <p className="font-mono text-xs font-semibold tracking-[0.1em] text-primary">新对话</p>
-              <h1 className="mt-3 text-4xl font-semibold sm:text-5xl">今天想推进什么？</h1>
-              <p className="mt-4 text-[16px] leading-7 text-muted-foreground">直接描述目标；需要系统检索和多步分析时，再开启深度搜索。</p>
+              <h1 className="mt-3 text-4xl font-semibold sm:text-5xl">今天想读什么？</h1>
+              <p className="mt-4 text-[16px] leading-7 text-muted-foreground">通过对话更新阅读状态、评价和备注，或根据书架寻找新书。需要多来源比较时，可显式开启深度搜索。</p>
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2 justify-center">

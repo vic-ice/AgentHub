@@ -14,7 +14,7 @@ export function AgentHubLogo({ className, size = "md" }: AgentHubLogoProps) {
 
   return (
     <span className={cn("inline-flex items-center gap-[0.32em] select-none", sizeClasses[size], className)}>
-      <span className="font-semibold tracking-[-0.025em] text-foreground">AgentHub</span>
+      <span className="font-semibold tracking-[-0.025em] text-foreground">智能书籍管理</span>
       <span className="size-[0.28em] rounded-full bg-primary" aria-hidden="true" />
     </span>
   )

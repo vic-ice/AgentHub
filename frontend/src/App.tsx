@@ -67,6 +67,7 @@ import {
 
 import { useI18n } from "@/i18n"
 import { HomePage } from "@/pages/home-page"
+import { ReadingHome } from "@/pages/reading-home"
 import { Toaster } from "@/components/ui/toaster"
 import { formatDiagnosticDetails } from "@/lib/errors"
 import {
@@ -152,7 +153,7 @@ function App() {
     setHasMoreConversations(false)
     setSelectedRequestId(null)
     setAppError(null)
-    setMainView("chat")
+    setMainView("home")
     for (const controller of streamControllersRef.current.values()) {
       controller.abort()
     }
@@ -215,7 +216,7 @@ function App() {
   const [showProviderConfig, setShowProviderConfig] = useState(false)
   const [showAppProviderConfig, setShowAppProviderConfig] = useState(false)
   const [showNoModelDialog, setShowNoModelDialog] = useState(false)
-  const [mainView, setMainView] = useState<"chat" | "research" | "bookshelf">("chat")
+  const [mainView, setMainView] = useState<"home" | "chat" | "research" | "bookshelf">(() => readThreadIdFromUrl() ? "chat" : "home")
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const streamControllersRef = useRef<Map<string, AbortController>>(new Map())
@@ -524,6 +525,7 @@ function App() {
   )
 
   const resetToNewConversation = useCallback(() => {
+    setMainView("chat")
     const previousThreadId = activeThreadIdRef.current
     if (previousThreadId) {
       conversationDraftsRef.current.set(previousThreadId, messagesRef.current)
@@ -1638,6 +1640,7 @@ function App() {
 
   // Handle user login from home page
   const handleUserLogin = useCallback((user: UserInfo) => {
+    setMainView("home")
     setUserId(user.id)
     setCurrentUserId(user.id)
     // Trigger re-initialization after login to ensure proper data loading
@@ -1676,6 +1679,7 @@ function App() {
           onCreateConversation={resetToNewConversation}
           disableCreateConversation={isInitializing || isLoadingConversation}
           onOpenConversation={(conversation) => {
+            setMainView("chat")
             void openConversation(
               conversation.thread_id,
               conversations,
@@ -1691,8 +1695,36 @@ function App() {
         />
 
         <SidebarInset className="min-h-0 overflow-hidden border-x border-border bg-background flex-1">
+          <header className="shrink-0 space-y-4 border-b border-border bg-background px-5 py-4 sm:px-8">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-base font-semibold text-foreground sm:text-lg">AI大模型图书馆智能书籍管理系统</p>
+              <p className="text-xs text-muted-foreground">个人阅读管理与智能推荐</p>
+            </div>
+            <nav aria-label="主要功能导航" className="flex flex-wrap gap-2">
+              {([
+                { view: "home", label: "首页", icon: BookOpen },
+                { view: "chat", label: "智能对话", icon: MessageSquare },
+                { view: "bookshelf", label: "我的书架", icon: BookOpen },
+                { view: "memory", label: "长期记忆", icon: Brain },
+                { view: "research", label: "深度研究", icon: SearchCheck },
+              ] as const).map(({ view, label, icon: Icon }) => (
+                <Button key={view} size="sm" variant={(view === "memory" ? showMemoryDialog : mainView === view && !showMemoryDialog) ? "default" : "ghost"}
+                  aria-current={view !== "memory" && mainView === view ? "page" : undefined}
+                  aria-haspopup={view === "memory" ? "dialog" : undefined}
+                  onClick={() => view === "memory" ? setShowMemoryDialog(true) : setMainView(view)}>
+                  <Icon className="size-4" />{label}
+                </Button>
+              ))}
+            </nav>
+            <div aria-label="当前位置" className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>当前位置：</span><button type="button" onClick={() => setMainView("home")} className="hover:text-foreground">首页</button>
+              {mainView !== "home" && <><span aria-hidden="true">/</span><span className="text-foreground">{mainView === "chat" ? "智能对话" : mainView === "bookshelf" ? "我的书架" : "深度研究"}</span></>}
+            </div>
+          </header>
           <Suspense fallback={<WorkspacePanelFallback />}>
-            {mainView === "chat" ? (
+            {mainView === "home" ? (
+              <ReadingHome userName={currentUser?.name} onOpenChat={() => setMainView("chat")} onOpenBookshelf={() => setMainView("bookshelf")} onOpenMemory={() => setShowMemoryDialog(true)} onOpenResearch={() => setMainView("research")} />
+            ) : mainView === "chat" ? (
               <ChatMainPanel
               appError={appError}
               onDismissError={() => setAppError(null)}
@@ -1732,46 +1764,11 @@ function App() {
         </SidebarInset>
 
         {/* Right Panel - same width as left sidebar (16rem) */}
-        <aside className="hidden w-80 min-w-80 flex-col gap-4 bg-[var(--background-elevated)] p-4 md:flex">
+        {mainView === "chat" && <aside className="hidden w-80 min-w-80 flex-col gap-4 bg-[var(--background-elevated)] p-4 md:flex">
           {/* Top Section: Configuration */}
           <div className="space-y-2">
             {/* Utility buttons */}
             <div className="grid w-full grid-cols-4 gap-1 border border-border bg-card p-1" aria-label="工作区工具">
-              <Button
-                type="button"
-                size="icon"
-                variant={mainView === "chat" ? "default" : "ghost"}
-                className="h-10 w-full"
-                onClick={() => setMainView("chat")}
-                aria-label="对话"
-                title="对话"
-              >
-                <MessageSquare className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                size="icon"
-                variant={mainView === "research" ? "default" : "ghost"}
-                className="h-10 w-full"
-                onClick={() => setMainView("research")}
-                aria-label="研究"
-                title="研究"
-                disabled={!effectiveUserId}
-              >
-                <SearchCheck className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                size="icon"
-                variant={mainView === "bookshelf" ? "default" : "ghost"}
-                className="h-10 w-full"
-                onClick={() => setMainView("bookshelf")}
-                aria-label="我的书架"
-                title="我的书架"
-                disabled={!effectiveUserId}
-              >
-                <BookOpen className="size-4" />
-              </Button>
               <Button
                 type="button"
                 size="icon"
@@ -1812,18 +1809,6 @@ function App() {
                 title={t("language.switch")}
               >
                 <Languages className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-10 w-full"
-                onClick={() => setShowMemoryDialog(true)}
-                aria-label={t("memory.open")}
-                title={t("memory.open")}
-                disabled={!effectiveUserId}
-              >
-                <Brain className="size-4" />
               </Button>
               <Button
                 type="button"
@@ -1871,7 +1856,7 @@ function App() {
               currentConversation={conversations.find(c => c.thread_id === threadId) ?? null}
             />
           )}
-        </aside>
+        </aside>}
       </SidebarProvider>
 
       <ConversationRenameDialog

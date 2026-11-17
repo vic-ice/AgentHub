@@ -32,3 +32,10 @@ backend/data/book_covers/
 # Local patch/recovery artifacts
 *.orig
 *.rej
+
+# Local agent working files and review caches
+.codex-artifacts/
+.codex-review/
+
+# Microsoft Office temporary lock files
+~$*

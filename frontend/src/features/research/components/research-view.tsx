@@ -472,10 +472,9 @@ export function ResearchView({ userId }: ResearchViewProps) {
                   <div className="min-w-0 flex-1">
                     <div className="mb-2 flex flex-wrap gap-2">
                       <Badge variant={statusBadge(detail.run.status)}>{statusLabel(detail.run.status)}</Badge>
-                      <Badge variant="outline">{detail.run.mode}</Badge>
-                      <Badge variant="secondary">{detail.provider_sources.join(", ") || "postgres"}</Badge>
+                      <Badge variant="outline">{detail.run.mode === "deep_research" ? "深度研究" : detail.run.mode}</Badge>
                     </div>
-                    <h1 className="max-w-[28ch] text-3xl font-semibold leading-[1.4] md:text-4xl">{detail.run.objective}</h1>
+                    <h1 className="max-w-[42ch] text-xl font-semibold leading-[1.5] md:text-2xl">{detail.run.objective}</h1>
                     <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
                       <span>开始于 {formatDate(detail.run.started_at)}</span>
                       <span>更新于 {formatDate(detail.run.updated_at)}</span>

@@ -239,7 +239,7 @@ export function BookshelfView({ userId }: BookshelfViewProps) {
             <p className="text-[11px] font-semibold tracking-[0.18em] text-primary">PERSONAL LIBRARY</p>
             <h1 className="bookshelf-display-title mt-1 text-[32px] font-semibold leading-10 text-foreground">我的书架</h1>
             <p className="mt-1.5 text-[15px] leading-6 text-muted-foreground">
-              收藏阅读轨迹，也收藏每一次真实感受
+              管理想读、在读与已读图书；点击封面查看或修改阅读状态、评价和备注。
             </p>
           </div>
           <div className="grid grid-cols-3 divide-x divide-border text-center">
@@ -437,6 +437,7 @@ export function BookshelfView({ userId }: BookshelfViewProps) {
             return (
               <>
                 <SheetHeader className="border-b border-border p-5 pr-12">
+                  <p className="mb-4 text-sm font-medium text-muted-foreground">我的书架 / 书籍详情</p>
                   <div className="flex gap-4">
                     <div className="flex h-36 w-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted text-muted-foreground shadow-sm">
                       {entry.cover_url ? (
